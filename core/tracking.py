@@ -518,15 +518,18 @@ def shipment_tracking(shipment: dict, places: dict, now: dt.datetime, include_pu
     transfer = [point_of(places[destination]), point_of(site)] if mode == "air" and site and line else []
     context = None
     held = shipment.get("held_reason")
-    if held or shipment.get("status") == "arrived_port":
+    waiting = shipment.get("status") == "booked"
+    if held or waiting or shipment.get("status") == "arrived_port":
         # Nothing is moving: don't estimate progress or match flights/vessels for a box that sits still.
-        at = stops[0] if held else (places.get(destination) or (stops[-1] if stops else None))
+        at = stops[0] if held or waiting else (places.get(destination) or (stops[-1] if stops else None))
+        label = (f"held at the supplier in {at['name']}" if held else f"not picked up yet in {at['name']}" if waiting
+                 else f"waiting at {at['name']}") if at else None
         current = {"lat": at["lat"], "lon": at["lon"], "source": "Supplier notice" if held else "Carrier feed",
-                   "timestamp": shipment.get("updated_at"), "label": "Held at the supplier, not yet at " + at['name'] if held else f"Waiting at {at['name']}"} if at else None
+                   "timestamp": shipment.get("updated_at"), "label": label} if at else None
         return {
             "route": line, "route_source": route_source, "stops": stops, "transfer": [], "transfer_destination": None,
             "reported": reported, "expected": None, "divergence_km": None,
-            "verdict": f"held at the supplier: {held}" if held else "at the port, no truck booked",
+            "verdict": f"held at the supplier: {held}" if held else "booked, pickup not confirmed" if waiting else "at the port, no truck booked",
             "public_context": None, "eta": shipment["eta"], "current_position": current, "flight_match": None,
             "needs_flight_number": False,
         }

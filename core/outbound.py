@@ -12,17 +12,18 @@ import threading
 from email.message import EmailMessage
 
 from core import actions
-from core.rules import now
+from core.rules import cfg, now
 
 DISPATCH_LOCK = threading.Lock()
 UNCONFIRMED = {"sending", "delivery_unknown"}
 
 
-def _mark(mid: str, status: str, provider_id: str | None = None) -> None:
+def _mark(mid: str, status: str, provider_id: str | None = None, *, expected: tuple[str, ...] = ()) -> int:
     with actions.con() as c:
         sent_at = now().isoformat(timespec="seconds") if status in ("sent", "delivered") else None
-        c.execute("UPDATE messages SET status=?, sent_at=?, provider_id=COALESCE(?,provider_id) WHERE id=?",
-                  (status, sent_at, provider_id, mid))
+        condition = " AND status IN (" + ",".join("?" for _ in expected) + ")" if expected else ""
+        return c.execute("UPDATE messages SET status=?, sent_at=?, provider_id=COALESCE(?,provider_id) WHERE id=?" + condition,
+                         (status, sent_at, provider_id, mid, *expected)).rowcount
 
 
 def send(m: dict, in_reply_to: str | None = None) -> str:
@@ -42,10 +43,12 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
                 s.starttls()
                 if user:
                     s.login(user, pw or "")
-                _mark(m["id"], "sending", msg["Message-ID"])
+                if not _mark(m["id"], "sending", msg["Message-ID"], expected=("draft", "outbox")):
+                    return "sending"
                 try:
                     s.send_message(msg)
                 except smtplib.SMTPResponseException:
+                    _mark(m["id"], "outbox", expected=("sending",))
                     raise  # the server explicitly declined this message
                 except OSError:
                     _mark(m["id"], "delivery_unknown")
@@ -54,7 +57,7 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
                 _mark(m["id"], "sent", msg["Message-ID"])
             actions.log_event("email_sent", m["action_id"], f"to {m['to_address']}: {m['subject']}")
             return "sent"
-        _mark(m["id"], "outbox")
+        _mark(m["id"], "outbox", expected=("draft", "outbox"))
         if m["status"] != "outbox":
             actions.log_event("email_outbox", m["action_id"], f"queued for {m['to_address']} (no mailer configured): {m['subject']}")
         return "outbox"
@@ -69,6 +72,8 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
         action = actions.get(action_id)
         if action["status"] not in ("approved", "auto", "sent"):
             return action
+        if action["kind"] in {"chase_supplier", "chase_escalation"} and not cfg("chase")["enabled"]:
+            return action
         reply = None
         if action["finding_id"].startswith("reply-"):
             from core import inbox
@@ -82,13 +87,19 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
                 ref = reply["message_id"]
                 if ref.startswith("<") and ref.endswith(">"):
                     parent = ref
+            elif action["kind"] == "chase_supplier" and (parent_id := action["payload"].get("parent_message_id")):
+                with actions.con() as c:
+                    original = c.execute("SELECT provider_id,to_address FROM messages WHERE id=? AND status='sent'",
+                                         (parent_id,)).fetchone()
+                if not original or not original["provider_id"] or original["to_address"].casefold() != m["to_address"].casefold():
+                    continue
+                parent = original["provider_id"]
             try:
-                pending |= send(m, parent) in {"outbox", "delivery_unknown"}
+                email_message = dict(m, body_en=None) if action["kind"] == "chase_supplier" else m
+                pending |= send(email_message, parent) in {"outbox", *UNCONFIRMED}
             except (OSError, ValueError) as exc:
                 pending = True
-                current = next(row for row in actions.get(action_id)["messages"] if row["id"] == m["id"])
-                if current["status"] != "sent":
-                    _mark(m["id"], "outbox")
+                if _mark(m["id"], "outbox", expected=("draft", "outbox")):
                     actions.log_event("dispatch_error", action_id, f"{m['subject']}: {type(exc).__name__}")
         if action["status"] == "approved" and not pending:
             return actions.set_status(action_id, "sent", entry)

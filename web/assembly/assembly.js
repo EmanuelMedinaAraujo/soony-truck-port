@@ -137,7 +137,7 @@ function renderTransportMap() {
   const route = activeRoute();
   const target = $("transport-map");
   if (target && route?.tracking && mapLand !== undefined) {
-    target.innerHTML = mapFigure(route.tracking, mapLand, route.id);
+    target.innerHTML = mapFigure(route.tracking, mapLand, route.id, route.name);
   }
 }
 
@@ -221,11 +221,11 @@ function renderChaserCases(part) {
   const cases = chaserCases.filter(item => item.material === part.id && part.purchaseOrders?.some(order =>
     order.supplierId === item.supplier_id && order.poNumber === item.po_number));
   if (!cases.length) return "";
-  const labels = {open: "Open", waiting: "Waiting for reply", answered: "Reply received", escalated: "Escalated"};
+  const labels = {open: "Asking", waiting: "Waiting for reply", answered: "Reply received", escalated: "Escalated"};
   const tones = {waiting: "waiting", answered: "ready", escalated: "alert"};
-  return `<section class="chaser-cases" aria-labelledby="chaser-heading"><h3 id="chaser-heading">Supplier Chaser cases</h3>
-    <ul>${cases.map(item => `<li class="next-step-line"><span class="state-chip" data-tone="${tones[item.status] ?? "active"}">${labels[item.status]}</span>
-      <a href="${html(item.url)}" target="_blank" rel="noreferrer">${html(item.supplier_name)}, purchase order ${html(item.po_number)}</a></li>`).join("")}</ul></section>`;
+  return `<section class="chaser-cases" aria-labelledby="chaser-heading"><h3 id="chaser-heading">Order confirmations</h3>
+    <ul>${cases.map(item => `<li class="next-step-line"><span class="state-chip" data-tone="${tones[item.status] ?? "active"}">${labels[item.status] ?? "Asking"}</span>
+      <span>${html(item.supplier_name)}, order ${html(item.po_number)}${item.last_reply_summary ? `: ${html(item.last_reply_summary)}` : item.question ? `: ${html(item.question.split(/(?<=[.?!])\s/)[0])}` : ""}</span></li>`).join("")}</ul></section>`;
 }
 
 function renderInspector(force = false) {
@@ -271,7 +271,7 @@ function renderInspector(force = false) {
       ${renderRouteDetails(route, showConfirmation)}</div>
     </div>
     ${chaser}
-    ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
+    ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id, route.name) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
     <div class="info-grid"><div>
     ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
@@ -324,7 +324,7 @@ async function refreshChaser() {
   let status = "chaser offline";
   let cases = [];
   try {
-    const response = await fetch("/api/chaser?include_messages=false", {cache: "no-store"});
+    const response = await fetch("/api/chaser", {cache: "no-store"});
     if (response.ok) ({status, cases} = await response.json());
   } catch {
     // Dockside remains usable if Supplier Chaser is unavailable.
@@ -333,19 +333,9 @@ async function refreshChaser() {
   }
   chaserCases = cases.filter(item => item.status !== "closed");
   const count = chaserCases.length;
-  const summary = $("chaser-count");
-  const label = status === "ok" ? `${number(count)} open supplier ${count === 1 ? "case" : "cases"}` : "Supplier Chaser offline";
-  const inbox = count ? new URL("/", chaserCases[0].url).href : null;
-  if (inbox && (summary.textContent !== label || summary.firstElementChild?.href !== inbox)) {
-    const link = document.createElement("a");
-    link.href = inbox;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = label;
-    summary.replaceChildren(link);
-  } else if (!inbox && summary.textContent !== label) {
-    summary.textContent = label;
-  }
+  const suppliers = new Set(chaserCases.map(item => item.supplier_id)).size;
+  const label = status !== "ok" ? "" : count ? `Chasing ${number(suppliers)} ${suppliers === 1 ? "supplier" : "suppliers"} for ${number(count)} unconfirmed ${count === 1 ? "order line" : "order lines"}.` : "";
+  if ($("chaser-count").textContent !== label) $("chaser-count").textContent = label;
   if (state) renderInspector();
 }
 
@@ -371,7 +361,7 @@ async function refresh() {
   }
 }
 
-$("next-list").addEventListener("click", event => {
+$("next-strip").addEventListener("click", event => {
   const part = event.target.closest("[data-next-part]");
   if (part) selectPart(part.dataset.nextPart, true);
 });

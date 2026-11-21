@@ -147,7 +147,16 @@ function mapProjection(line, extra) {
   return {project, coast, grid: grid.join("")};
 }
 
-function mapFigure(tracking, land, id) {
+const trackSoon = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Berlin", weekday: "short", hour: "2-digit", minute: "2-digit"});
+
+function arrivalPhrase(iso) {
+  const when = Date.parse(iso);
+  if (!Number.isFinite(when)) return "";
+  const soon = Math.abs(when - Date.now()) < 6 * 864e5;
+  return soon ? trackSoon.format(new Date(when)).replace(",", "") : trackDay.format(new Date(when));
+}
+
+function mapFigure(tracking, land, id, title = "") {
   const details = trackDetails?.[id];
   if (!details?.route.length) {
     const message = trackDetails ? "Tracking map unavailable for this shipment." : "Loading the shipment map.";
@@ -193,8 +202,9 @@ function mapFigure(tracking, land, id) {
   const estimated = primary?.source === "Schedule estimate";
   const location = primary?.label ? primary.label[0].toLowerCase() + primary.label.slice(1) : mapLocation(primary, stops, tracking.mode);
   const mode = {air: "air freight", sea: "sea freight", road: "road freight"}[tracking.mode] ?? "shipment";
-  const label = details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1);
-  const arrival = Number.isFinite(Date.parse(details.eta)) ? `, due ${trackDay.format(new Date(details.eta))}` : "";
+  const label = title || (details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1));
+  const due = arrivalPhrase(tracking.arrival ?? details.eta);
+  const arrival = due ? `, due in Hamburg ${due}` : "";
   const positionLabel = primary?.simulated ? "simulated" : estimated ? "estimate" : "";
   const heading = `${label}${arrival}${location ? `, ${location}` : ""}${positionLabel ? ` (${positionLabel})` : ""}`;
   const progress = estimated ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];

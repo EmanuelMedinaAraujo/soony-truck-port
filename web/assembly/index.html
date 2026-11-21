@@ -33,13 +33,6 @@ seeing what they were packing. The product illustrations now carry the overview.
 One shared branch replaces a duplicate card and leaflet in each edition. Stage
 icons, lead times and the assumed confirmation appear only inside a part trace.
 -->
-<header class="mast">
-  <div class="shell mast-inner">
-    <a class="wordmark" href="/" aria-label="Dockside home">Dockside</a>
-    <span class="site">Grand Heist 6 / Hamburg</span>
-    <div class="utility"><span id="sync" role="status">Connecting</span><a href="#operations">Actions</a></div>
-  </div>
-</header>
 <main class="shell">
   <header class="dispatch-heading">
     <div><h1>Sunday dispatch</h1><p>Select a part to trace it to the box.</p></div>
@@ -47,10 +40,12 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
   </header>
 
   <section id="next-strip" class="next-strip" aria-labelledby="next-title" hidden>
-    <header><h2 id="next-title">Dockside now and next</h2><p id="busy-progress" role="status"></p></header>
+    <header><h2 id="next-title">Checking</h2><p class="strip-status"><span id="busy-progress" role="status"></span> <span id="sync" role="status">Connecting</span></p></header>
     <p id="llm-banner" class="llm-banner" role="alert" hidden></p>
-    <p id="chaser-count" class="side-note"></p>
+    <ul id="needs-you" class="needs-you" hidden></ul>
+    <p id="handling-note" class="side-note">Dockside is handling these:</p>
     <ul id="next-list"></ul>
+    <p id="chaser-count" class="side-note"></p>
   </section>
 
   <section id="overview" aria-label="Shared supply and the two editions">

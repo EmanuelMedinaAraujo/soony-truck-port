@@ -120,6 +120,8 @@
     "value": {
       "auto_kinds": [
         "ask",
+        "chase_supplier",
+        "chase_escalation",
         "confirm_terms",
         "data_fix",
         "escalate",
@@ -142,5 +144,15 @@
       ]
     },
     "source": "Team decision 2026-11-21: Dockside works autonomously. Free actions go out immediately. Commitments within the Buyer limit (PP-07, < EUR 50k) that protect at least 10x their cost, and dock slots, are executed after a 15-minute stop window in which the responsible person can stop them. Quality concessions need a written release (PP-07, inspection report) and always wait for a signature."
+  },
+  "chase": {
+    "value": {
+      "enabled": false,
+      "max_new_threads_per_cycle": 3,
+      "reminder_after_hours": 2,
+      "only_launch_relevant": true,
+      "internal_emails": {}
+    },
+    "source": "Dockside Supplier Chaser settings. Internal email uses explicitly configured addresses keyed by name from people."
   }
 }

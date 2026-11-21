@@ -62,11 +62,24 @@ ACTION_SUBJECTS = {
     "escalate": "request",
 }
 INTERNAL_FOLLOWUP = {
-    "book_truck": "Confirm a truck with the carrier.",
-    "dock_slot": "Confirm the warehouse unload time.",
-    "quality_release": "Check whether quality has released the stock.",
-    "escalate": "Check for an update from the launch team.",
+    "book_truck": "confirm the truck",
+    "dock_slot": "confirm the unload slot",
+    "quality_release": "release the stock",
+    "escalate": "answer",
 }
+
+
+def internal_followup(action: dict, message: dict) -> dict:
+    """A message that went out by chat or as a call script: say who has to do what next."""
+    who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
+    who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", "Hamburg", who)
+    if message["channel"] == "phone_script":
+        return next_step("Needs you", f"Call {who} to {INTERNAL_FOLLOWUP[action['kind']]}. The call script is ready.", message["sent_at"], action["id"])
+    task = INTERNAL_FOLLOWUP[action["kind"]]
+    if action["kind"] == "escalate":
+        title = (action["title"] or "").strip().rstrip(".")
+        task = f"answer: {title[:1].lower() + title[1:]}" if title else "answer"
+    return next_step("Waiting for reply", f"Waiting for {who} to {task}.", message["sent_at"], action["id"])
 
 
 def message_answered(message: dict, replies: list[dict]) -> bool:
@@ -121,7 +134,8 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
                         text = f"Sent the {email_subject}{timing}."
                     candidates.append((3, next_step("Waiting for reply", text, sent_at, aid)))
                 elif mail_status == "delivered" and action["kind"] in INTERNAL_FOLLOWUP:
-                    candidates.append((4, next_step("Stuck", INTERNAL_FOLLOWUP[action["kind"]], message["sent_at"], aid)))
+                    followup = internal_followup(action, message)
+                    candidates.append((0 if followup["state"] == "Needs you" else 4, followup))
         for reply in action["replies"]:
             if not reply["handled"]:
                 who = supplier or "the supplier"
@@ -152,9 +166,13 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
         if logged:
             return "ship", logged
         reply = max((row for action in related for row in action["replies"]), key=lambda row: row["received_at"] or "", default=None)
+        etd = rules.ts(shipment.get("etd"))
+        late = bool(etd and etd.date() < now.date())
+        text = ("Pickup is overdue and not confirmed. Next: get the pickup time from the carrier." if late else
+                "Booked, not picked up yet. Next: confirm the pickup time with the carrier.")
         if reply:
-            return "ship", next_step("Booked", "Check the carrier record against the supplier’s reply.", reply["received_at"], reply["action_id"])
-        return "ship", next_step("Booked", "Check departure with the carrier.", updated)
+            return "ship", next_step("Booked", text, reply["received_at"], reply["action_id"])
+        return "ship", next_step("Booked", text, updated)
 
     if status in ("in_transit", "in_delivery", "delayed"):
         if logged:

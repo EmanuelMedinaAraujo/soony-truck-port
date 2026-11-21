@@ -54,12 +54,15 @@ def fetch() -> list[dict]:
         return []
     with actions.con() as c:
         c.executescript(REPLY_SCHEMA)
-        ours = c.execute("SELECT id, action_id, subject, provider_id, to_address FROM messages WHERE channel='email' AND status='sent'").fetchall()
+        ours = c.execute("""SELECT m.id,m.action_id,m.subject,m.provider_id,m.to_address,a.kind
+            FROM messages m LEFT JOIN actions a ON a.id=m.action_id WHERE m.channel='email'
+            AND (a.kind IS NULL OR a.kind<>'chase_escalation')
+            AND (m.status='sent' OR (a.kind='chase_supplier' AND m.status IN ('sending','delivery_unknown')))""").fetchall()
         known = {r[0] for r in c.execute("SELECT message_id FROM replies")}
     by_mid = {r["provider_id"]: r for r in ours if r["provider_id"]}
     by_subj = {}
     for r in ours:
-        if not r["provider_id"]:
+        if not r["provider_id"] and r["kind"] != "chase_supplier":
             by_subj.setdefault((_norm(r["subject"]), (r["to_address"] or "").casefold()), []).append(r)
     if not ours:
         return []
@@ -75,6 +78,8 @@ def fetch() -> list[dict]:
             if mid in known:
                 continue
             subject = _h(hdr["Subject"])
+            if "[sc:" in subject.casefold():
+                continue
             name, addr = parseaddr(_h(hdr["From"]))
             direct = re.findall(r"<[^<>]+>", hdr["In-Reply-To"] or "")
             refs = re.findall(r"<[^<>]+>", hdr["References"] or "")
@@ -89,7 +94,7 @@ def fetch() -> list[dict]:
             try:
                 when = parsedate_to_datetime(full["Date"]).astimezone().isoformat(timespec="seconds")
             except Exception:
-                when = None
+                when = actions.now().isoformat(timespec="seconds")
             rid = "RPL-" + hashlib.sha1(mid.encode()).hexdigest()[:6].upper()
             row = dict(id=rid, message_id=mid, msg_id=ours_msg["id"], action_id=ours_msg["action_id"], from_addr=addr, from_name=name or addr,
                        subject=_h(full["Subject"]), received_at=when, body=_strip_quote(_body(full)))
@@ -108,7 +113,9 @@ def fetch() -> list[dict]:
 def unhandled() -> list[dict]:
     with actions.con() as c:
         c.executescript(REPLY_SCHEMA)
-        return [dict(r) for r in c.execute("SELECT * FROM replies WHERE handled=0 ORDER BY received_at")]
+        return [dict(r) for r in c.execute("""SELECT r.* FROM replies r LEFT JOIN actions a ON a.id=r.action_id
+            WHERE r.handled=0 AND (a.kind IS NULL OR a.kind<>'chase_supplier')
+            AND instr(lower(r.subject),'[sc:')=0 ORDER BY r.received_at""")]
 
 
 def get_reply(rid: str) -> dict | None:

@@ -16,18 +16,36 @@ function nextStepLine(next) {
 }
 
 function renderNextSteps(snapshot) {
-  const upcoming = snapshot.now_next ?? [];
-  const key = JSON.stringify(upcoming);
+  const all = snapshot.now_next ?? [];
+  const upcoming = all.filter(item => item.next_step?.state !== "Needs you");
+  const yours = all.filter(item => item.next_step?.state === "Needs you");
+  const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled");
+  const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
+  const key = JSON.stringify([all, waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
   if (key === nextStepsKey) return;
   nextStepsKey = key;
+  const count = waiting.length + yours.length;
+  $("next-title").textContent = count ? `Action needed: ${count === 1 ? "1 thing" : `${number(count)} things`}` : "No action needed";
+  $("next-strip").dataset.attention = count ? "true" : "false";
+  const needs = $("needs-you");
+  needs.innerHTML = [...yours.map(item => {
+      const part = snapshot.components.find(component => component.id === item.component_id);
+      return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
+        <span>${html(item.next_step.text)}</span></li>`;
+    }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
+      <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
+    ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
+      <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
+  needs.hidden = !count && !scheduled.length;
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
     const part = snapshot.components.find(component => component.id === item.component_id);
     return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}" aria-controls="inspector">${html(nameOf(part))}</button>
       <p class="next-step-line">${nextStepLine(item.next_step)}</p></li>`;
   }).join("");
+  $("handling-note").hidden = !upcoming.length;
   if (focusedPart) $("next-list").querySelector(`[data-next-part="${CSS.escape(focusedPart)}"]`)?.focus({preventScroll: true});
-  $("next-strip").hidden = !upcoming.length;
+  $("next-strip").hidden = false;
 }
 
 async function refreshBusy() {
@@ -89,6 +107,14 @@ function renderOperations(snapshot) {
 
 function initOperations(reload) {
   const decisionResult = $("operation-result");
+  $("needs-you").addEventListener("click", event => {
+    const link = event.target.closest("[data-jump]");
+    const card = link && $("decision-list").querySelector(`[data-action="${CSS.escape(link.dataset.jump)}"]`);
+    if (!card) return;
+    event.preventDefault();
+    card.scrollIntoView({block: "center"});
+    card.querySelector("button")?.focus({preventScroll: true});
+  });
   $("decision-list").addEventListener("click", async event => {
     const button = event.target.closest("[data-decision]");
     if (!button) return;

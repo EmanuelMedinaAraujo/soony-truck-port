@@ -53,16 +53,19 @@ class PartGraphTest(unittest.TestCase):
         nodes = {node["id"]: node for node in graph["nodes"]}
         edges = {(edge["source"], edge["target"], edge["label"]) for edge in graph["edges"]}
         self.assertEqual(nodes["CMP-MAG-005"]["kind"], "subpart")
-        self.assertEqual(nodes["CMP-GAM-007"]["status"], "at_risk")
-        self.assertEqual(nodes["SUP-0029"]["label"], "Guangzhou PackRight")
+        self.assertNotIn("FG-GH6-CE", nodes)  # finished product is not a node; the part says what it is for
+        self.assertEqual(nodes["CMP-GAM-007"]["meta"], "For Collector's Edition, 1 each")
+        self.assertTrue(graph["short"])  # nothing in stock, so supplier problems count
         self.assertEqual(nodes["SUP-0029"]["status"], "at_risk")
-        self.assertIn(("FG-GH6-CE", "CMP-GAM-007", "needs 1 each"), edges)
+        self.assertEqual(nodes["SUP-0029"]["meta"], "Flagged at risk")
+        self.assertEqual(nodes["SUP-0029"]["label"], "Guangzhou PackRight")
         self.assertIn(("CMP-MAG-005", "CMP-GAM-007", "fitted into"), edges)
         self.assertIn(("CMP-MAG-005", "SUP-0029", "made by"), edges)
         risk, = (node for node in nodes.values() if node["kind"] == "risk")
         self.assertEqual(risk["label"], "Jiangxi RareMag Materials")
         self.assertEqual(risk["subtitle"], "Export licence")
         self.assertEqual(risk["status"], "blocked")
+        self.assertEqual(risk["meta"], "Export licence")
         self.assertIn(("SUP-0029", risk["id"], "supply risk"), edges)
         self.assertIn(("SUP-0029", "later:SUP-0029", "after launch"), edges)  # after-launch deliveries collapse per supplier
         self.assertNotIn("ship-case", nodes)

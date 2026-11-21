@@ -9,6 +9,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
 
 from core.rules import approver_for, cfg, now
@@ -25,8 +26,27 @@ CREATE TABLE IF NOT EXISTS actions(
   payload TEXT, history TEXT);
 CREATE TABLE IF NOT EXISTS messages(
   id TEXT PRIMARY KEY, action_id TEXT, channel TEXT, to_name TEXT, to_address TEXT, language TEXT,
-  subject TEXT, body TEXT, body_en TEXT, status TEXT, created_at TEXT, sent_at TEXT, provider_id TEXT);
+  subject TEXT, body TEXT, body_en TEXT, status TEXT, created_at TEXT, sent_at TEXT, provider_id TEXT,
+  po_numbers TEXT);
 CREATE TABLE IF NOT EXISTS events(ts TEXT, kind TEXT, ref TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS chase_cases(
+  case_id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL, supplier_name TEXT NOT NULL,
+  po_number TEXT NOT NULL, po_line INTEGER NOT NULL, material TEXT NOT NULL, issue_kind TEXT NOT NULL,
+  status TEXT NOT NULL, question TEXT NOT NULL, needs_review INTEGER NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_reply_summary TEXT,
+  UNIQUE(supplier_id, po_number, po_line, material, issue_kind));
+CREATE TABLE IF NOT EXISTS chase_events(
+  id INTEGER PRIMARY KEY, case_id TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL,
+  detail TEXT NOT NULL, evidence TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS chase_case_events ON chase_events(case_id, id);
+CREATE TABLE IF NOT EXISTS chase_threads(
+  supplier_id TEXT NOT NULL, po_number TEXT NOT NULL, initial_action_id TEXT NOT NULL,
+  initial_message_id TEXT NOT NULL, attached INTEGER NOT NULL, reminder_action_id TEXT, reminder_message_id TEXT,
+  PRIMARY KEY(supplier_id, po_number));
+CREATE TABLE IF NOT EXISTS chase_case_messages(
+  case_id TEXT NOT NULL, message_id TEXT NOT NULL, direction TEXT NOT NULL, purpose TEXT NOT NULL,
+  PRIMARY KEY(case_id, message_id, direction));
+CREATE INDEX IF NOT EXISTS chase_message_cases ON chase_case_messages(message_id, direction);
 """
 
 
@@ -34,13 +54,18 @@ def con() -> sqlite3.Connection:
     DB.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
-    c.executescript(SCHEMA)
-    if "provider_id" not in {r[1] for r in c.execute("PRAGMA table_info(messages)")}:
-        c.execute("BEGIN IMMEDIATE")
-        if "provider_id" not in {r[1] for r in c.execute("PRAGMA table_info(messages)")}:
-            c.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")
-        c.commit()
+    init_schema(c)
     return c
+
+
+def init_schema(c: sqlite3.Connection) -> None:
+    c.executescript(SCHEMA)
+    fields = {"provider_id", "po_numbers"}
+    if fields - {r[1] for r in c.execute("PRAGMA table_info(messages)")}:
+        with c:
+            c.execute("BEGIN IMMEDIATE")
+            for field in sorted(fields - {r[1] for r in c.execute("PRAGMA table_info(messages)")}):
+                c.execute(f"ALTER TABLE messages ADD COLUMN {field} TEXT")
 
 
 def log_event(kind: str, ref: str | None, text: str) -> None:
@@ -67,7 +92,7 @@ def open_action_for(finding_id: str, kind: str | None = None) -> dict | None:
 
 def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: float, eur_protected: float, ce_copies: int,
             category: str | None, owner: str | None, due_in_minutes: int = 60, payload: dict | None = None,
-            messages: Sequence[dict] = ()) -> dict:
+            messages: Sequence[dict] = (), *, connection: sqlite3.Connection | None = None) -> dict:
     ap = approver_for(cost_eur, category)
     special = cfg("approval_by_kind").get(kind)
     if special:  # non-monetary sign-offs (quality concession, dock slot) follow their own rule, not the cost ladder
@@ -95,7 +120,7 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
         entry = f"Dockside executes at {check:%H:%M} unless {ap['name']} stops it"
     aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     stamp = t.isoformat(timespec="seconds")
-    with con() as c:
+    with (con() if connection is None else nullcontext(connection)) as c:
         c.execute("INSERT INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             aid, finding_id, title, rationale, kind, cost_eur, eur_protected, ce_copies, category, ap.get("role"), ap.get("name"), owner,
             status, stamp, stamp, due.isoformat(timespec="seconds"), check.isoformat(timespec="seconds"), 0,
@@ -103,27 +128,36 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
         for message in messages:
             add_message(c, aid, **message)
         c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, f"action_{status}", aid, title if status == "proposed" else entry))
+        if connection is not None:
+            return _get(c, aid)
     return get(aid)
 
 
 def add_message(c: sqlite3.Connection, action_id: str, channel: str, to_name: str, to_address: str | None,
-                language: str, subject: str, body: str, body_en: str | None = None) -> str:
+                language: str, subject: str, body: str, body_en: str | None = None,
+                po_numbers: Sequence[str] | None = None) -> str:
     mid = "MSG-" + uuid.uuid4().hex[:6].upper()
-    c.execute("""INSERT INTO messages (id,action_id,channel,to_name,to_address,language,subject,body,body_en,status,created_at)
-                 VALUES (?,?,?,?,?,?,?,?,?,'draft',?)""",
-              (mid, action_id, channel, to_name, to_address, language, subject, body, body_en, now().isoformat(timespec="seconds")))
+    c.execute("""INSERT INTO messages (id,action_id,channel,to_name,to_address,language,subject,body,body_en,
+                                       status,created_at,po_numbers)
+                 VALUES (?,?,?,?,?,?,?,?,?,'draft',?,?)""",
+              (mid, action_id, channel, to_name, to_address, language, subject, body, body_en,
+               now().isoformat(timespec="seconds"), json.dumps(po_numbers) if po_numbers is not None else None))
     return mid
 
 
 def get(aid: str) -> dict | None:
     with con() as c:
-        r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
-        if not r:
-            return None
-        d = dict(r)
-        d["payload"] = json.loads(d["payload"] or "{}")
-        d["history"] = json.loads(d["history"] or "[]")
-        d["messages"] = [dict(m) for m in c.execute("SELECT * FROM messages WHERE action_id=? ORDER BY created_at", (aid,))]
+        return _get(c, aid)
+
+
+def _get(c: sqlite3.Connection, aid: str) -> dict | None:
+    r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["payload"] = json.loads(d["payload"] or "{}")
+    d["history"] = json.loads(d["history"] or "[]")
+    d["messages"] = [dict(m) for m in c.execute("SELECT * FROM messages WHERE action_id=? ORDER BY created_at", (aid,))]
     return d
 
 
@@ -200,7 +234,8 @@ def due_followups() -> list[dict]:
 
 def pending_dispatch() -> list[str]:
     with con() as c:
-        return [r[0] for r in c.execute("""SELECT a.id FROM actions a WHERE a.status IN ('approved','auto','sent') AND (
+        return [r[0] for r in c.execute("""SELECT a.id FROM actions a WHERE a.status IN ('approved','auto','sent')
+            AND a.kind NOT IN ('chase_supplier','chase_escalation') AND (
             EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.status IN ('draft','outbox')) OR
             (a.status='approved' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id
                                                  AND m.status IN ('sending','delivery_unknown'))))""")]

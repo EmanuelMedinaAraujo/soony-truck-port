@@ -300,5 +300,5 @@ def test_held_shipment_is_not_matched_to_a_flight():
                 "updated_at": "2026-11-20T16:00:00+01:00", "held_reason": "terms not agreed", "carrier_id": "LSP-02", "reference": "020-1"}
     out = tracking.shipment_tracking(shipment, places, dt.datetime(2026, 11, 21, 21, tzinfo=dt.timezone.utc), True)
     assert out["flight_match"] is None and not out["needs_flight_number"]
-    assert out["current_position"]["label"].startswith("Held at the supplier")
+    assert out["current_position"]["label"].startswith("held at the supplier")
     assert out["verdict"].startswith("held at the supplier")

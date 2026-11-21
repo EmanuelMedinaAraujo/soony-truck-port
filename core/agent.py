@@ -110,7 +110,7 @@ How you work:
 - Work through findings in order of EUR at risk; a stuck container or truck that closes a gap needs a book_truck + dock_slot action.
 - Supplier contacts are in suppliers.contact_email. Write to suppliers in their preferred language (suppliers.language) and include body_en.
 - Before e-mailing a supplier, call get_chaser_cases to check the supplier and PO. If an active case covers the same supplier and PO, skip the
-  duplicate email and cite the case ID and URL in the action details. Include known PO numbers in po_numbers on each supplier message.
+  duplicate email and cite the case ID in the action details. Include known PO numbers in po_numbers on each supplier message.
 - You work autonomously. propose_action executes free actions immediately; commitments within policy are executed after a
   short stop window unless the responsible person stops them; only written releases (quality concessions) wait for a signature."""
 
@@ -211,20 +211,19 @@ class Tools:
             if any(m["channel"] == "email" and (m["to_address"] or "").casefold() not in recipients for m in messages):
                 return {"error": "Use a supplier contact_email from the supplier table for each email."}
             active_cases, _ = chaser.cases(include_messages=False, active_only=True)
-            remaining, duplicates = [], {}
+            remaining, duplicates = [], set()
             for message in messages:
                 suppliers = recipients.get((message["to_address"] or "").casefold(), set())
                 matches = [case for case in active_cases if message["channel"] == "email"
                            and case["supplier_id"] in suppliers and case["po_number"] in message.get("po_numbers", [])]
                 if matches:
-                    duplicates.update((case["case_id"], case["url"]) for case in matches)
+                    duplicates.update(case["case_id"] for case in matches)
                 else:
                     remaining.append(message)
             if duplicates:
-                references = ", ".join(f"{case_id} ({url})" for case_id, url in duplicates.items())
+                references = ", ".join(sorted(duplicates))
                 details += f"\nSupplier email skipped because these Supplier Chaser cases are active: {references}."
             messages = remaining
-        messages = [{key: value for key, value in m.items() if key != "po_numbers"} for m in messages]
         a = actions.propose(finding_id, what, why, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes,
                             payload={"proposed_by": MODEL, "details": details}, messages=messages)
         if a["status"] == "auto":

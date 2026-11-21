@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import soony_sync  # noqa: E402
-from core import actions, agent, dispatch, ingest, outbound, rules  # noqa: E402
+from core import actions, agent, chase, dispatch, ingest, outbound, rules  # noqa: E402
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
@@ -153,6 +153,16 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
             except Exception as e:
                 STATE["inbox_error"] = type(e).__name__
                 actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
+        STATE["busy"] = "chasing supplier confirmations"
+        try:
+            chase_result = chase.run()
+            for action_id in chase_result.pop("actions"):
+                notify_action({"done_automatically": action_id})
+            out["chase"] = chase_result
+            STATE["chase_error"] = None
+        except Exception as e:
+            STATE["chase_error"] = type(e).__name__
+            actions.log_event("chase_error", None, type(e).__name__)
         STATE["busy"] = "follow-ups"
         for a in actions.due_followups():
             if a["status"] in ("proposed", "escalated"):
@@ -363,3 +373,20 @@ def chaser_view(include_messages: bool = True):
 
     cases, status = chaser.cases(include_messages=include_messages)
     return {"cases": cases, "status": status}
+
+
+@app.get("/api/cases")
+def list_cases():
+    from core import chaser
+
+    return {"cases": chaser.list_native()}
+
+
+@app.get("/api/cases/{case_id}")
+def case_detail(case_id: str):
+    from core import chaser
+
+    case = chaser.detail(case_id)
+    if case is None:
+        raise HTTPException(404, "Case not found")
+    return case

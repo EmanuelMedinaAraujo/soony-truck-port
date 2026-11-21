@@ -14,8 +14,6 @@ Customer data is never committed (`data/` is ignored).
 
 ## Supplier Chaser
 
-Install Pixi, then run `scripts/update_chaser.sh` from the repo root. It follows the submodule’s `main` branch, prints the new commits, installs the locked environment, migrates its local PostgreSQL database, and restarts Chaser’s API and worker. Use `scripts/run_chaser.sh` to start Chaser again after a reboot. Logs are in `data/chaser/`.
+Dockside's background loop reads confirmation evidence and tracks supplier inquiries in its action log. Preview cases and mail with `.venv/bin/python -m core.chase --dry-run`. Live chasing is disabled by default. Enable it in `config/business.json` and configure `chase.value.internal_emails` using the names in `people` to route escalation emails.
 
-Open [Supplier Chaser](http://127.0.0.1:8000/) and sign in with the `ADMIN_TOKEN` from its private `integrations/supplier-chaser/.env`. Set `CHASER_URL=http://127.0.0.1:8000` and `CHASER_TOKEN` to that token in Dockside’s private `.env`. Dockside displays the open case count and matches cases to the selected part’s purchase orders. Sign in to Chaser before opening a case link.
-
-A fresh Chaser workspace uses its demo data. For the Soony feed, follow the submodule’s [portal setup](integrations/supplier-chaser/docs/integration-contracts.md#portal-setup) and review imported source mappings in Chaser. Use Dockside’s portal base URL and team token in Chaser’s private environment. The launcher uses Chaser’s fixture mailbox for local drafts and replies.
+The chase loop is ported from `integrations/supplier-chaser` (commit `cc0ecad761f5c02f40be0afa46360d270c57038b`). To pull teammate changes, update the submodule and port the diff.
