@@ -162,6 +162,26 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
             except Exception as e:
                 STATE["inbox_error"] = type(e).__name__
                 actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
+        if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
+            try:  # nothing waits silently: remind, book the unload slot or escalate when an item has gone quiet
+                from core import dispatch, followup
+                snap = dispatch.snapshot(STATE.get("last_sync"))
+                if followup.stalled(snap):
+                    STATE["busy"] = "following up on items with no progress"
+                    f = {"k": 0}
+
+                    def fprog(name, args, out):
+                        f["k"] += 1
+                        STATE["busy"] = f"following up: step {f['k']}"
+                        if name == "propose_action":
+                            notify_action(out)
+                    summary = followup.run(snap, fprog)
+                    if summary:
+                        actions.log_event("followup_done", None, summary[:300])
+            except llm_health.LLMUnavailable as e:
+                llm_paused(e)
+            except Exception as e:
+                actions.log_event("followup_error", None, f"{type(e).__name__}: {e}")
         STATE["busy"] = "chasing supplier confirmations"
         try:
             chase_result = chase.run()

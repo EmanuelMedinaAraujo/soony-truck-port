@@ -5,8 +5,8 @@ let busyRequestOpen = false;
 const pendingDecisions = new Set();
 
 const nextStepTones = {
-  "Needs you": "alert", "Stuck": "alert", "Waiting for reply": "waiting",
-  "Confirmed": "ready", "Booked": "ready", "Unloaded": "ready"
+  "Needs you": "alert", "Stuck": "alert", "Late": "alert", "Waiting for reply": "waiting",
+  "Confirmed": "ready", "Booked": "ready", "Unloaded": "ready", "After launch": "waiting"
 };
 
 function nextStepLine(next) {

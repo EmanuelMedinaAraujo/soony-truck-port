@@ -76,6 +76,8 @@ def internal_followup(action: dict, message: dict) -> dict:
     if message["channel"] == "phone_script":
         return next_step("Needs you", f"Call {who} to {INTERNAL_FOLLOWUP[action['kind']]}. The call script is ready.", message["sent_at"], action["id"])
     task = INTERNAL_FOLLOWUP[action["kind"]]
+    if action["kind"] == "dock_slot":
+        return next_step("Booked", f"Unload slot in Hamburg is booked; {who} can move it if needed.", message["sent_at"], action["id"])
     if action["kind"] == "escalate":
         title = (action["title"] or "").strip().rstrip(".")
         task = f"answer: {title[:1].lower() + title[1:]}" if title else "answer"
@@ -192,7 +194,7 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
         for reply in action["replies"]:
             if not reply["handled"]:
                 who = supplier or "the supplier"
-                candidates.append((2, next_step("Asking", f"Review the reply from {who}.", reply["received_at"], aid)))
+                candidates.append((2, next_step("Asking", f"Dockside is reading the reply from {who}.", reply["received_at"], aid)))
 
     if not candidates:
         return None
@@ -219,15 +221,23 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
         if logged:
             return "ship", logged
         reply = max((row for action in related for row in action["replies"]), key=lambda row: row["received_at"] or "", default=None)
+        heard, tracked = (rules.ts(reply["received_at"]) if reply else None), rules.ts(updated)
+        if reply and reply.get("summary_en") and heard and (not tracked or heard > tracked):
+            # The supplier told us more than the tracker knows: show what they said.
+            return "ship", next_step("On the way", f"{supplier} reported at {heard.astimezone(rules.TZ):%a %H:%M}: "
+                                     f"{_first_sentence(reply['summary_en'])} The tracker is not updated yet.", reply["received_at"], reply["action_id"]) | {"unverified": True}
         etd = rules.ts(shipment.get("etd"))
-        late = bool(etd and etd.date() < now.date())
-        text = ("Pickup is overdue and not confirmed. Next: get the pickup time from the carrier." if late else
-                "Booked, not picked up yet. Next: confirm the pickup time with the carrier.")
+        late = bool(etd and etd.astimezone(rules.TZ).date() < now.astimezone(rules.TZ).date())
+        text = (f"Pickup was due {etd:%a} and {supplier} has not confirmed it happened." if late else
+                f"Booked with {supplier}; pickup not confirmed yet.")
+        state = "Late" if late else "Booked"
         if reply:
-            return "ship", next_step("Booked", text, reply["received_at"], reply["action_id"])
-        return "ship", next_step("Booked", text, updated)
+            return "ship", next_step(state, text, reply["received_at"], reply["action_id"])
+        return "ship", next_step(state, text, updated)
 
     if status in ("in_transit", "in_delivery", "delayed"):
+        if shipment["makes_cutoff"] is False and not logged:
+            return "track", next_step("After launch", "Arrives after Sunday's receiving cutoff, so it does not count for the launch.", updated)
         if logged:
             return "track", logged
         if arrival and arrival < now:
@@ -235,7 +245,7 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
         if status == "delayed" or any("no carrier update" in flag for flag in shipment["flags"]):
             return "track", next_step("Stuck", "Get a fresh arrival estimate from the carrier.", updated)
         if shipment["makes_cutoff"] is False:
-            return "track", next_step("On the way", "The shipment is due after the receiving cutoff.", updated)
+            return "track", next_step("After launch", "Arrives after Sunday's receiving cutoff, so it does not count for the launch.", updated)
         return "track", next_step("On the way", "Track the shipment to Hamburg.", updated)
     return "confirm", logged or next_step("Stuck", "Check shipment status with the supplier.", updated)
 
@@ -284,9 +294,9 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     if received:
         receiving_note = "The shipment record shows this load arrived. Usable stock is counted from inventory records."
     elif arrival and shipment["makes_cutoff"] is False:
-        receiving_note = f"Tracker estimate {arrival[5:16].replace('T', ' ')} is after the receiving cutoff."
+        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.TZ):%a %d %b %H:%M}, after the receiving cutoff."
     elif arrival:
-        receiving_note = f"Tracker estimate {arrival[5:16].replace('T', ' ')}. Receiving is still open."
+        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.TZ):%a %d %b %H:%M}. Receiving is still open."
     else:
         receiving_note = "Arrival and a receiving slot still need confirmation."
     source = suppliers.get(shipment["supplier_id"], "Supplier shipment")
@@ -295,7 +305,7 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     steps = [step("Supplier release", "blocked" if hold else "confirmed" if moving else "pending",
                   hold or ("Dispatch appears in the shipment record." if moving else "The tracker shows a booking. Dispatch has yet to be confirmed."))]
     if at_port:
-        steps.extend([step("Port arrival", "confirmed", f"The terminal shows {ref} available for pickup."),
+        steps.extend([step("Port arrival", "confirmed", "The container is at the terminal, ready for pickup."),
                       step("Truck pickup", "pending", "A carrier pickup still needs confirmation.")])
     else:
         steps.append(step("Transport", transport, hold or uncertain or "The shipment tracker records this leg."))
@@ -339,6 +349,8 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
     for action in action_rows.values():
         finding = action["finding_id"] or ""
         visited = set()
+        if finding.startswith("followup-"):  # followup-<root finding>-<stamp>
+            finding = finding.removeprefix("followup-").rsplit("-", 1)[0]
         while finding.startswith("reply-") and finding not in visited:
             visited.add(finding)
             parent = parent_actions.get(finding.removeprefix("reply-"))
@@ -400,9 +412,9 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     if active:
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units."),
-             step("Transport", "pending", (offer.get("transport") or "Carrier and travel time still need confirmation.")
-                  + " Verify vehicle capacity and a legal route."),
-             step("Dock slot", "pending", "Agree a receiving slot with the site lead."),
+             step("Transport", "pending", (offer.get("transport") or "Carrier and travel time still need confirmation.").rstrip(". ")
+                  + ". Vehicle size and a legal Sunday route still need confirming."),
+             step("Dock slot", "pending", "Dockside books the unload slot with Hamburg; the site lead can move or stop it."),
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
              step("Hamburg receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
     constraints = alt[target]["constraintIds"]
@@ -415,8 +427,8 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     else:
         # The supplier has answered but transport and the unload slot are still open: say who we wait for.
         heard = rules.ts(active["received_at"]) if active else None
-        last = f" Last reply {heard.astimezone(rules.TZ):%a %H:%M}." if heard else ""
-        next_action = next_step("Waiting for reply", f"Waiting for {supplier} to confirm vans.{last} Hamburg still has to agree the unload time.",
+        last = f" (last answer {heard.astimezone(rules.TZ):%H:%M})" if heard else ""
+        next_action = next_step("Waiting for reply", f"{supplier} has {quantity:,} ready but no truck to bring them yet{last}.",
                                 active["received_at"] if active else None, active["action_id"] if active else None)
     stage = "confirm" if any(action["kind"] == "order" and action["status"] == "done" for action in related) else "order"
     return ({"id": f"offer-{offer['supplier_id']}-{component}", "name": f"Rush supply from {supplier}", "quantity": quantity,
@@ -534,6 +546,18 @@ def snapshot(checked_at: str | None) -> dict:
                                "current_stage": primary_route["current_stage"],
                                "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" else primary_route["next_step"]})
 
+    from core import followup
+    reviews = followup.last_reviews()
+    for part in components:  # say what Dockside does next and when (only when follow-ups are switched on)
+        deadline = followup.deadline_for(part, cutoff)
+        default = next((route for route in part["routes"] if route["id"] == part["default_route_id"]), None)
+        for item in filter(None, [part, default]):
+            current = item["next_step"]
+            extra = followup.promise(part["id"], current, reviews, now, deadline) if current and "base_text" not in current else ""
+            if extra:
+                item["next_step"] = dict(current, text=f"{current['text']} {extra}", base_text=current["text"])
+        if default and part["next_step"] is not default["next_step"] and part["next_step"].get("base_text") == default["next_step"].get("base_text"):
+            default["next_step"] = part["next_step"]
     ordered = sorted(editions, key=lambda edition: edition != priority)
     priority_constraints = editions.get(priority, {}).get("constraintIds", [])
     focus = next(iter(priority_constraints), next((item["id"] for item in components if item["status"] == "short"), None))

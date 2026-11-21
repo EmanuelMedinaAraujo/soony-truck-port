@@ -99,7 +99,7 @@ class NextStepTest(unittest.TestCase):
         })
         self.log.execute("""INSERT INTO replies (id, msg_id, action_id, received_at, handled)
                           VALUES ('answer', 'vans', 'followup', '2026-11-21T17:22:00+00:00', 0)""")
-        self.assertEqual(self.current()["text"], "Review the reply from Supplier.")
+        self.assertEqual(self.current()["text"], "Dockside is reading the reply from Supplier.")
         self.log.execute("UPDATE replies SET handled=1 WHERE id='answer'")
         self.assertIsNone(self.current())
 

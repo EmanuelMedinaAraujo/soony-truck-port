@@ -145,6 +145,14 @@
     },
     "source": "Team decision 2026-11-21: Dockside works autonomously. Free actions go out immediately. Commitments within the Buyer limit (PP-07, < EUR 50k) that protect at least 10x their cost, and dock slots, are executed after a 15-minute stop window in which the responsible person can stop them. Quality concessions need a written release (PP-07, inspection report) and always wait for a signature."
   },
+  "followup": {
+    "value": {
+      "enabled": true,
+      "after_hours": 2,
+      "max_per_cycle": 3
+    },
+    "source": "User decision 2026-11-22: nothing waits silently. After 2 quiet hours (sooner before a deadline) Dockside reminds, books the unload slot (stoppable) or escalates."
+  },
   "chase": {
     "value": {
       "enabled": false,
