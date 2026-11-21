@@ -95,6 +95,8 @@ def catalog(rel: str) -> str:
 def content_for(path: Path, rel: str) -> list[dict]:
     head = {"type": "input_text", "text": f"File: {rel}\nSupplier folder: {supplier_of(rel) or 'Soony internal'}{catalog(rel)}"}
     b64 = base64.b64encode(path.read_bytes()).decode()
+    if path.suffix.lower() in (".json", ".md", ".txt", ".eml"):
+        return [head, {"type": "input_text", "text": f"<document>\n{path.read_text(errors='replace')[:60000]}\n</document>"}]
     if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
         media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return [head, {"type": "input_image", "image_url": f"data:{media};base64,{b64}", "detail": "high"}]
@@ -140,6 +142,9 @@ def documents() -> list[Path]:
     pats = ("*.pdf", "*.jpg", "*.jpeg", "*.png")
     files = [p for pat in pats for p in (CURRENT / "suppliers").rglob(pat)]
     files += [p for pat in pats for p in (CURRENT / "soony" / "receiving").rglob(pat)]
+    for folder in ("news", "inbox", "mail"):  # free-text sources the portal may add
+        files += [p for p in (CURRENT / "soony" / folder).rglob("*") if p.is_file() and p.suffix.lower() in (".json", ".md", ".txt", ".eml", ".pdf")]
+    files += [p for p in (CURRENT / "suppliers").rglob("*") if p.is_file() and p.suffix.lower() in (".md", ".txt", ".eml")]
     return sorted(files)
 
 

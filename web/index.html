@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dockside</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8; --line:#e2e8f0;
+  --accent:#2563eb; --accent-soft:#dbeafe; --bad:#dc2626; --bad-soft:#fee2e2; --warn:#d97706; --warn-soft:#fef3c7;
+  --ok:#059669; --ok-soft:#d1fae5; --ban:rgba(220,38,38,.07); --shadow:0 1px 2px rgba(15,23,42,.06),0 4px 16px rgba(15,23,42,.04);
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0b1120; --panel:#111827; --ink:#e5e7eb; --ink2:#9ca3af; --ink3:#6b7280; --line:#1f2937;
+  --accent:#60a5fa; --accent-soft:#1e3a5f; --bad:#f87171; --bad-soft:#3b1d1d; --warn:#fbbf24; --warn-soft:#3a2e12;
+  --ok:#34d399; --ok-soft:#123528; --ban:rgba(248,113,113,.08); --shadow:none;}}
+:root[data-theme="dark"]{
+  --bg:#0b1120; --panel:#111827; --ink:#e5e7eb; --ink2:#9ca3af; --ink3:#6b7280; --line:#1f2937;
+  --accent:#60a5fa; --accent-soft:#1e3a5f; --bad:#f87171; --bad-soft:#3b1d1d; --warn:#fbbf24; --warn-soft:#3a2e12;
+  --ok:#34d399; --ok-soft:#123528; --ban:rgba(248,113,113,.08); --shadow:none;}
+*{box-sizing:border-box} html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+.logo{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.logo i{width:10px;height:10px;border-radius:2px;background:var(--accent);display:inline-block;transform:rotate(45deg)}
+.sub{color:var(--ink2);font-size:13px}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--bg);border:1px solid var(--line);font-size:12px;color:var(--ink2);white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok)} .dot.busy{background:var(--warn);animation:p 1s infinite} @keyframes p{50%{opacity:.3}}
+main{max-width:1380px;margin:0 auto;padding:20px 24px 60px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:20px}
+@media (max-width:1000px){main{grid-template-columns:1fr;padding:16px}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.hero{grid-column:1/-1;display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:0;overflow:hidden}
+@media (max-width:1000px){.hero{grid-template-columns:1fr 1fr}}
+.kpi{padding:18px 20px;border-right:1px solid var(--line)} .kpi:last-child{border-right:0}
+.kpi .l{font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.kpi .v{font-size:30px;font-weight:700;letter-spacing:-.02em;margin-top:4px}
+.kpi .s{color:var(--ink2);font-size:13px;margin-top:2px}
+.kpi.risk .v{color:var(--bad)} .kpi.risk.zero .v{color:var(--ok)}
+.bar{height:6px;border-radius:3px;background:var(--line);margin-top:10px;overflow:hidden}.bar b{display:block;height:100%;background:var(--accent)}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);margin:0 0 10px;font-weight:600;display:flex;align-items:center;gap:8px}
+h2 .count{background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:0 8px;font-size:12px}
+section{min-width:0}
+.action{padding:16px 18px;margin-bottom:12px}
+.action .top{display:flex;gap:12px;align-items:flex-start}
+.action .t{font-weight:600;font-size:15px;flex:1}
+.action .money{text-align:right;white-space:nowrap}
+.action .money .p{color:var(--ok);font-weight:700}
+.action .money .c{color:var(--ink2);font-size:12px}
+.action .why{color:var(--ink2);margin:8px 0 10px}
+.meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tag{font-size:12px;padding:2px 8px;border-radius:6px;background:var(--bg);border:1px solid var(--line);color:var(--ink2)}
+.tag.who{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:500}
+.tag.st-proposed{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.tag.st-escalated{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.tag.st-approved,.tag.st-sent,.tag.st-done{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.tag.st-rejected{text-decoration:line-through}
+.msgs{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;display:none}
+.action.open .msgs{display:block}
+.msg{background:var(--bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px}
+.msg .h{display:flex;gap:8px;color:var(--ink2);font-size:12px;margin-bottom:4px}
+.msg pre{white-space:pre-wrap;font:inherit;margin:0}
+.btns{display:flex;gap:8px;margin-top:12px}
+button{font:inherit;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:7px 14px;cursor:pointer;font-weight:500}
+button:hover{border-color:var(--ink3)} button.primary{background:var(--accent);border-color:var(--accent);color:#fff} button.ghost{border-color:transparent;color:var(--ink2)}
+button:disabled{opacity:.5;cursor:default}
+.tl{padding:16px 18px}
+.tl svg{width:100%;height:auto;display:block}
+.tl text{fill:var(--ink2);font:11px Inter,sans-serif}
+.tl .lab{fill:var(--ink);font-weight:500;font-size:12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--ink2);font-size:12px;margin-top:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.list .row{display:flex;gap:10px;padding:10px 14px;border-top:1px solid var(--line);align-items:flex-start}
+.list .row:first-child{border-top:0}
+.sev{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
+.sev.critical{background:var(--bad)} .sev.high{background:var(--warn)} .sev.medium{background:var(--ink3)} .sev.info{background:var(--ok)}
+.row .d{color:var(--ink2);font-size:13px}
+.row .ev{color:var(--ink3);font-size:12px;margin-top:2px;word-break:break-all}
+.feed .row{font-size:13px}
+.feed .ts{color:var(--ink3);width:44px;flex:none}
+.chat{padding:14px}
+.chat form{display:flex;gap:8px}
+.chat input{flex:1;font:inherit;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.answer{white-space:pre-wrap;margin-top:12px;font-size:13.5px}
+.steps{color:var(--ink3);font-size:12px;margin-top:6px}
+.suggest{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.suggest button{font-size:12px;padding:4px 10px;border-radius:999px}
+.cov{width:100%;border-collapse:collapse;font-size:13px}
+.cov td,.cov th{padding:7px 10px;border-top:1px solid var(--line);text-align:right}
+.cov th{color:var(--ink2);font-weight:500;font-size:12px;border-top:0}
+.cov td:first-child,.cov th:first-child{text-align:left}
+.neg{color:var(--bad);font-weight:600} .pos{color:var(--ok)}
+details summary{cursor:pointer;list-style:none} details summary::-webkit-details-marker{display:none}
+.empty{color:var(--ink2);padding:18px;text-align:center}
+.mt{margin-top:20px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i></i>Dockside</div>
+  <div class="sub">Inbound control · Grand Heist 6 · DC Hamburg</div>
+  <div class="spacer"></div>
+  <span class="pill mono" id="countdown">–</span>
+  <span class="pill" id="sys"><span class="dot"></span><span>live</span></span>
+</header>
+<main>
+  <div class="card hero" id="hero"></div>
+
+  <section>
+    <h2>Decisions <span class="count" id="ndec">0</span></h2>
+    <div id="actions"></div>
+
+    <h2 class="mt">Arrivals vs. Sunday cut-off</h2>
+    <div class="card tl"><div id="timeline"></div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>makes cut-off</span><span><i style="background:var(--bad)"></i>misses</span><span><i style="background:var(--warn)"></i>stuck / on hold</span><span><i style="background:var(--ban);border:1px solid var(--bad)"></i>Sunday truck ban (DE, &gt;7.5 t)</span></div>
+    </div>
+
+    <h2 class="mt">Parts for the remaining pack-out <span class="sub" style="text-transform:none;letter-spacing:0">CE first</span></h2>
+    <div class="card"><table class="cov" id="coverage"></table></div>
+  </section>
+
+  <aside>
+    <h2>Ask Dockside</h2>
+    <div class="card chat">
+      <form id="ask"><input id="q" placeholder="What if the Polish truck is 3 h late?" autocomplete="off"><button class="primary">Ask</button></form>
+      <div class="suggest">
+        <button data-q="What if the art-book van from Poznań is 6 hours late?">Art books 6 h late?</button>
+        <button data-q="Which shipments still need a truck or a dock slot today?">What needs a truck today?</button>
+        <button data-q="Where do the ERP, the tracker and the documents disagree, and which source do you trust?">Where does data disagree?</button>
+      </div>
+      <div id="answer"></div>
+    </div>
+
+    <h2 class="mt">What Dockside found <span class="count" id="nfind">0</span></h2>
+    <div class="card list" id="findings"></div>
+
+    <h2 class="mt">Activity</h2>
+    <div class="card list feed" id="feed"></div>
+  </aside>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const eur = v => "€" + Math.round(v).toLocaleString("en-US");
+const n = v => Math.round(v).toLocaleString("en-US");
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const hhmm = iso => new Date(iso).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Berlin"});
+let S = null, open = new Set(), me = (()=>{try{return localStorage.getItem("dockside.me")}catch(e){return null}})() || "web";
+
+async function load(){
+  try{ const r = await fetch("/api/state"); S = await r.json(); render(); }catch(e){ console.error(e) }
+}
+function render(){
+  const ce = S.picture[S.priority], st = S.picture["FG-GH6-STD"], h = S.headline;
+  $("#hero").innerHTML = `
+    <div class="kpi risk ${h.ce_copies? "": "zero"}"><div class="l">Collector's at risk</div>
+      <div class="v mono">${h.ce_copies? eur(h.eur): "€0"}</div>
+      <div class="s">${h.ce_copies? `${n(h.ce_copies)} copies × €${h.refund_per_copy} refund · ${esc(h.detail.split(".")[0])}`: "All CE copies covered"}</div></div>
+    <div class="kpi"><div class="l">Collector's packed</div><div class="v mono">${n(ce.packed_est_now)}</div>
+      <div class="s">of ${n(ce.demand)} · slack ${n(ce.slack_copies)} copies (${(ce.slack_copies/ce.rate).toFixed(1)} h)</div>
+      <div class="bar"><b style="width:${100*ce.packed_est_now/ce.demand}%"></b></div></div>
+    <div class="kpi"><div class="l">Standard packed</div><div class="v mono">${n(st.packed_est_now)}</div>
+      <div class="s">of ${n(st.demand)} · ${st.hours_left} pack hours left</div>
+      <div class="bar"><b style="width:${100*st.packed_est_now/st.demand}%"></b></div></div>
+    <div class="kpi"><div class="l">Agent watching</div><div class="v mono">${S.inbound.length + S.inbound_later}</div>
+      <div class="s">shipments · ${S.system.files} files · ${S.system.docs_read} docs read · ${S.system.conflicts} conflicts</div></div>`;
+  const acts = S.actions.filter(a => a.status !== "superseded");
+  const pending = acts.filter(a => ["proposed","escalated"].includes(a.status));
+  $("#ndec").textContent = pending.length;
+  $("#actions").innerHTML = acts.length ? acts.map(actionCard).join("") : `<div class="card empty">No decisions needed right now.</div>`;
+  $("#coverage").innerHTML = `<tr><th>Part</th><th>Need</th><th>Usable</th><th>Gap</th><th style="text-align:left">Why usable ≠ ERP</th></tr>` +
+    S.coverage.sort((a,b)=>a.gap-b.gap).map(c => `<tr><td><b>${esc(c.component)}</b> <span class="sub">${esc(c.description.replace(/ Grand Heist 6| – Grand Heist 6/,""))}</span></td>
+      <td class="mono">${n(c.need_total)}</td><td class="mono">${c.suspect_master_data? "–": n(c.usable_now)}</td>
+      <td class="mono ${c.suspect_master_data? "": c.gap<0? "neg":"pos"}">${c.suspect_master_data? "n/a": (c.gap>0?"+":"")+n(c.gap)}</td>
+      <td style="text-align:left" class="sub">${c.suspect_master_data? "BOM line: fitted by supplier into the CE box": c.adjustments.map(a=>`${a.kind.replace(/_/g," ")} −${n(a.cut)}`).join(", ")}</td></tr>`).join("");
+  const fs = S.findings.filter(f => f.id !== "ce-at-risk");
+  $("#nfind").textContent = fs.length;
+  $("#findings").innerHTML = fs.map(f => `<div class="row"><span class="sev ${f.severity}"></span><div><div>${esc(f.title)}</div>
+     <div class="d">${esc(f.detail)}</div>${f.evidence?.length? `<div class="ev">${f.evidence.map(e=>esc(e.split("/").pop())).join(" · ")}</div>`:""}</div></div>`).join("");
+  $("#feed").innerHTML = S.events.length ? S.events.slice(0,18).map(e => `<div class="row"><span class="ts mono">${hhmm(e.ts)}</span><div>${esc(e.text)}</div></div>`).join("") : `<div class="empty">Waiting for the first data drop.</div>`;
+  const sys = S.system;
+  $("#sys").innerHTML = `<span class="dot ${sys.busy? "busy":""}"></span><span>${sys.busy? esc(sys.busy)+"…" : sys.sync_error? "sync error" : sys.last_sync? "synced "+hhmm(sys.last_sync) : "live"}</span>`;
+  timeline();
+}
+function actionCard(a){
+  const pending = ["proposed","escalated"].includes(a.status);
+  const msgs = a.messages.map(m => `<div class="msg"><div class="h"><b>${esc(m.channel)}</b><span>→ ${esc(m.to_name)}${m.to_address? " &lt;"+esc(m.to_address)+"&gt;":""}</span><span>${esc(m.language)}</span><span class="spacer"></span><span>${esc(m.status)}</span></div>
+     <div><b>${esc(m.subject)}</b></div><pre>${esc(m.body)}</pre>${m.body_en? `<details><summary class="sub" style="margin-top:6px">English translation</summary><pre>${esc(m.body_en)}</pre></details>`:""}</div>`).join("");
+  return `<div class="card action ${open.has(a.id)?"open":""}" id="${a.id}">
+    <div class="top"><div class="t">${esc(a.title)}</div>
+      <div class="money">${a.eur_protected? `<div class="p mono">protects ${eur(a.eur_protected)}</div>`:""}<div class="c mono">cost ${a.cost_eur? eur(a.cost_eur): "€0"}</div></div></div>
+    <div class="why">${esc(a.rationale)}</div>
+    <div class="meta"><span class="tag st-${a.status}">${esc(a.status)}</span><span class="tag who">${a.status==="proposed"||a.status==="escalated"?"needs ":""}${esc(a.approver_name || a.approver_role)} · ${esc(a.approver_role)}</span>
+      ${a.ce_copies? `<span class="tag">${n(a.ce_copies)} CE copies</span>`:""}<span class="tag">${esc(a.kind.replace(/_/g," "))}</span>
+      ${a.messages.length? `<button class="ghost" onclick="toggle('${a.id}')">${a.messages.length} message${a.messages.length>1?"s":""} ${open.has(a.id)?"▴":"▾"}</button>`:""}</div>
+    <div class="msgs">${msgs}<div class="sub">${a.history.map(h=>`${hhmm(h.ts)} ${esc(h.entry)}`).join("<br>")}</div></div>
+    ${pending? `<div class="btns"><button class="primary" onclick="decide('${a.id}','approve')">Approve &amp; send</button><button onclick="decide('${a.id}','reject')">Reject</button></div>`:""}
+  </div>`;
+}
+function toggle(id){ open.has(id)? open.delete(id): open.add(id); render(); }
+async function decide(id, decision){
+  const r = await fetch(`/api/actions/${id}/decide`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision,by:me})});
+  if(!r.ok) alert((await r.json()).detail); load();
+}
+function timeline(){
+  const W=860, rowH=30, pad=150, t0=new Date(S.now); t0.setMinutes(0,0,0);
+  const dl=new Date(S.deadline), t1=new Date(dl.getTime()+16*3600e3), cut=new Date(dl.getTime()-S.cutoff_hours*3600e3);
+  const X=t=>pad+(W-pad-20)*Math.min(1,Math.max(0,(t-t0)/(t1-t0)));
+  const rows=[...S.inbound].sort((a,b)=>(a.arrival_at_dc||"9")>(b.arrival_at_dc||"9")?1:-1);
+  const H=40+rows.length*rowH;
+  const banS=new Date(dl); banS.setHours(0,0,0,0); const banE=new Date(banS.getTime()+22*3600e3);
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Arrival timeline">`;
+  s+=`<rect x="${X(banS)}" y="18" width="${X(banE)-X(banS)}" height="${H-18}" fill="var(--ban)"/>`;
+  for(let t=new Date(t0); t<=t1; t=new Date(t.getTime()+6*3600e3)){ s+=`<line x1="${X(t)}" x2="${X(t)}" y1="18" y2="${H}" stroke="var(--line)"/><text x="${X(t)}" y="12" text-anchor="middle">${t.toLocaleString("en-GB",{weekday:"short",hour:"2-digit",timeZone:"Europe/Berlin"})}</text>`; }
+  s+=`<line x1="${X(cut)}" x2="${X(cut)}" y1="18" y2="${H}" stroke="var(--warn)" stroke-dasharray="4 3"/><text x="${X(cut)-4}" y="${H-4}" text-anchor="end">receiving cut-off</text>`;
+  s+=`<line x1="${X(dl)}" x2="${X(dl)}" y1="18" y2="${H}" stroke="var(--bad)" stroke-width="2"/><text x="${X(dl)+4}" y="${H-4}">trucks leave 20:00</text>`;
+  rows.forEach((r,i)=>{
+    const y=34+i*rowH, a=r.arrival_at_dc? new Date(r.arrival_at_dc): null;
+    const col=!a? "var(--warn)": r.makes_cutoff? "var(--ok)":"var(--bad)";
+    const mats=r.materials.map(m=>m.replace("CMP-GAM-","")).join(",");
+    s+=`<text class="lab" x="0" y="${y+4}">${esc(r.reference)}</text><text x="${pad-8}" y="${y+4}" text-anchor="end">${esc(r.mode)} · ${mats}</text>`;
+    if(a){ const late=a>t1; s+=`<line x1="${pad}" x2="${X(a)}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="2"/><circle cx="${X(a)}" cy="${y}" r="6" fill="${col}"><title>${esc(r.shipment_id)}: ${esc(r.flags.join("; "))}</title></circle>${late?`<text x="${X(a)-10}" y="${y-8}" text-anchor="end">${new Date(r.arrival_at_dc).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} →</text>`:""}`; }
+    else s+=`<rect x="${pad}" y="${y-7}" width="${X(new Date(S.now))-pad+60}" height="14" rx="7" fill="var(--warn-soft)"/><text x="${pad+8}" y="${y+4}" style="fill:var(--warn);font-weight:600">${r.status==="arrived_port"?"at port — no truck booked":"on hold at supplier"}<title>${esc(r.flags.join("; "))}</title></text>`;
+  });
+  $("#timeline").innerHTML = s+"</svg>";
+}
+$("#ask").addEventListener("submit", async e => { e.preventDefault(); ask($("#q").value); });
+document.querySelectorAll(".suggest button").forEach(b => b.onclick = () => { $("#q").value=b.dataset.q; ask(b.dataset.q); });
+async function ask(q){
+  if(!q.trim()) return;
+  $("#answer").innerHTML = `<div class="answer sub">Dockside is checking the data…</div>`;
+  const r = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q})});
+  const d = await r.json();
+  $("#answer").innerHTML = `<div class="answer">${esc(d.answer)}</div><div class="steps">${d.steps.map(s=>esc(s.tool)).join(" → ")}</div>`;
+  load();
+}
+function tick(){ if(!S) return; const ms=new Date(S.deadline)-Date.now(); const h=Math.floor(ms/3600e3), m=Math.floor(ms%3600e3/60e3);
+  $("#countdown").textContent = ms>0? `${h}h ${String(m).padStart(2,"0")}m to trucks out` : "launched"; }
+load(); setInterval(load, 15000); setInterval(tick, 1000);
+</script>
+</body>
+</html>

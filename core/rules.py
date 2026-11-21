@@ -311,6 +311,27 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
                                     mat, min(closes, ce_short) * price, min(closes, ce_short), evidence=[o["_path"]],
                                     action=dict(type="order_and_truck", cost_eur=cost, approver=approver_for(cost, "Collector's Items"))))
 
+    # Supplier health: status changes and expired qualifications, weighted by the CE parts the supplier delivers.
+    t_now = now()
+    for sid, name, status, qual in con.execute("SELECT supplier_id, name, status, qualification_status FROM suppliers"):
+        obs = {f: (v, src) for f, v, src in con.execute("SELECT field, value, source FROM observations WHERE entity='supplier' AND entity_id=? ORDER BY as_of", (sid,))}
+        problems, ev = [], []
+        if status and status.lower() not in ("active",):
+            problems.append(f"status '{status}'")
+            ev.append(obs.get("status", (None, None))[1])
+        vu = obs.get("qualification.validUntil")
+        if vu and vu[0] and ts(vu[0]) and ts(vu[0]) < t_now and not (obs.get("qualification.extendedBy") or (None,))[0]:
+            problems.append(f"{qual or ''} qualification expired {vu[0]}, not extended")
+            ev.append(vu[1])
+        if not problems:
+            continue
+        parts = [c for (c,) in con.execute("SELECT component_id FROM supplier_components WHERE supplier_id=?", (sid,))]
+        ce_parts = [c for c in parts if c in cov and prio in cov[c]["need"]]
+        note = (obs.get("notes") or (None,))[0]
+        findings.append(Finding(f"supplier-{sid}", "supplier", "high" if ce_parts else "medium", f"{name} ({sid}): " + "; ".join(problems),
+                                (f"Vendor master note: {note} " if note else "") + (f"Delivers Collector's parts: {', '.join(ce_parts)}." if ce_parts else ""),
+                                sid, evidence=[e for e in ev if e]))
+
     order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
     findings.sort(key=lambda f: (order[f.severity], -f.eur_at_risk))
     con.close()

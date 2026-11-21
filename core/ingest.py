@@ -137,6 +137,27 @@ def header_rows(rows: list[tuple], must_contain: str) -> list[dict]:
     return []
 
 
+def flatten(d, prefix=""):
+    out = {}
+    for k, v in (d.items() if isinstance(d, dict) else []):
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(flatten(v, key + "."))
+        else:
+            out[key] = json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v
+    return out
+
+
+def json_rows(d) -> list[dict]:
+    """A JSON file as table rows: the first list of objects found becomes rows, otherwise one flattened row."""
+    if isinstance(d, list):
+        return [flatten(x) for x in d if isinstance(x, dict)]
+    for v in d.values():
+        if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            return [flatten(x) for x in v]
+    return [flatten(d)]
+
+
 def pdf_text(path: Path) -> str:
     import subprocess
     try:
@@ -169,6 +190,8 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
         try:
             if p.suffix.lower() == ".csv":
                 load_raw(con, table_name(rel), read_csv(p), rel)
+            elif p.suffix.lower() == ".json":
+                load_raw(con, table_name(rel), json_rows(json.loads(p.read_text())), rel)
             elif p.suffix.lower() == ".xlsx":
                 for sheet, rows in xlsx_sheets(p).items():
                     hdr_idx = next((i for i, r in enumerate(rows) if sum(c is not None for c in r) >= 3), 0)
@@ -241,6 +264,43 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                 con.execute("INSERT OR REPLACE INTO suppliers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (r["supplier_id"], r["name"], r["country"], r["city"],
                             r.get("incoterm"), r.get("status"), r.get("qualification_status"), r.get("contact_name"), r.get("contact_email"),
                             r.get("phone"), r.get("preferred_language"), folder.name))
+                for f in ("status", "qualification_status", "incoterm", "contact_email"):
+                    obs("supplier", r["supplier_id"], f, r.get(f), str(prof.relative_to(current)))
+            pj = folder / "profile.json"
+            if pj.exists():
+                d = json.loads(pj.read_text())
+                sp = d.get("supplier", d)
+                f = flatten(sp)
+                sid = f.get("supplierId") or sid
+                rel = str(pj.relative_to(current))
+                as_of = d.get("exportedAt")
+                mapping = {"status": f.get("status"), "qualification_status": f.get("qualification.status"), "incoterm": f.get("terms.incoterm"),
+                           "contact_email": f.get("contact.email"), "contact_name": f.get("contact.name"), "phone": f.get("contact.phone"),
+                           "language": f.get("contact.language")}
+                for k, v in mapping.items():
+                    if v is not None:
+                        con.execute(f"UPDATE suppliers SET {k}=? WHERE supplier_id=?", (v, sid))
+                        if k in ("status", "qualification_status", "incoterm", "contact_email"):
+                            obs("supplier", sid, k, v, rel, as_of)
+                for k in ("qualification.validUntil", "qualification.extendedBy", "notes"):
+                    if f.get(k) is not None:
+                        obs("supplier", sid, k, f.get(k), rel, as_of)
+            for dfile in sorted(folder.glob("components_delta*.csv")):
+                for r in read_csv(dfile):
+                    rel = str(dfile.relative_to(current))
+                    for fld in ("lead_time_days", "share", "primary"):
+                        new = r.get(f"{fld}_new") if f"{fld}_new" in r else r.get(fld)
+                        if new not in (None, ""):
+                            col = "is_primary" if fld == "primary" else fld
+                            old = con.execute(f"SELECT {col} FROM supplier_components WHERE supplier_id=? AND component_id=?", (sid, r["component_id"])).fetchone()
+                            if old is not None and str(old[0]) != str(num(new) if fld != "primary" else new):
+                                obs("supplier_component", f"{sid}/{r['component_id']}", fld, old[0], str(comps.relative_to(current)))
+                                obs("supplier_component", f"{sid}/{r['component_id']}", fld, new, rel)
+                            con.execute(f"UPDATE supplier_components SET {col}=? WHERE supplier_id=? AND component_id=?",
+                                        (num(new) if fld != "primary" else new, sid, r["component_id"]))
+                    if r.get("note"):
+                        con.execute("UPDATE supplier_components SET note=trim(coalesce(note,'') || ' | ' || ?) WHERE supplier_id=? AND component_id=?",
+                                    (f"{r.get('action', 'note')}: {r['note']}", sid, r["component_id"]))
 
     def pos():
         for f in sorted((S / "erp").glob("purchase_orders_*.csv")):
@@ -321,6 +381,9 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                     obs("launch", pid, "packed", num(r.get("Packed")), f"{rel}#{sheet}", as_of)
 
     def documents():
+        for p in sorted((S / "news").rglob("*")) if (S / "news").exists() else []:
+            if p.is_file():
+                con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (str(p.relative_to(current)), None, "news", None, p.read_text(errors="replace")))
         for p in sorted((current / "suppliers").rglob("*.pdf")) + sorted((S / "receiving").rglob("*.pdf")):
             rel = str(p.relative_to(current))
             parts = p.relative_to(current).parts
