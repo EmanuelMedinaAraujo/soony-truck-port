@@ -32,6 +32,8 @@ CREATE TABLE components(component_id TEXT PRIMARY KEY, description TEXT, categor
 CREATE TABLE bom(parent_id TEXT, child_id TEXT, qty_per REAL, rev TEXT, use_up_old_rev TEXT, rev_effective_from TEXT, change_id TEXT);
 CREATE TABLE suppliers(supplier_id TEXT PRIMARY KEY, name TEXT, country TEXT, city TEXT, incoterm TEXT, status TEXT,
   qualification_status TEXT, contact_name TEXT, contact_email TEXT, phone TEXT, language TEXT, folder TEXT);
+CREATE TABLE supplier_components(supplier_id TEXT, component_id TEXT, description TEXT, share REAL, unit_price REAL, currency TEXT,
+  lead_time_days REAL, moq REAL, is_primary TEXT, note TEXT);
 CREATE TABLE carriers(carrier_id TEXT PRIMARY KEY, name TEXT, city TEXT, country TEXT, modes TEXT);
 CREATE TABLE ports(locode TEXT PRIMARY KEY, name TEXT, country TEXT, lat REAL, lon REAL, mode TEXT);
 CREATE TABLE sites(site_id TEXT PRIMARY KEY, name TEXT, lat REAL, lon REAL);
@@ -229,6 +231,12 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
             if not prof.exists():
                 issue(str(folder), "no profile.csv")
                 continue
+            comps = folder / "components.csv"
+            sid = folder.name.split("_")[0]
+            for r in read_csv(comps) if comps.exists() else []:
+                con.execute("INSERT INTO supplier_components VALUES (?,?,?,?,?,?,?,?,?,?)", (sid, r["component_id"], r.get("description"),
+                            num(r.get("share"), False), num(r.get("unit_price"), False), r.get("currency"), num(r.get("lead_time_days")),
+                            num(r.get("moq")), r.get("primary"), r.get("note")))
             for r in read_csv(prof):
                 con.execute("INSERT OR REPLACE INTO suppliers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (r["supplier_id"], r["name"], r["country"], r["city"],
                             r.get("incoterm"), r.get("status"), r.get("qualification_status"), r.get("contact_name"), r.get("contact_email"),

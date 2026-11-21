@@ -209,7 +209,7 @@ def inbound(con, coverage: dict) -> list[dict]:
         if a:
             ev.append(a["_path"])
             if a.get("qty_shipped") is not None and qty and a["qty_shipped"] < qty:
-                flags.append(f"short shipment: {a['qty_shipped']:,} of {qty:,} shipped; balance {a.get('balance', qty - a['qty_shipped']):,} ETA {a.get('balance_eta', '?')}")
+                flags.append(f"short shipment: {int(a['qty_shipped']):,} of {int(qty):,} shipped; balance {a.get('balance', qty - a['qty_shipped']):,} ETA {a.get('balance_eta', '?')}")
                 qty = a["qty_shipped"]
         for h in holds:
             if h.get("po_number") and h["po_number"] in (s["po_numbers"] or ""):
@@ -268,16 +268,20 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
     for c in cov.values():
         ce_short = c["need"].get(prio, 0) - c["alloc"].get(prio, 0)
         if c["suspect_master_data"]:
-            findings.append(Finding(f"master-{c['component']}", "data", "high", f"{c['component']} has zero stock and was never ordered, yet {prio} is being packed",
-                                    "BOM line is probably wrong (e.g. part comes pre-assembled). Excluded from the risk maths until a human confirms.",
-                                    c["component"], evidence=["soony/master/bom.csv", "soony/erp/stock_snapshot.csv"],
+            notes = con.execute("SELECT s.folder, sc.note FROM supplier_components sc JOIN suppliers s USING(supplier_id) WHERE component_id=? AND note<>''",
+                                (c["component"],)).fetchall()
+            explain = " ".join(f"Supplier says: \"{n}\" ({f}/components.csv)." for f, n in notes)
+            findings.append(Finding(f"master-{c['component']}", "data", "medium" if notes else "high",
+                                    f"{c['component']} has zero stock and was never ordered, yet {prio} is being packed",
+                                    (explain + " " if explain else "") + "BOM line treats it as a separate part; excluded from the risk maths. Fix the BOM after launch.",
+                                    c["component"], evidence=["soony/master/bom.csv", "soony/erp/stock_snapshot.csv"] + [f"suppliers/{f}/components.csv" for f, _ in notes],
                                     action=dict(type="ask", to=cfg("people")["Head of Procurement"], question=f"Is {c['component']} ({c['description']}) really a separate part of {prio}?")))
             continue
         for adj in c["adjustments"]:
             if adj["kind"] == "revision_unverified":
                 continue
             findings.append(Finding(f"{adj['kind']}-{c['component']}-{len(findings)}", "stock", "high" if adj["cut"] else "medium",
-                                    f"{c['component']}: {adj['cut']:,} pcs not usable ({adj['kind'].replace('_', ' ')})", adj["detail"], c["component"],
+                                    f"{c['component']}: {int(adj['cut']):,} pcs not usable ({adj['kind'].replace('_', ' ')})", adj["detail"], c["component"],
                                     evidence=adj.get("evidence", [])))
         if c["gap"] < 0:
             findings.append(Finding(f"gap-{c['component']}", "gap", "critical" if ce_short > 0 else "high",

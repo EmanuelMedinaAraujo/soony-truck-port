@@ -69,7 +69,8 @@ Extract only facts of these types:
 {chr(10).join(f"- {k}: {v}" for k, v in FACT_TYPES.items())}
 
 Rules:
-- Use Soony part numbers (CMP-..., FG-...) when the document gives them or maps a supplier part number to them.
+- material_id must be a Soony part number (CMP-..., FG-...). If the document uses the supplier's own part number, map it via the
+  supplier catalog given with the file (match on description); keep the supplier number only if nothing matches.
 - PO numbers are 10 digits starting with 45. Dates ISO (YYYY-MM-DD, or YYYY-MM-DDTHH:MM).
 - Numbers as plain numbers (8000, not "8.000"). Use the corrected value in qty_corrected and the typed value in qty_typed.
 - quote: the shortest verbatim snippet that proves the fact (original language is fine).
@@ -82,8 +83,17 @@ def supplier_of(rel: str) -> str | None:
     return parts[1].split("_")[0] if parts[0] == "suppliers" else None
 
 
+def catalog(rel: str) -> str:
+    """The supplier's own components.csv, so supplier part numbers (e.g. PR-SL-0604) map to Soony CMP numbers."""
+    parts = rel.split("/")
+    if parts[0] != "suppliers":
+        return ""
+    f = CURRENT / parts[0] / parts[1] / "components.csv"
+    return f"\nSoony components this supplier delivers (map supplier part numbers to these by description):\n{f.read_text()}" if f.exists() else ""
+
+
 def content_for(path: Path, rel: str) -> list[dict]:
-    head = {"type": "input_text", "text": f"File: {rel}\nSupplier folder: {supplier_of(rel) or 'Soony internal'}"}
+    head = {"type": "input_text", "text": f"File: {rel}\nSupplier folder: {supplier_of(rel) or 'Soony internal'}{catalog(rel)}"}
     b64 = base64.b64encode(path.read_bytes()).decode()
     if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
         media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
@@ -133,6 +143,17 @@ def documents() -> list[Path]:
     return sorted(files)
 
 
+def invalidate_unmapped() -> int:
+    """Drop cached results whose facts carry a non-Soony material id, so they get re-extracted with the catalog."""
+    n = 0
+    for f in OUT.glob("*.json"):
+        d = json.loads(f.read_text())
+        if any((x.get("material_id") or "CMP").split("-")[0] not in ("CMP", "FG", "PRM") for x in d.get("facts", [])):
+            f.unlink()
+            n += 1
+    return n
+
+
 def run(limit: int | None = None, workers: int = 8) -> dict:
     client = OpenAI()
     docs = documents()[:limit] if limit else documents()
@@ -151,6 +172,9 @@ def run(limit: int | None = None, workers: int = 8) -> dict:
 
 
 if __name__ == "__main__":
+    if "--remap" in sys.argv:
+        print("invalidated", invalidate_unmapped())
+        sys.argv.remove("--remap")
     lim = int(sys.argv[1]) if len(sys.argv) > 1 else None
     s = run(lim)
     print({k: sum(1 for v in s.values() if v.startswith(k)) for k in ("cached", "error", "empty")}, len(s), "documents")
