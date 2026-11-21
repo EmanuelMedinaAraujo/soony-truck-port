@@ -99,6 +99,8 @@ def loop():
 
 @app.on_event("startup")
 def _start():
+    from server import discord_bot
+    STATE["discord"] = bool(discord_bot.start(listeners, decide_and_dispatch))
     if os.environ.get("NO_LOOP") != "1":
         threading.Thread(target=loop, daemon=True).start()
 
@@ -143,16 +145,24 @@ class Decision(BaseModel):
     note: str = ""
 
 
+def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "") -> dict:
+    """The one approval path for web and Discord: record the decision, release messages, tell everyone."""
+    a = actions.decide(aid, decision, by, note)
+    if a["status"] == "approved":
+        dispatch(a)
+    a = actions.get(aid)
+    notify("action_decided", {"action": a})
+    return a
+
+
 @app.post("/api/actions/{aid}/decide")
 def decide(aid: str, d: Decision):
     try:
-        a = actions.decide(aid, d.decision, d.by, d.note)
-    except (KeyError, ValueError) as e:
-        raise HTTPException(400, str(e))
-    if a["status"] == "approved":
-        dispatch(a)
-    notify("action_decided", {"action": actions.get(aid)})
-    return actions.get(aid)
+        return decide_and_dispatch(aid, d.decision, d.by, d.note)
+    except KeyError:
+        raise HTTPException(404, f"No decision {aid}. It may have been replaced; reload the page.")
+    except ValueError as e:
+        raise HTTPException(409, f"{e}. Someone already decided; reload to see who.")
 
 
 def dispatch(a: dict) -> None:

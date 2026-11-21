@@ -4,241 +4,676 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dockside</title>
+<meta name="color-scheme" content="light dark">
+<script>
+  try { const t = localStorage.getItem("dockside.theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&family=Big+Shoulders+Stencil+Display:wght@700;800&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#f5f6f8; --panel:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8; --line:#e2e8f0;
-  --accent:#2563eb; --accent-soft:#dbeafe; --bad:#dc2626; --bad-soft:#fee2e2; --warn:#d97706; --warn-soft:#fef3c7;
-  --ok:#059669; --ok-soft:#d1fae5; --ban:rgba(220,38,38,.07); --shadow:0 1px 2px rgba(15,23,42,.06),0 4px 16px rgba(15,23,42,.04);
+  --bg:#E6EBEC; --surface:#F7F9F9; --ink:#13222C; --steel:#5A6A72; --hair:rgba(90,106,114,.25);
+  --yellow:#F2B300; --red:#C8102E; --green:#1C7A68;
+  --wall:#13222C; --wall-ink:#F7F9F9;
+  --btn:#13222C; --btn-ink:#F7F9F9;
+  --hatch-dark:#13222C; --hatch-soft:rgba(242,179,0,.16);
+  --box-ok:#1C7A68; --box-late:#C8102E; --box-wait:#F2B300; --box-ink:#F7F9F9; --box-wait-ink:#13222C;
+  --yard-shadow:0 1px 0 rgba(19,34,44,.06), 0 12px 32px -12px rgba(19,34,44,.22);
+  --stencil:"Big Shoulders Stencil Display", "Barlow Semi Condensed", sans-serif;
+  --sans:Barlow, system-ui, sans-serif;
+  --cond:"Barlow Semi Condensed", Barlow, system-ui, sans-serif;
+  --r-chip:2px; --r-surface:6px;
+  --gutter:24px; --section:48px;
+  color-scheme:light;
 }
-@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
-  --bg:#0b1120; --panel:#111827; --ink:#e5e7eb; --ink2:#9ca3af; --ink3:#6b7280; --line:#1f2937;
-  --accent:#60a5fa; --accent-soft:#1e3a5f; --bad:#f87171; --bad-soft:#3b1d1d; --warn:#fbbf24; --warn-soft:#3a2e12;
-  --ok:#34d399; --ok-soft:#123528; --ban:rgba(248,113,113,.08); --shadow:none;}}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1C24; --surface:#16262F; --ink:#E3EAEC; --steel:#8FA1A9; --hair:rgba(143,161,169,.22);
+    --yellow:#FFC83D; --red:#FF6B78; --green:#4CC7A9;
+    --wall:#E3EAEC; --wall-ink:#0F1C24;
+    --btn:#E3EAEC; --btn-ink:#0F1C24;
+    --hatch-dark:#0F1C24; --hatch-soft:rgba(255,200,61,.07);
+    --box-ok:#1C7A68; --box-late:#C8102E; --box-wait:#F2B300;
+    --yard-shadow:0 1px 0 rgba(0,0,0,.3), 0 16px 40px -16px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
 :root[data-theme="dark"]{
-  --bg:#0b1120; --panel:#111827; --ink:#e5e7eb; --ink2:#9ca3af; --ink3:#6b7280; --line:#1f2937;
-  --accent:#60a5fa; --accent-soft:#1e3a5f; --bad:#f87171; --bad-soft:#3b1d1d; --warn:#fbbf24; --warn-soft:#3a2e12;
-  --ok:#34d399; --ok-soft:#123528; --ban:rgba(248,113,113,.08); --shadow:none;}
-*{box-sizing:border-box} html,body{margin:0}
-body{background:var(--bg);color:var(--ink);font:14px/1.45 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
-header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
-.logo{font-weight:700;font-size:17px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
-.logo i{width:10px;height:10px;border-radius:2px;background:var(--accent);display:inline-block;transform:rotate(45deg)}
-.sub{color:var(--ink2);font-size:13px}
-.spacer{flex:1}
-.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--bg);border:1px solid var(--line);font-size:12px;color:var(--ink2);white-space:nowrap}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ok)} .dot.busy{background:var(--warn);animation:p 1s infinite} @keyframes p{50%{opacity:.3}}
-main{max-width:1380px;margin:0 auto;padding:20px 24px 60px;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:20px}
-@media (max-width:1000px){main{grid-template-columns:1fr;padding:16px}}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
-.hero{grid-column:1/-1;display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:0;overflow:hidden}
-@media (max-width:1000px){.hero{grid-template-columns:1fr 1fr}}
-.kpi{padding:18px 20px;border-right:1px solid var(--line)} .kpi:last-child{border-right:0}
-.kpi .l{font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-.kpi .v{font-size:30px;font-weight:700;letter-spacing:-.02em;margin-top:4px}
-.kpi .s{color:var(--ink2);font-size:13px;margin-top:2px}
-.kpi.risk .v{color:var(--bad)} .kpi.risk.zero .v{color:var(--ok)}
-.bar{height:6px;border-radius:3px;background:var(--line);margin-top:10px;overflow:hidden}.bar b{display:block;height:100%;background:var(--accent)}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);margin:0 0 10px;font-weight:600;display:flex;align-items:center;gap:8px}
-h2 .count{background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:0 8px;font-size:12px}
-section{min-width:0}
-.action{padding:16px 18px;margin-bottom:12px}
-.action .top{display:flex;gap:12px;align-items:flex-start}
-.action .t{font-weight:600;font-size:15px;flex:1}
-.action .money{text-align:right;white-space:nowrap}
-.action .money .p{color:var(--ok);font-weight:700}
-.action .money .c{color:var(--ink2);font-size:12px}
-.action .why{color:var(--ink2);margin:8px 0 10px}
-.meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.tag{font-size:12px;padding:2px 8px;border-radius:6px;background:var(--bg);border:1px solid var(--line);color:var(--ink2)}
-.tag.who{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:500}
-.tag.st-proposed{background:var(--warn-soft);color:var(--warn);border-color:transparent}
-.tag.st-escalated{background:var(--bad-soft);color:var(--bad);border-color:transparent}
-.tag.st-approved,.tag.st-sent,.tag.st-done{background:var(--ok-soft);color:var(--ok);border-color:transparent}
-.tag.st-rejected{text-decoration:line-through}
-.msgs{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;display:none}
-.action.open .msgs{display:block}
-.msg{background:var(--bg);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px}
-.msg .h{display:flex;gap:8px;color:var(--ink2);font-size:12px;margin-bottom:4px}
-.msg pre{white-space:pre-wrap;font:inherit;margin:0}
-.btns{display:flex;gap:8px;margin-top:12px}
-button{font:inherit;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:7px 14px;cursor:pointer;font-weight:500}
-button:hover{border-color:var(--ink3)} button.primary{background:var(--accent);border-color:var(--accent);color:#fff} button.ghost{border-color:transparent;color:var(--ink2)}
-button:disabled{opacity:.5;cursor:default}
-.tl{padding:16px 18px}
-.tl svg{width:100%;height:auto;display:block}
-.tl text{fill:var(--ink2);font:11px Inter,sans-serif}
-.tl .lab{fill:var(--ink);font-weight:500;font-size:12px}
-.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--ink2);font-size:12px;margin-top:8px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.list .row{display:flex;gap:10px;padding:10px 14px;border-top:1px solid var(--line);align-items:flex-start}
-.list .row:first-child{border-top:0}
-.sev{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
-.sev.critical{background:var(--bad)} .sev.high{background:var(--warn)} .sev.medium{background:var(--ink3)} .sev.info{background:var(--ok)}
-.row .d{color:var(--ink2);font-size:13px}
-.row .ev{color:var(--ink3);font-size:12px;margin-top:2px;word-break:break-all}
-.feed .row{font-size:13px}
-.feed .ts{color:var(--ink3);width:44px;flex:none}
-.chat{padding:14px}
-.chat form{display:flex;gap:8px}
-.chat input{flex:1;font:inherit;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
-.answer{white-space:pre-wrap;margin-top:12px;font-size:13.5px}
-.steps{color:var(--ink3);font-size:12px;margin-top:6px}
-.suggest{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-.suggest button{font-size:12px;padding:4px 10px;border-radius:999px}
-.cov{width:100%;border-collapse:collapse;font-size:13px}
-.cov td,.cov th{padding:7px 10px;border-top:1px solid var(--line);text-align:right}
-.cov th{color:var(--ink2);font-weight:500;font-size:12px;border-top:0}
-.cov td:first-child,.cov th:first-child{text-align:left}
-.neg{color:var(--bad);font-weight:600} .pos{color:var(--ok)}
-details summary{cursor:pointer;list-style:none} details summary::-webkit-details-marker{display:none}
-.empty{color:var(--ink2);padding:18px;text-align:center}
-.mt{margin-top:20px}
+  --bg:#0F1C24; --surface:#16262F; --ink:#E3EAEC; --steel:#8FA1A9; --hair:rgba(143,161,169,.22);
+  --yellow:#FFC83D; --red:#FF6B78; --green:#4CC7A9;
+  --wall:#E3EAEC; --wall-ink:#0F1C24;
+  --btn:#E3EAEC; --btn-ink:#0F1C24;
+  --hatch-dark:#0F1C24; --hatch-soft:rgba(255,200,61,.07);
+  --box-ok:#1C7A68; --box-late:#C8102E; --box-wait:#F2B300;
+  --yard-shadow:0 1px 0 rgba(0,0,0,.3), 0 16px 40px -16px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+h1,h2,h3,p,ol,ul{margin:0;padding:0}
+ol,ul{list-style:none}
+button,input{font:inherit;color:inherit}
+.num{font-variant-numeric:tabular-nums}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+:focus-visible{outline:2px solid var(--ink);outline-offset:3px;border-radius:var(--r-chip)}
+a{color:inherit}
+
+/* ---------- top bar ---------- */
+.bar{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--hair)}
+.bar-in{max-width:1280px;margin:0 auto;padding:10px var(--gutter);display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap}
+.brand{font:600 20px/1 var(--sans);letter-spacing:-.005em}
+.context{color:var(--steel);font-size:16px}
+.bar-end{margin-left:auto;display:flex;align-items:center;gap:8px 20px;flex-wrap:wrap}
+.clock{font:600 20px/1.2 var(--sans);font-variant-numeric:tabular-nums}
+.sys{display:flex;align-items:center;gap:8px;color:var(--steel);font-size:13px}
+.sys::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}
+.sys[data-s="busy"]::before{background:var(--yellow)}
+.sys[data-s="error"]{color:var(--red)} .sys[data-s="error"]::before{background:var(--red)}
+.theme{display:grid;place-items:center;width:36px;height:36px;border:1px solid var(--hair);border-radius:var(--r-surface);background:transparent;cursor:pointer;color:var(--steel)}
+.theme:hover{color:var(--ink);border-color:var(--steel)}
+.theme svg{width:18px;height:18px}
+
+/* ---------- page frame ---------- */
+.wrap{max-width:1280px;margin:0 auto;padding:0 var(--gutter)}
+.lede{padding-top:40px;padding-bottom:28px}
+.lede > *{max-width:60ch}
+.lede h1{font:600 39px/1.12 var(--sans);letter-spacing:-.01em;max-width:26ch;text-wrap:balance}
+.lede p{margin-top:12px;font-size:20px;line-height:1.45;color:var(--ink)}
+.lede .packed{margin-top:8px;font-size:16px;color:var(--steel)}
+
+/* ---------- the yard ---------- */
+.yard-band{background:var(--surface);box-shadow:var(--yard-shadow);border-block:1px solid var(--hair)}
+.yard{--head:68px;--row:92px;--foot:36px;--wallw:84px;--beyondw:132px;--bw:176px;
+  max-width:1280px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) var(--wallw) var(--beyondw);padding-left:var(--gutter)}
+.track-scroll{overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:thin}
+.track{position:relative;min-width:760px;height:calc(var(--head) + var(--rows) * var(--row) + var(--foot))}
+.tick{position:absolute;top:0;bottom:var(--foot);border-left:1px solid var(--hair)}
+.tick span{position:absolute;top:8px;left:6px;font:500 13px/1 var(--cond);color:var(--steel);white-space:nowrap;font-variant-numeric:tabular-nums}
+.tick.now{border-left:2px solid var(--ink)}
+.tick.now span{color:var(--ink);font-weight:600}
+.ban{position:absolute;top:30px;bottom:var(--foot);right:0;background:repeating-linear-gradient(-45deg,var(--hatch-soft) 0 10px,transparent 10px 20px)}
+.ban-strip{position:absolute;top:0;left:0;right:0;height:22px;display:flex;align-items:center;
+  background:repeating-linear-gradient(-45deg,var(--box-wait) 0 10px,var(--hatch-dark) 10px 20px)}
+.ban-strip span{padding:0 10px;background:var(--hatch-dark);color:var(--box-wait);font:600 13px/22px var(--cond);white-space:nowrap}
+.cut{position:absolute;top:30px;bottom:0;border-left:2px dashed var(--ink);z-index:2}
+.cut span{position:absolute;bottom:9px;right:8px;font:600 13px/1 var(--cond);white-space:nowrap;color:var(--ink)}
+.rows{position:absolute;left:0;right:0;top:var(--head)}
+.row{position:relative;height:var(--row);z-index:3}
+.path{position:absolute;left:0;top:19px;height:2px;width:var(--x);background:var(--steel);transform-origin:left}
+.row.late .path{background:var(--red);width:100%}
+.box{position:absolute;top:2px;left:max(12px, calc(var(--x) - var(--bw)));width:var(--bw);height:36px;display:flex;align-items:center;justify-content:center;gap:6px;
+  font:700 22px/1 var(--stencil);letter-spacing:.02em;color:var(--box-ink);background-color:var(--box-ok);border-radius:var(--r-chip);white-space:nowrap;
+  background-image:repeating-linear-gradient(90deg,transparent 0 9px,rgba(0,0,0,.13) 9px 11px)}
+.row.late .box{left:calc(100% - var(--bw));background-color:var(--box-late)}
+.row.wait .box{background-color:var(--box-wait);color:var(--box-wait-ink)}
+.box.air{clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%);background-image:none}
+.box.road{background-image:linear-gradient(90deg,rgba(0,0,0,.16) 0 18px,transparent 18px)}
+.chk{display:inline-grid;place-items:center;min-width:20px;height:24px;border:2px solid currentColor;border-radius:1px;padding:0 2px}
+.cap{position:absolute;top:44px;left:max(12px, calc(var(--x) - var(--bw)));font:500 13px/1.35 var(--cond);white-space:nowrap;color:var(--steel)}
+.cap.end{left:auto;right:calc(100% - var(--x));text-align:right}
+.row.late .cap{left:auto;right:0;text-align:right}
+.cap b{display:block;font-weight:600;font-size:16px;line-height:1.3;color:var(--ink)}
+.row.late .cap b{color:var(--red)}
+.row.ok .cap b{color:var(--green)}
+.wall{position:relative;background:var(--wall);color:var(--wall-ink);display:flex;flex-direction:column;align-items:center;padding:10px 4px 14px;gap:14px;z-index:4}
+.wall-day{font:600 13px/1.1 var(--cond);text-align:center}
+.wall-time{font:800 31px/1 var(--stencil);letter-spacing:.02em}
+.wall-word{writing-mode:vertical-rl;transform:rotate(180deg);font:800 31px/1 var(--stencil);letter-spacing:.06em;margin-top:auto;white-space:nowrap}
+.beyond{position:relative;padding-top:var(--head)}
+.beyond-ban{position:absolute;top:0;left:0;width:calc(2 / 6 * 100%);height:22px;background:repeating-linear-gradient(-45deg,var(--box-wait) 0 10px,var(--hatch-dark) 10px 20px)}
+.b-row{height:var(--row);display:flex;flex-direction:column;justify-content:flex-start;padding:6px 0 0 0;color:var(--red);font:600 16px/1.25 var(--cond)}
+.b-row .stub{display:block;width:28px;height:2px;background:var(--red);margin:6px 0 8px;position:relative}
+.b-row .stub::after{content:"";position:absolute;right:-1px;top:-4px;border:5px solid transparent;border-left:7px solid var(--red);border-right:0}
+.b-row small{display:block;font:500 13px/1.3 var(--cond);color:var(--steel)}
+.swipe{display:none}
+
+/* the one orchestrated moment */
+@media (prefers-reduced-motion: no-preference){
+  .yard.enter .box{animation:roll 1.15s cubic-bezier(.16,.84,.28,1) both;animation-delay:calc(var(--i) * 90ms + 120ms)}
+  .yard.enter .path{animation:grow 1.15s cubic-bezier(.16,.84,.28,1) both;animation-delay:calc(var(--i) * 90ms + 120ms)}
+  .yard.enter .cap,.yard.enter .b-row{animation:fade .5s ease-out both;animation-delay:calc(var(--i) * 90ms + 900ms)}
+  @keyframes roll{from{transform:translateX(-110vw)}}
+  @keyframes grow{from{transform:scaleX(0)}}
+  @keyframes fade{from{opacity:0}}
+}
+
+/* ---------- two columns below ---------- */
+.cols{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:var(--section) 40px;padding-top:var(--section);padding-bottom:80px;align-items:start}
+.col{display:flex;flex-direction:column;gap:var(--section);min-width:0}
+h2{font:600 25px/1.2 var(--sans);letter-spacing:-.005em;margin-bottom:14px}
+.panel{background:var(--surface);border:1px solid var(--hair);border-radius:var(--r-surface)}
+.quiet{color:var(--steel)}
+
+/* decisions */
+.dec{border-left:4px solid var(--yellow);padding:20px 22px 20px 20px;border-top:1px solid var(--hair)}
+.dec:first-child{border-top:0;border-top-left-radius:var(--r-surface)}
+.dec:last-child{border-bottom-left-radius:var(--r-surface)}
+.dec[data-s="escalated"]{border-left-color:var(--red)}
+.dec[data-s="approved"],.dec[data-s="sent"],.dec[data-s="done"]{border-left-color:var(--green)}
+.dec[data-s="rejected"]{border-left-color:var(--hair)}
+.dec h3{font:600 20px/1.3 var(--sans);max-width:60ch}
+.dec[data-s="rejected"] h3{color:var(--steel)}
+.ratio{margin-top:2px;font:600 16px/1.4 var(--sans);font-variant-numeric:tabular-nums}
+.ratio.nil{font-weight:500;color:var(--steel)}
+.why{margin-top:10px;color:var(--steel);max-width:72ch;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.dec.open .why{display:block;-webkit-line-clamp:unset;overflow:visible}
+.who{margin-top:12px;font-weight:500}
+.who .late{color:var(--red)}
+.dec[data-s="sent"] .who,.dec[data-s="approved"] .who,.dec[data-s="done"] .who{color:var(--green)}
+.do{margin-top:16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px}
+.btn{min-height:44px;padding:0 18px;border-radius:var(--r-surface);border:1px solid var(--steel);background:transparent;font-weight:600;cursor:pointer}
+.btn:hover{border-color:var(--ink)}
+.btn.go{background:var(--btn);border-color:var(--btn);color:var(--btn-ink)}
+.btn.go:hover{opacity:.9}
+.btn:disabled{opacity:.55;cursor:progress}
+.link{background:none;border:0;padding:10px 2px;cursor:pointer;color:var(--ink);font-weight:500;text-decoration:underline;text-decoration-color:var(--hair);text-underline-offset:4px}
+.link:hover{text-decoration-color:currentColor}
+.do .link{margin-left:auto}
+.err{margin-top:12px;color:var(--red);font-weight:500;max-width:72ch}
+.more{margin-top:18px;padding-top:16px;border-top:1px solid var(--hair);display:flex;flex-direction:column;gap:14px}
+.msg{padding:14px 16px;background:var(--bg);border-radius:var(--r-surface)}
+.msg-to{font-weight:600}
+.msg-to span{font-weight:400;color:var(--steel);overflow-wrap:anywhere}
+.msg-meta{font-size:13px;color:var(--steel)}
+.msg-subj{margin-top:10px;font-weight:600;max-width:72ch}
+.msg-body{margin-top:4px;white-space:pre-wrap;max-width:72ch;overflow-wrap:anywhere}
+.msg .link{padding:8px 0 0;font-size:13px}
+.hist{font-size:13px;color:var(--steel)}
+.hist li{display:flex;gap:10px}
+.hist time{flex:none;font-variant-numeric:tabular-nums;color:var(--ink)}
+.empty{padding:22px;color:var(--steel);max-width:60ch}
+
+/* parts */
+.parts{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.parts th{text-align:right;font:500 13px/1.3 var(--sans);color:var(--steel);padding:12px 14px 8px;border-bottom:1px solid var(--hair);vertical-align:bottom}
+.parts td{text-align:right;padding:12px 14px;border-top:1px solid var(--hair);vertical-align:top}
+.parts tbody tr:first-child td{border-top:0}
+.parts th:first-child,.parts td:first-child,.parts th:last-child,.parts td:last-child{text-align:left}
+.parts td:last-child{color:var(--steel);font-size:13px;max-width:34ch}
+.parts .pname{font-weight:600}
+.parts .pid{display:block;font-size:13px;color:var(--steel)}
+.short{color:var(--red);font-weight:600}
+.spare{color:var(--steel)}
+
+/* ask */
+.ask{padding:18px}
+.ask form{display:flex;gap:8px}
+.ask input{flex:1;min-width:0;min-height:44px;padding:0 12px;border:1px solid var(--steel);border-radius:var(--r-surface);background:var(--bg)}
+.ask input::placeholder{color:var(--steel)}
+.sugg{margin-top:10px;display:flex;flex-direction:column;align-items:flex-start}
+.sugg .link{text-align:left;padding:7px 0;color:var(--steel);font-weight:500}
+.sugg .link:hover{color:var(--ink)}
+.answer{margin-top:16px;padding-top:14px;border-top:1px solid var(--hair)}
+.answer .q{font-size:13px;color:var(--steel)}
+.answer .a{margin-top:6px;white-space:pre-wrap;max-width:72ch;overflow-wrap:anywhere}
+.answer .how{margin-top:8px;font-size:13px;color:var(--steel)}
+
+/* noticed + activity */
+.notes li{display:flex;gap:12px;padding:14px 18px;border-top:1px solid var(--hair)}
+.notes li:first-child{border-top:0}
+.sev{flex:none;width:10px;height:10px;margin-top:7px;border-radius:var(--r-chip);background:var(--hair)}
+.sev.critical{background:var(--red)} .sev.high{background:var(--steel)}
+.notes .t{font-weight:500}
+.notes .d{color:var(--steel);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+.notes-more{padding:4px 18px 12px}
+.feed li{display:flex;gap:12px;padding:7px 0;border-top:1px solid var(--hair);font-size:13px}
+.feed li:first-child{border-top:0}
+.feed time{flex:none;width:40px;font-variant-numeric:tabular-nums;color:var(--steel)}
+.feed span{overflow-wrap:anywhere}
+
+/* ---------- smaller screens ---------- */
+@media (max-width:1000px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .col{display:contents}
+  .s-dec{order:1} .s-ask{order:2} .s-parts{order:3} .s-notes{order:4} .s-feed{order:5}
+}
+@media (max-width:720px){
+  :root{--gutter:16px;--section:40px}
+  .bar-in{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:2px 12px;padding-block:8px}
+  .bar-end{display:contents}
+  .context{display:none}
+  .brand{grid-area:1/1}
+  .sys{grid-area:1/2;justify-self:end}
+  .theme{grid-area:1/3}
+  .clock{grid-area:2/1/3/4;font-size:20px}
+  .swipe{display:block;padding:10px var(--gutter) 12px;font-size:13px;color:var(--steel);border-top:1px solid var(--hair)}
+  .lede{padding-top:28px;padding-bottom:22px}
+  .lede h1{font-size:31px}
+  .lede p{font-size:16px}
+  .yard{--wallw:52px;--beyondw:88px;--bw:150px;--row:96px}
+  .box{font-size:19px}
+  .wall-time{font-size:20px}
+  .wall-word{font-size:25px}
+  .b-row{font-size:13px}
+  .dec{padding:18px 16px 18px 14px}
+  .do .link{margin-left:0}
+  .parts thead{display:none}
+  .parts,.parts tbody,.parts tr,.parts td{display:block;width:100%}
+  .parts tr{padding:12px 14px;border-top:1px solid var(--hair)}
+  .parts tbody tr:first-child{border-top:0}
+  .parts td{border:0;padding:0;text-align:left}
+  .parts td.n{display:inline;font-size:13px}
+  .parts td.n::before{content:attr(data-l) " ";color:var(--steel)}
+  .parts td.n + td.n::before{content:", " attr(data-l) " "}
+  .parts td:first-child{margin-bottom:4px}
+  .parts td:last-child{margin-top:4px;max-width:none}
+  .ask form{flex-wrap:wrap}
+}
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"><i></i>Dockside</div>
-  <div class="sub">Inbound control · Grand Heist 6 · DC Hamburg</div>
-  <div class="spacer"></div>
-  <span class="pill mono" id="countdown">–</span>
-  <span class="pill" id="sys"><span class="dot"></span><span>live</span></span>
-</header>
-<main>
-  <div class="card hero" id="hero"></div>
-
-  <section>
-    <h2>Decisions <span class="count" id="ndec">0</span></h2>
-    <div id="actions"></div>
-
-    <h2 class="mt">Arrivals vs. Sunday cut-off</h2>
-    <div class="card tl"><div id="timeline"></div>
-      <div class="legend"><span><i style="background:var(--ok)"></i>makes cut-off</span><span><i style="background:var(--bad)"></i>misses</span><span><i style="background:var(--warn)"></i>stuck / on hold</span><span><i style="background:var(--ban);border:1px solid var(--bad)"></i>Sunday truck ban (DE, &gt;7.5 t)</span></div>
+<header class="bar">
+  <div class="bar-in">
+    <span class="brand">Dockside</span>
+    <span class="context">Soony, Grand Heist 6, DC Hamburg</span>
+    <div class="bar-end">
+      <span class="clock" id="clock" aria-live="off">&nbsp;</span>
+      <span class="sys" id="sys" role="status">Connecting</span>
+      <button class="theme" id="theme" type="button" data-act="theme"></button>
     </div>
+  </div>
+</header>
 
-    <h2 class="mt">Parts for the remaining pack-out <span class="sub" style="text-transform:none;letter-spacing:0">CE first</span></h2>
-    <div class="card"><table class="cov" id="coverage"></table></div>
+<main>
+  <div class="wrap lede" id="lede"><h1>Loading the yard.</h1></div>
+
+  <section class="yard-band" aria-label="Arrivals at DC Hamburg before the trucks leave">
+    <div class="yard" id="yard"></div>
+    <p class="swipe">Swipe the yard sideways to see Sunday up to the wall.</p>
   </section>
 
-  <aside>
-    <h2>Ask Dockside</h2>
-    <div class="card chat">
-      <form id="ask"><input id="q" placeholder="What if the Polish truck is 3 h late?" autocomplete="off"><button class="primary">Ask</button></form>
-      <div class="suggest">
-        <button data-q="What if the art-book van from Poznań is 6 hours late?">Art books 6 h late?</button>
-        <button data-q="Which shipments still need a truck or a dock slot today?">What needs a truck today?</button>
-        <button data-q="Where do the ERP, the tracker and the documents disagree, and which source do you trust?">Where does data disagree?</button>
-      </div>
-      <div id="answer"></div>
+  <div class="wrap cols">
+    <div class="col">
+      <section class="s-dec" aria-labelledby="dec-h">
+        <h2 id="dec-h">Decisions</h2>
+        <div class="panel" id="decisions"></div>
+      </section>
+      <section class="s-parts" aria-labelledby="parts-h">
+        <h2 id="parts-h">Parts for the last pack-out</h2>
+        <div class="panel"><table class="parts" id="parts"></table></div>
+      </section>
     </div>
-
-    <h2 class="mt">What Dockside found <span class="count" id="nfind">0</span></h2>
-    <div class="card list" id="findings"></div>
-
-    <h2 class="mt">Activity</h2>
-    <div class="card list feed" id="feed"></div>
-  </aside>
+    <div class="col">
+      <section class="s-ask" aria-labelledby="ask-h">
+        <h2 id="ask-h">Ask Dockside</h2>
+        <div class="panel ask">
+          <form id="ask">
+            <label class="sr-only" for="q">Your question</label>
+            <input id="q" autocomplete="off" placeholder="What if the Polish van is 3 hours late?">
+            <button class="btn go" id="ask-btn">Ask</button>
+          </form>
+          <div class="sugg">
+            <button type="button" class="link" data-act="suggest">What if the art-book van from Poznań is 6 hours late?</button>
+            <button type="button" class="link" data-act="suggest">Which shipments still need a truck or a dock slot today?</button>
+            <button type="button" class="link" data-act="suggest">Where do the ERP, the tracker and the documents disagree?</button>
+          </div>
+          <div id="answer" aria-live="polite"></div>
+        </div>
+      </section>
+      <section class="s-notes" aria-labelledby="notes-h">
+        <h2 id="notes-h">What Dockside noticed</h2>
+        <div class="panel" id="notes"></div>
+      </section>
+      <section class="s-feed" aria-labelledby="feed-h">
+        <h2 id="feed-h">Activity</h2>
+        <ol class="feed" id="feed"></ol>
+      </section>
+    </div>
+  </div>
 </main>
+<div class="sr-only" aria-live="polite" id="announce"></div>
+
 <script>
 const $ = s => document.querySelector(s);
-const eur = v => "€" + Math.round(v).toLocaleString("en-US");
+const TZ = "Europe/Berlin";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const n = v => Math.round(v).toLocaleString("en-US");
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const hhmm = iso => new Date(iso).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Berlin"});
-let S = null, open = new Set(), me = (()=>{try{return localStorage.getItem("dockside.me")}catch(e){return null}})() || "web";
+const eur = v => "€" + n(v);
+const t24 = iso => new Date(iso).toLocaleTimeString("en-GB", {hour:"2-digit", minute:"2-digit", timeZone:TZ});
+const day = iso => new Date(iso).toLocaleDateString("en-GB", {weekday:"short", day:"numeric", month:"short", timeZone:TZ});
+const wkd = iso => new Date(iso).toLocaleDateString("en-GB", {weekday:"short", timeZone:TZ});
+const berlinHM = d => { const p = new Intl.DateTimeFormat("en-GB", {hour:"2-digit", minute:"2-digit", hourCycle:"h23", timeZone:TZ}).formatToParts(d);
+  return [+p.find(x => x.type === "hour").value, +p.find(x => x.type === "minute").value]; };
+const cap1 = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+const andList = a => a.length < 2 ? (a[0] || "") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+const plural = (k, w, ws = w + "s") => `${n(k)} ${k === 1 ? w : ws}`;
+const codeText = s => String(s).replace(/\b([A-Z]{4})(\d{6})(\d)\b/g, "$1 $2 $3");
+const tidy = s => codeText(String(s ?? ""))
+  .replace(/<=\s?(\d+(?:\.\d+)?)\s?t\b/g, "≤$1 t").replace(/\bEUR\s?/g, "€")
+  .replace(/ — /g, ", ").replace(/ -> /g, ". Fix: ").replace(/\bSTUCK\b/g, "stuck")
+  .replace(/(\d[\d,]*) (\w+)\(s\)/g, (m, k, w) => k === "1" ? `${k} ${w}` : `${k} ${w}s`)
+  .replace(/\b(\d[\d,]*)\.0\b/g, "$1");
+const shortPart = d => String(d || "").replace(/\s?(–\s)?Grand Heist 6/, "").trim();
+const lang = c => ({pl:"Polish", de:"German", en:"English", cs:"Czech", fr:"French", it:"Italian", es:"Spanish", ko:"Korean", zh:"Chinese"}[c] || c);
+const people = s => String(s || "").replace(/ \+ /g, " and ");
+
+let S = null, skew = 0, lastOk = null, fetchErr = null, firstYard = true, showAllNotes = false;
+const open = new Set(), english = new Set(), busy = {}, outcome = {}, keys = {};
+let asking = null;
+const me = (() => { try { return localStorage.getItem("dockside.me") } catch (e) { return null } })() || "web";
+const nowMs = () => Date.now() + skew;
+
+/* Re-render a region only when its inputs change, and keep keyboard focus. */
+function paint(id, key, html){
+  if (keys[id] === key) return false;
+  keys[id] = key;
+  const el = document.getElementById(id), fid = document.activeElement?.dataset?.fid;
+  el.innerHTML = html();
+  if (fid && el.contains(document.activeElement) === false) { const f = el.querySelector(`[data-fid="${CSS.escape(fid)}"]`); if (f) f.focus({preventScroll:true}); }
+  return true;
+}
 
 async function load(){
-  try{ const r = await fetch("/api/state"); S = await r.json(); render(); }catch(e){ console.error(e) }
+  try {
+    const r = await fetch("/api/state", {cache:"no-store"});
+    if (!r.ok) throw new Error(`the server answered ${r.status}`);
+    S = await r.json(); skew = new Date(S.now) - Date.now(); lastOk = new Date(); fetchErr = null;
+  } catch (e) { fetchErr = e.message; }
+  render();
 }
+
 function render(){
-  const ce = S.picture[S.priority], st = S.picture["FG-GH6-STD"], h = S.headline;
-  $("#hero").innerHTML = `
-    <div class="kpi risk ${h.ce_copies? "": "zero"}"><div class="l">Collector's at risk</div>
-      <div class="v mono">${h.ce_copies? eur(h.eur): "€0"}</div>
-      <div class="s">${h.ce_copies? `${n(h.ce_copies)} copies × €${h.refund_per_copy} refund · ${esc(h.detail.split(".")[0])}`: "All CE copies covered"}</div></div>
-    <div class="kpi"><div class="l">Collector's packed</div><div class="v mono">${n(ce.packed_est_now)}</div>
-      <div class="s">of ${n(ce.demand)} · slack ${n(ce.slack_copies)} copies (${(ce.slack_copies/ce.rate).toFixed(1)} h)</div>
-      <div class="bar"><b style="width:${100*ce.packed_est_now/ce.demand}%"></b></div></div>
-    <div class="kpi"><div class="l">Standard packed</div><div class="v mono">${n(st.packed_est_now)}</div>
-      <div class="s">of ${n(st.demand)} · ${st.hours_left} pack hours left</div>
-      <div class="bar"><b style="width:${100*st.packed_est_now/st.demand}%"></b></div></div>
-    <div class="kpi"><div class="l">Agent watching</div><div class="v mono">${S.inbound.length + S.inbound_later}</div>
-      <div class="s">shipments · ${S.system.files} files · ${S.system.docs_read} docs read · ${S.system.conflicts} conflicts</div></div>`;
-  const acts = S.actions.filter(a => a.status !== "superseded");
-  const pending = acts.filter(a => ["proposed","escalated"].includes(a.status));
-  $("#ndec").textContent = pending.length;
-  $("#actions").innerHTML = acts.length ? acts.map(actionCard).join("") : `<div class="card empty">No decisions needed right now.</div>`;
-  $("#coverage").innerHTML = `<tr><th>Part</th><th>Need</th><th>Usable</th><th>Gap</th><th style="text-align:left">Why usable ≠ ERP</th></tr>` +
-    S.coverage.sort((a,b)=>a.gap-b.gap).map(c => `<tr><td><b>${esc(c.component)}</b> <span class="sub">${esc(c.description.replace(/ Grand Heist 6| – Grand Heist 6/,""))}</span></td>
-      <td class="mono">${n(c.need_total)}</td><td class="mono">${c.suspect_master_data? "–": n(c.usable_now)}</td>
-      <td class="mono ${c.suspect_master_data? "": c.gap<0? "neg":"pos"}">${c.suspect_master_data? "n/a": (c.gap>0?"+":"")+n(c.gap)}</td>
-      <td style="text-align:left" class="sub">${c.suspect_master_data? "BOM line: fitted by supplier into the CE box": c.adjustments.map(a=>`${a.kind.replace(/_/g," ")} −${n(a.cut)}`).join(", ")}</td></tr>`).join("");
-  const fs = S.findings.filter(f => f.id !== "ce-at-risk");
-  $("#nfind").textContent = fs.length;
-  $("#findings").innerHTML = fs.map(f => `<div class="row"><span class="sev ${f.severity}"></span><div><div>${esc(f.title)}</div>
-     <div class="d">${esc(f.detail)}</div>${f.evidence?.length? `<div class="ev">${f.evidence.map(e=>esc(e.split("/").pop())).join(" · ")}</div>`:""}</div></div>`).join("");
-  $("#feed").innerHTML = S.events.length ? S.events.slice(0,18).map(e => `<div class="row"><span class="ts mono">${hhmm(e.ts)}</span><div>${esc(e.text)}</div></div>`).join("") : `<div class="empty">Waiting for the first data drop.</div>`;
-  const sys = S.system;
-  $("#sys").innerHTML = `<span class="dot ${sys.busy? "busy":""}"></span><span>${sys.busy? esc(sys.busy)+"…" : sys.sync_error? "sync error" : sys.last_sync? "synced "+hhmm(sys.last_sync) : "live"}</span>`;
-  timeline();
+  status();
+  if (!S) return;
+  tick(); lede(); yard(); decisions(); parts(); notes(); feed();
 }
-function actionCard(a){
-  const pending = ["proposed","escalated"].includes(a.status);
-  const msgs = a.messages.map(m => `<div class="msg"><div class="h"><b>${esc(m.channel)}</b><span>→ ${esc(m.to_name)}${m.to_address? " &lt;"+esc(m.to_address)+"&gt;":""}</span><span>${esc(m.language)}</span><span class="spacer"></span><span>${esc(m.status)}</span></div>
-     <div><b>${esc(m.subject)}</b></div><pre>${esc(m.body)}</pre>${m.body_en? `<details><summary class="sub" style="margin-top:6px">English translation</summary><pre>${esc(m.body_en)}</pre></details>`:""}</div>`).join("");
-  return `<div class="card action ${open.has(a.id)?"open":""}" id="${a.id}">
-    <div class="top"><div class="t">${esc(a.title)}</div>
-      <div class="money">${a.eur_protected? `<div class="p mono">protects ${eur(a.eur_protected)}</div>`:""}<div class="c mono">cost ${a.cost_eur? eur(a.cost_eur): "€0"}</div></div></div>
-    <div class="why">${esc(a.rationale)}</div>
-    <div class="meta"><span class="tag st-${a.status}">${esc(a.status)}</span><span class="tag who">${a.status==="proposed"||a.status==="escalated"?"needs ":""}${esc(a.approver_name || a.approver_role)} · ${esc(a.approver_role)}</span>
-      ${a.ce_copies? `<span class="tag">${n(a.ce_copies)} CE copies</span>`:""}<span class="tag">${esc(a.kind.replace(/_/g," "))}</span>
-      ${a.messages.length? `<button class="ghost" onclick="toggle('${a.id}')">${a.messages.length} message${a.messages.length>1?"s":""} ${open.has(a.id)?"▴":"▾"}</button>`:""}</div>
-    <div class="msgs">${msgs}<div class="sub">${a.history.map(h=>`${hhmm(h.ts)} ${esc(h.entry)}`).join("<br>")}</div></div>
-    ${pending? `<div class="btns"><button class="primary" onclick="decide('${a.id}','approve')">Approve &amp; send</button><button onclick="decide('${a.id}','reject')">Reject</button></div>`:""}
-  </div>`;
+
+function status(){
+  const el = $("#sys"), sys = S?.system || {};
+  let s = "ok", txt = "Live";
+  if (fetchErr) { s = "error"; txt = lastOk ? `Can't reach the server. Showing data from ${t24(lastOk)}, retrying every 15 s` : "Can't reach the server. Retrying every 15 s"; }
+  else if (sys.sync_error) { s = "error"; txt = `Data sync failed: ${sys.sync_error}`; }
+  else if (sys.busy) { s = "busy"; txt = `Dockside is ${String(sys.busy).replace(/\.+$/, "")}…`; }
+  else if (sys.last_sync) txt = `Synced ${t24(sys.last_sync)}`;
+  el.dataset.s = s; el.textContent = txt;
 }
-function toggle(id){ open.has(id)? open.delete(id): open.add(id); render(); }
-async function decide(id, decision){
-  const r = await fetch(`/api/actions/${id}/decide`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision,by:me})});
-  if(!r.ok) alert((await r.json()).detail); load();
+
+function tick(){
+  if (!S) return;
+  const ms = new Date(S.deadline) - nowMs();
+  const h = Math.floor(ms / 36e5), m = Math.floor(ms % 36e5 / 6e4);
+  $("#clock").textContent = ms > 0 ? `${h} h ${String(m).padStart(2, "0")} min until trucks leave` : "The trucks have left";
 }
-function timeline(){
-  const W=860, rowH=30, pad=150, t0=new Date(S.now); t0.setMinutes(0,0,0);
-  const dl=new Date(S.deadline), t1=new Date(dl.getTime()+16*3600e3), cut=new Date(dl.getTime()-S.cutoff_hours*3600e3);
-  const X=t=>pad+(W-pad-20)*Math.min(1,Math.max(0,(t-t0)/(t1-t0)));
-  const rows=[...S.inbound].sort((a,b)=>(a.arrival_at_dc||"9")>(b.arrival_at_dc||"9")?1:-1);
-  const H=40+rows.length*rowH;
-  const banS=new Date(dl); banS.setHours(0,0,0,0); const banE=new Date(banS.getTime()+22*3600e3);
-  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Arrival timeline">`;
-  s+=`<rect x="${X(banS)}" y="18" width="${X(banE)-X(banS)}" height="${H-18}" fill="var(--ban)"/>`;
-  for(let t=new Date(t0); t<=t1; t=new Date(t.getTime()+6*3600e3)){ s+=`<line x1="${X(t)}" x2="${X(t)}" y1="18" y2="${H}" stroke="var(--line)"/><text x="${X(t)}" y="12" text-anchor="middle">${t.toLocaleString("en-GB",{weekday:"short",hour:"2-digit",timeZone:"Europe/Berlin"})}</text>`; }
-  s+=`<line x1="${X(cut)}" x2="${X(cut)}" y1="18" y2="${H}" stroke="var(--warn)" stroke-dasharray="4 3"/><text x="${X(cut)-4}" y="${H-4}" text-anchor="end">receiving cut-off</text>`;
-  s+=`<line x1="${X(dl)}" x2="${X(dl)}" y1="18" y2="${H}" stroke="var(--bad)" stroke-width="2"/><text x="${X(dl)+4}" y="${H-4}">trucks leave 20:00</text>`;
-  rows.forEach((r,i)=>{
-    const y=34+i*rowH, a=r.arrival_at_dc? new Date(r.arrival_at_dc): null;
-    const col=!a? "var(--warn)": r.makes_cutoff? "var(--ok)":"var(--bad)";
-    const mats=r.materials.map(m=>m.replace("CMP-GAM-","")).join(",");
-    s+=`<text class="lab" x="0" y="${y+4}">${esc(r.reference)}</text><text x="${pad-8}" y="${y+4}" text-anchor="end">${esc(r.mode)} · ${mats}</text>`;
-    if(a){ const late=a>t1; s+=`<line x1="${pad}" x2="${X(a)}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="2"/><circle cx="${X(a)}" cy="${y}" r="6" fill="${col}"><title>${esc(r.shipment_id)}: ${esc(r.flags.join("; "))}</title></circle>${late?`<text x="${X(a)-10}" y="${y-8}" text-anchor="end">${new Date(r.arrival_at_dc).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} →</text>`:""}`; }
-    else s+=`<rect x="${pad}" y="${y-7}" width="${X(new Date(S.now))-pad+60}" height="14" rx="7" fill="var(--warn-soft)"/><text x="${pad+8}" y="${y+4}" style="fill:var(--warn);font-weight:600">${r.status==="arrived_port"?"at port — no truck booked":"on hold at supplier"}<title>${esc(r.flags.join("; "))}</title></text>`;
+
+function partName(id){ const c = S.coverage.find(c => c.component === id); return c ? shortPart(c.description) : id; }
+
+function lede(){
+  const h = S.headline, ce = S.picture[S.priority], st = S.picture["FG-GH6-STD"];
+  const pend = S.actions.filter(a => ["proposed","escalated"].includes(a.status));
+  const fixes = pend.filter(a => a.ce_copies > 0).length;
+  const bind = /Binding constraint: ([A-Z0-9-]+)/.exec(h.detail || "")?.[1];
+  const slackH = ce.rate ? ce.slack_copies / ce.rate : 0;
+  const slack = `The packing cell has ${slackH >= 1 ? `about ${plural(Math.round(slackH), "hour")}` : "less than an hour"} of slack (${plural(ce.slack_copies, "copy", "copies")}).`;
+  let h1, p;
+  if (h.ce_copies > 0) {
+    h1 = fixes ? `${eur(h.eur)} in Collector's refunds depends on ${plural(fixes, "decision")}.`
+               : `${eur(h.eur)} in Collector's refunds is at risk, and no fix is waiting for approval yet.`;
+    p = `${bind ? `${esc(partName(bind).replace(/\s*\(.*\)$/, ""))} (${esc(bind)}) runs out first: ` : ""}${n(h.ce_copies)} Collector's copies can't be packed without it. ${slack}`;
+  } else {
+    h1 = "Every Collector's copy is covered for the trucks on Sunday.";
+    p = slack;
+  }
+  const packed = `Packed so far, estimated at ${t24(S.now)}: ${n(ce.packed_est_now)} of ${n(ce.demand)} Collector's and ${n(st.packed_est_now)} of ${n(st.demand)} Standard.`;
+  paint("lede", h1 + p + packed, () => `<h1>${esc(h1)}</h1><p>${p}</p><p class="packed num">${packed}</p>`);
+}
+
+/* ---------- yard ---------- */
+function codeHTML(ref){
+  const m = /^([A-Z]{4})(\d{6})(\d)$/.exec(ref || "");
+  return m ? `${m[1]} ${m[2]} <span class="chk">${m[3]}</span>` : esc(ref);
+}
+function yard(){
+  const dl = new Date(S.deadline), now = new Date(nowMs());
+  const t0 = new Date(Math.floor(new Date(S.now) / 36e5) * 36e5);
+  const span = dl - t0, X = t => Math.max(0, Math.min(100, (t - t0) / span * 100));
+  const [dh, dm] = berlinHM(dl);
+  const banS = new Date(dl - (dh * 60 + dm) * 6e4), banE = new Date(+banS + 22 * 36e5);
+  const cut = new Date(dl - S.cutoff_hours * 36e5);
+  const rank = r => !r.arrival_at_dc ? 0 : 1;
+  const rows = [...S.inbound].sort((a, b) => rank(a) - rank(b) || String(a.arrival_at_dc).localeCompare(String(b.arrival_at_dc)));
+  const key = JSON.stringify([S.deadline, t0, rows.map(r => [r.reference, r.status, r.arrival_at_dc, r.makes_cutoff, r.quantity, r.flags])]);
+
+  paint("yard", key, () => {
+    let ticks = `<div class="tick now" style="left:0"><span>Now, ${wkd(now)} ${t24(S.now)}</span></div>`;
+    for (let t = +t0 + 36e5; t < +dl; t += 36e5) {
+      const [hh] = berlinHM(new Date(t));
+      if (hh % 6 || (t - t0) < 3.5 * 36e5 || (dl - t) < 1.5 * 36e5) continue;
+      ticks += `<div class="tick" style="left:${X(t)}%"><span>${hh === 0 ? wkd(t) + " " : ""}${t24(t)}</span></div>`;
+    }
+    const banLeft = X(banS);
+    const band = banS < dl ? `<div class="ban" style="left:${banLeft}%"><div class="ban-strip"><span>Sunday truck ban for trucks over 7.5 t, until 22:00</span></div></div>` : "";
+    const cutL = `<div class="cut" style="left:${X(cut)}%"><span>Receiving closes ${t24(cut)}</span></div>`;
+    let lis = "", beyond = "";
+    rows.forEach((r, i) => {
+      const a = r.arrival_at_dc ? new Date(r.arrival_at_dc) : null;
+      const late = a && (r.makes_cutoff === false || a > dl);
+      const cls = !a ? "wait" : late ? "late" : "ok";
+      const x = a ? X(a) : 0;
+      const what = r.materials.map(partName).join(", ");
+      const contents = `${cap1(r.mode === "sea" ? "sea" : r.mode === "air" ? "air" : "road")}, ${r.quantity ? n(r.quantity) + " " : ""}${esc(what)}`;
+      let st;
+      if (!a) st = r.status === "arrived_port" ? "At the terminal, no truck booked" : "Held at the supplier";
+      else if (late) st = "Misses the trucks";
+      else if (a < now) { const f = r.flags.find(f => /no carrier update/.test(f)); st = `Was due ${t24(a)} ${wkd(a) === wkd(now) ? "today" : wkd(a)}${f ? `, ${f}` : ""}`; }
+      else st = `Arrives ${wkd(a)} ${t24(a)}${r.mode === "road" && a >= banS && a < banE ? ", inside the truck ban" : ""}`;
+      const end = !late && x > 55 ? " end" : "";
+      const srLate = late ? `<span class="sr-only">, arrives ${day(a)} ${t24(a)}, after the trucks leave</span>` : "";
+      lis += `<li class="row ${cls}" style="--x:${x}%;--i:${i}">
+        <span class="path" aria-hidden="true"></span>
+        <span class="box ${esc(r.mode)}" aria-label="${esc(codeText(r.reference))}">${codeHTML(r.reference)}</span>
+        <span class="cap${end}"><b>${esc(st)}</b>${contents}${srLate}</span></li>`;
+      beyond += `<div class="b-row" style="--i:${i}" aria-hidden="true">${late ? `<span class="stub"></span>${day(a)}<small>${t24(a)}</small>` : ""}</div>`;
+    });
+    const later = S.inbound_later ? `<span class="sr-only">${plural(S.inbound_later, "more shipment")} arrive after launch and are not shown.</span>` : "";
+    return `<div class="track-scroll" tabindex="0" aria-label="Arrivals timeline, scrolls sideways">
+        <div class="track" style="--rows:${rows.length}">${band}${ticks}${cutL}
+          <ol class="rows">${lis}</ol>${later}</div></div>
+      <div class="wall" aria-label="Trucks leave for retail ${day(dl)} ${t24(dl)}"><span class="wall-day">${wkd(dl)}</span><span class="wall-time">${t24(dl)}</span><span class="wall-word" aria-hidden="true">Trucks leave</span></div>
+      <div class="beyond"><span class="beyond-ban" aria-hidden="true"></span>${beyond}</div>`;
   });
-  $("#timeline").innerHTML = s+"</svg>";
+  const el = $("#yard");
+  if (firstYard) { el.classList.add("enter"); firstYard = false; setTimeout(() => el.classList.remove("enter"), 3000); }
 }
-$("#ask").addEventListener("submit", async e => { e.preventDefault(); ask($("#q").value); });
-document.querySelectorAll(".suggest button").forEach(b => b.onclick = () => { $("#q").value=b.dataset.q; ask(b.dataset.q); });
-async function ask(q){
-  if(!q.trim()) return;
-  $("#answer").innerHTML = `<div class="answer sub">Dockside is checking the data…</div>`;
-  const r = await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q})});
-  const d = await r.json();
-  $("#answer").innerHTML = `<div class="answer">${esc(d.answer)}</div><div class="steps">${d.steps.map(s=>esc(s.tool)).join(" → ")}</div>`;
+
+/* ---------- decisions ---------- */
+const PENDING = ["proposed","escalated"];
+function recipients(a){ return [...new Set(a.messages.map(m => m.to_name).filter(Boolean))]; }
+function lastTs(a){ return a.history?.length ? a.history[a.history.length - 1].ts : a.updated_at; }
+function statusLine(a){
+  const who = `${esc(people(a.approver_name || a.approver_role))}${a.approver_name ? ` (${esc(people(a.approver_role))})` : ""}`;
+  const to = andList(recipients(a).map(esc));
+  switch (a.status) {
+    case "proposed": {
+      const due = a.due_at ? new Date(a.due_at) : null;
+      const when = !due ? "" : due < nowMs() ? ` <span class="late">Overdue since ${t24(due)}.</span>` : ` Decide by ${t24(due)}.`;
+      return `Needs ${who}.${when}`;
+    }
+    case "escalated": return `<span class="late">Not decided in time.</span> Now needs ${who}.`;
+    case "approved": return to ? `Approved at ${t24(lastTs(a))}. Sending to ${to}.` : `Approved at ${t24(lastTs(a))}.`;
+    case "sent": return to ? `Approved and sent to ${to} at ${t24(lastTs(a))}.` : `Approved at ${t24(lastTs(a))}.`;
+    case "done": return `Done at ${t24(lastTs(a))}.`;
+    case "rejected": return `Declined at ${t24(lastTs(a))}.`;
+    default: return esc(cap1(a.status));
+  }
+}
+function ratio(a){
+  const cost = a.cost_eur ? eur(a.cost_eur) : "No cost";
+  if (a.eur_protected > 0) return `${cost}${a.cost_eur ? "" : ","} protects ${eur(a.eur_protected)}${a.ce_copies ? ` and ${plural(a.ce_copies, "Collector's copy", "Collector's copies")}` : ""}`;
+  return a.cost_eur ? `Costs up to ${cost}, no Collector's refunds at stake` : "No cost, no Collector's refunds at stake";
+}
+function msgHTML(a, m){
+  const kind = {email:"Email", discord:"Discord message", phone_script:"Phone script"}[m.channel] || cap1(m.channel);
+  const prep = m.channel === "phone_script" ? "for" : "to";
+  const en = english.has(m.id) && m.body_en;
+  const state = m.status === "draft" ? (PENDING.includes(a.status) ? "Draft, goes out when approved." : "Draft, not sent.")
+              : m.status === "sent" ? `Sent${m.sent_at ? " at " + t24(m.sent_at) : ""}.` : cap1(m.status) + ".";
+  return `<article class="msg">
+    <p class="msg-to">${kind} ${prep} ${esc(m.to_name)}${m.to_address ? ` <span>${esc(m.to_address)}</span>` : ""}</p>
+    <p class="msg-meta">${m.language && m.language !== "en" ? `Written in ${lang(m.language)}. ` : ""}${state}</p>
+    <p class="msg-subj" ${m.language ? `lang="${esc(m.language)}"` : ""}>${esc(tidy(m.subject))}</p>
+    <div class="msg-body" lang="${en ? "en" : esc(m.language || "en")}">${esc(en ? m.body_en : m.body)}</div>
+    ${m.body_en ? `<button type="button" class="link" data-act="lang" data-id="${esc(m.id)}" data-fid="lang-${esc(m.id)}">${en ? `Show the ${lang(m.language)} original` : "Show English translation"}</button>` : ""}
+  </article>`;
+}
+function decHTML(a){
+  const isOpen = open.has(a.id), pend = PENDING.includes(a.status), b = busy[a.id], o = outcome[a.id];
+  const k = a.messages.length;
+  const toggle = `<button type="button" class="link" data-act="toggle" data-id="${esc(a.id)}" data-fid="tg-${esc(a.id)}" aria-expanded="${isOpen}" aria-controls="more-${esc(a.id)}">${
+      isOpen ? "Hide details" : k ? (k === 1 ? "Read the drafted message" : `Read the ${k} drafted messages`) : "Show details"}</button>`;
+  const btns = pend ? `<button class="btn go" data-act="approve" data-id="${esc(a.id)}" data-fid="ap-${esc(a.id)}" ${b ? "disabled" : ""}>${
+      b === "approve" ? "Sending…" : k ? "Approve and send" : "Approve"}</button>
+      <button class="btn" data-act="reject" data-id="${esc(a.id)}" data-fid="rj-${esc(a.id)}" ${b ? "disabled" : ""}>${b === "reject" ? "Declining…" : "Decline"}</button>` : "";
+  return `<li class="dec${isOpen ? " open" : ""}" data-s="${esc(a.status)}" id="d-${esc(a.id)}">
+    <h3>${esc(tidy(a.title))}</h3>
+    <p class="ratio${a.eur_protected > 0 ? "" : " nil"}">${ratio(a)}</p>
+    <p class="why">${esc(tidy(a.rationale))}</p>
+    <p class="who" tabindex="-1" data-fid="st-${esc(a.id)}">${statusLine(a)}</p>
+    ${o && !o.ok ? `<p class="err" role="alert">${esc(o.text)}</p>` : ""}
+    <div class="do">${btns}${toggle}</div>
+    ${isOpen ? `<div class="more" id="more-${esc(a.id)}">${a.messages.map(m => msgHTML(a, m)).join("")}
+      ${a.history?.length ? `<ol class="hist">${a.history.map(h => `<li><time>${t24(h.ts)}</time><span>${esc(cap1(tidy(h.entry)))}</span></li>`).join("")}</ol>` : ""}</div>` : ""}
+  </li>`;
+}
+function decisions(){
+  const acts = S.actions.filter(a => a.status !== "superseded")
+    .sort((a, b) => (b.eur_protected || 0) - (a.eur_protected || 0) || (PENDING.includes(b.status) - PENDING.includes(a.status)) || String(a.due_at).localeCompare(String(b.due_at)));
+  const pend = acts.filter(a => PENDING.includes(a.status)).length;
+  $("#dec-h").textContent = pend ? `${plural(pend, "decision")} waiting for you` : "Decisions";
+  const key = JSON.stringify([acts, [...open], [...english], busy, outcome, Math.floor(nowMs() / 6e4)]);
+  paint("decisions", key, () => acts.length
+    ? `<ol>${acts.map(decHTML).join("")}</ol>`
+    : `<p class="empty">Nothing needs your approval. When a shipment or part puts copies at risk, Dockside drafts a fix and it lands here. Ask Dockside below what could still go wrong.</p>`);
+}
+async function decide(id, decision){
+  busy[id] = decision; delete outcome[id]; decisions();
+  try {
+    const r = await fetch(`/api/actions/${encodeURIComponent(id)}/decide`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({decision, by:me, note:""})});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail ? String(d.detail) : `The server answered ${r.status}. Reload the page and try again.`);
+    const i = S.actions.findIndex(a => a.id === id); if (i >= 0 && d && d.id) S.actions[i] = d;
+    outcome[id] = {ok:true};
+    const a = S.actions[i];
+    $("#announce").textContent = a ? statusLine(a).replace(/<[^>]+>/g, "") : (decision === "approve" ? "Approved" : "Declined");
+  } catch (e) {
+    const what = decision === "approve" ? "Not approved, nothing was sent" : "Not declined";
+    outcome[id] = {ok:false, text: /fetch|network/i.test(e.message) ? `${what}: the server didn't answer. Check your connection and try again.` : `${what}: ${e.message}`};
+  }
+  delete busy[id];
+  keys.decisions = null; decisions();
+  const st = document.querySelector(`[data-fid="${outcome[id]?.ok ? "st-" : "ap-"}${CSS.escape(id)}"]`); if (st) st.focus();
   load();
 }
-function tick(){ if(!S) return; const ms=new Date(S.deadline)-Date.now(); const h=Math.floor(ms/3600e3), m=Math.floor(ms%3600e3/60e3);
-  $("#countdown").textContent = ms>0? `${h}h ${String(m).padStart(2,"0")}m to trucks out` : "launched"; }
-load(); setInterval(load, 15000); setInterval(tick, 1000);
+
+/* ---------- parts ---------- */
+function whyText(c){
+  if (c.suspect_master_data) return "Not a separate part: the supplier fits it into the Collector's box. Left out of the risk maths.";
+  const words = {over_receipt:"booked twice on a receipt", old_revision:"old artwork revision, can't be used", quality_reject:"failed incoming inspection"};
+  const cuts = c.adjustments.reduce((s, a) => s + a.cut, 0);
+  const used = Math.max(0, Math.round(c.erp_stock - cuts - c.usable_now));
+  const bits = [`ERP shows ${n(c.erp_stock)}`];
+  c.adjustments.forEach(a => bits.push(`${n(a.cut)} ${words[a.kind] || a.kind.replace(/_/g, " ")}`));
+  if (used) bits.push(`${n(used)} already packed`);
+  return bits.join(", minus ") + ".";
+}
+function parts(){
+  const rows = [...S.coverage].sort((a, b) => (a.suspect_master_data - b.suspect_master_data) || a.gap - b.gap);
+  paint("parts", JSON.stringify(rows), () => `<thead><tr><th scope="col">Part</th><th scope="col">Need</th><th scope="col">Usable</th><th scope="col">Gap</th><th scope="col">Why usable differs from the ERP</th></tr></thead><tbody>` +
+    rows.map(c => {
+      const used = Object.keys(c.need || {}), ce = used.includes("FG-GH6-CE"), sd = used.includes("FG-GH6-STD");
+      const forWhat = ce && sd ? "Standard and Collector's" : ce ? "Collector's only" : "Standard only";
+      const gap = c.suspect_master_data ? `<span class="spare">n/a</span>` : c.gap < 0 ? `<span class="short">${n(-c.gap)} short</span>` : `<span class="spare">${n(c.gap)} spare</span>`;
+      return `<tr><td><span class="pname">${esc(shortPart(c.description))}</span><span class="pid">${esc(c.component)}, ${forWhat}</span></td>
+        <td class="n" data-l="Need">${n(c.need_total)}</td><td class="n" data-l="Usable">${c.suspect_master_data ? "n/a" : n(c.usable_now)}</td>
+        <td class="n" data-l="Gap">${gap}</td><td>${esc(whyText(c))}</td></tr>`;
+    }).join("") + "</tbody>");
+}
+
+/* ---------- noticed + activity ---------- */
+function notes(){
+  const order = {critical:0, high:1, medium:2, info:3};
+  const fs = S.findings.filter(f => f.id !== "ce-at-risk").sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9));
+  const shown = showAllNotes ? fs : fs.slice(0, 6);
+  paint("notes", JSON.stringify([fs, showAllNotes]), () => !fs.length
+    ? `<p class="empty">Nothing unusual in the data right now. Dockside checks again with every data drop.</p>`
+    : `<ul class="notes">${shown.map(f => {
+        const src = [...new Set((f.evidence || []).map(e => e.split("/").pop()))];
+        return `<li><span class="sev ${esc(f.severity)}" title="${esc(cap1(f.severity))}"></span><div><span class="sr-only">${esc(cap1(f.severity))}: </span>
+          <p class="t">${esc(tidy(f.title))}</p><p class="d">${esc(tidy(f.detail))}${src.length ? ` Source: ${esc(src.join(", "))}.` : ""}</p></div></li>`;
+      }).join("")}</ul>${fs.length > 6 ? `<div class="notes-more"><button type="button" class="link" data-act="notes" data-fid="notes-more" aria-expanded="${showAllNotes}">${showAllNotes ? "Show fewer" : `Show all ${fs.length}`}</button></div>` : ""}`);
+}
+function feed(){
+  const verbs = {action_proposed:"Proposed", action_approved:"Approved", action_rejected:"Declined", action_sent:"Sent", action_escalated:"Escalated", action_done:"Done", chat:"Asked"};
+  const ev = S.events.slice(0, 14);
+  paint("feed", JSON.stringify(ev.map(e => [e.ts, e.text, e.kind])), () => ev.length ? ev.map(e => {
+    let txt = tidy(e.text);
+    const act = e.ref && S.actions.find(a => a.id === e.ref);
+    if (/^action_(approved|rejected)$/.test(e.kind) && act) { const by = e.text.split(":")[0].trim(); txt = `${tidy(act.title)}${by && by !== "web" ? `, by ${by}` : ""}`; }
+    else if (/^action_/.test(e.kind) && act && !/^action_proposed$/.test(e.kind)) txt = `${tidy(act.title)}: ${txt}`;
+    if (e.kind === "data_drop") txt = txt.replace(/: (.*)$/, (m, l) => ": " + l.split(", ").map(f => f.split("/").pop()).join(", "));
+    const v = verbs[e.kind];
+    return `<li><time>${t24(e.ts)}</time><span>${v ? `${v}: ` : ""}${esc(v ? txt : cap1(txt))}</span></li>`;
+  }).join("") : `<li><span class="quiet">Waiting for the first data drop.</span></li>`);
+}
+
+/* ---------- ask ---------- */
+async function ask(q){
+  q = q.trim();
+  const out = $("#answer");
+  if (!q) { $("#q").focus(); return; }
+  if (asking) return;
+  const t0 = Date.now(), btn = $("#ask-btn");
+  btn.disabled = true; btn.textContent = "Asking…";
+  const show = () => { out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><p class="a quiet">Dockside is reading the data. ${Math.round((Date.now() - t0) / 1000)} s so far, answers take up to 90 s.</p></div>`; };
+  show(); asking = setInterval(() => { const a = out.querySelector(".a"); if (a) a.textContent = `Dockside is reading the data. ${Math.round((Date.now() - t0) / 1000)} s so far, answers take up to 90 s.`; }, 1000);
+  try {
+    const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({q})});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail ? String(d.detail) : `the server answered ${r.status}`);
+    const tools = [...new Set((d.steps || []).map(s => String(s.tool).replace(/_/g, " ")))];
+    out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><div class="a">${esc(tidy(d.answer)).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</div>${tools.length ? `<p class="how">Checked: ${esc(tools.join(", "))}.</p>` : ""}</div>`;
+    load();
+  } catch (e) {
+    out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><p class="a err" role="alert">No answer: ${/fetch|network/i.test(e.message) ? "the server didn't respond" : esc(e.message)}. Ask again, or try a shorter question.</p></div>`;
+  } finally {
+    clearInterval(asking); asking = null; btn.disabled = false; btn.textContent = "Ask";
+  }
+}
+
+/* ---------- theme ---------- */
+const sun = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`;
+const moon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>`;
+const isDark = () => (document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark";
+function themeBtn(){ const d = isDark(), b = $("#theme"); b.innerHTML = d ? sun : moon; b.setAttribute("aria-label", d ? "Switch to light theme" : "Switch to dark theme"); b.title = b.getAttribute("aria-label"); }
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", themeBtn);
+
+/* ---------- events ---------- */
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-act]"); if (!el) return;
+  const id = el.dataset.id;
+  switch (el.dataset.act) {
+    case "toggle": open.has(id) ? open.delete(id) : open.add(id); decisions(); break;
+    case "lang": english.has(id) ? english.delete(id) : english.add(id); decisions(); break;
+    case "approve": decide(id, "approve"); break;
+    case "reject": decide(id, "reject"); break;
+    case "notes": showAllNotes = !showAllNotes; notes(); break;
+    case "suggest": $("#q").value = el.textContent.trim(); ask(el.textContent); break;
+    case "theme": {
+      const t = isDark() ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem("dockside.theme", t); } catch (err) {}
+      themeBtn(); break;
+    }
+  }
+});
+$("#ask").addEventListener("submit", e => { e.preventDefault(); ask($("#q").value); });
+
+themeBtn();
+load();
+setInterval(load, 15000);
+setInterval(tick, 1000);
 </script>
 </body>
 </html>

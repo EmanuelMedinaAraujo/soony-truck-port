@@ -111,5 +111,18 @@
   "cheap_fix_eur": {
     "value": 5000,
     "source": "assumption: drayage from CTA, a dock slot, a phone call or a terms confirmation is always worth doing, also for Standard. Validate with Maren."
+  },
+  "autonomy": {
+    "value": {
+      "auto_kinds": [
+        "ask",
+        "confirm_terms",
+        "data_fix",
+        "escalate",
+        "reserve"
+      ],
+      "auto_max_cost_eur": 0
+    },
+    "source": "PP-07 + interview: every commitment of money needs a signature on the ladder; quality concessions need Supplier Quality + Category Lead (inspection report); dock slots are released by the site lead. Everything free and reversible (asking, confirming, reserving without commitment, flagging data, escalating) Dockside does on its own and reports."
   }
 }

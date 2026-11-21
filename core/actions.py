@@ -48,10 +48,14 @@ def _hist(row, entry: str) -> str:
     return json.dumps(h, ensure_ascii=False)
 
 
-def open_action_for(finding_id: str) -> dict | None:
+def open_action_for(finding_id: str, kind: str | None = None) -> dict | None:
     with con() as c:
-        r = c.execute("SELECT * FROM actions WHERE finding_id=? AND status IN ('proposed','approved','sent','escalated') ORDER BY created_at DESC LIMIT 1",
-                      (finding_id,)).fetchone()
+        q = "SELECT * FROM actions WHERE finding_id=? AND status IN ('proposed','approved','sent','escalated','auto')"
+        args = [finding_id]
+        if kind:
+            q += " AND kind=?"
+            args.append(kind)
+        r = c.execute(q + " ORDER BY created_at DESC LIMIT 1", args).fetchone()
     return dict(r) if r else None
 
 
@@ -102,7 +106,7 @@ def get(aid: str) -> dict | None:
     return d
 
 
-def list_actions(statuses: tuple = ("proposed", "approved", "sent", "escalated", "done", "rejected")) -> list[dict]:
+def list_actions(statuses: tuple = ("proposed", "approved", "sent", "escalated", "done", "rejected", "auto")) -> list[dict]:
     with con() as c:
         ids = [r[0] for r in c.execute(f"SELECT id FROM actions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY eur_protected DESC, created_at",
                                        statuses)]

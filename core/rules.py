@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -50,6 +51,16 @@ class Finding:
     ce_copies: int = 0
     evidence: list = field(default_factory=list)
     action: dict | None = None
+
+
+def plain(desc: str | None, fallback: str = "") -> str:
+    """'Art Book Grand Heist 6 (96 p, hardcover)' -> 'Art book'. Users never see part codes in titles."""
+    if not desc:
+        return fallback
+    d = re.sub(r"\s*\(.*?\)", "", desc)
+    d = re.sub(r"\s*[–-]?\s*Grand Heist \d+", "", d).strip(" –-")
+    d = re.sub(r'\s*".*?"', "", d).strip()
+    return d[:1].upper() + d[1:] if d else fallback
 
 
 def approver_for(eur: float, category: str | None = None) -> dict:
@@ -258,11 +269,13 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
     prio = cfg("priority_product")
     price = cfg("missed_copy_cost_eur")[prio]
     findings: list[Finding] = []
+    names = dict(con.execute("SELECT supplier_id, name FROM suppliers").fetchall())
+    sup_name = lambda sid: names.get(sid, sid)
 
     short, binding = ce_copies_short(cov, pic)
     findings.append(Finding("ce-at-risk", "launch", "critical" if short else "info",
                             f"{short:,} Collector's copies at risk (EUR {short * price:,.0f} refunds)" if short else "Collector's Edition fully covered",
-                            f"Binding constraint: {binding}. CE slack on the cell: {pic[prio]['slack_copies']:,} copies "
+                            f"Binding constraint: {plain(cov[binding]['description']) if binding in cov else binding}. CE slack on the cell: {pic[prio]['slack_copies']:,} copies "
                             f"({pic[prio]['hours_left']} pack hours left).", prio, short * price, short))
 
     for c in cov.values():
@@ -272,7 +285,7 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
                                 (c["component"],)).fetchall()
             explain = " ".join(f"Supplier says: \"{n}\" ({f}/components.csv)." for f, n in notes)
             findings.append(Finding(f"master-{c['component']}", "data", "medium" if notes else "high",
-                                    f"{c['component']} has zero stock and was never ordered, yet {prio} is being packed",
+                                    f"{plain(c['description'])}: listed as a separate part but never ordered or stocked",
                                     (explain + " " if explain else "") + "BOM line treats it as a separate part; excluded from the risk maths. Fix the BOM after launch.",
                                     c["component"], evidence=["soony/master/bom.csv", "soony/erp/stock_snapshot.csv"] + [f"suppliers/{f}/components.csv" for f, _ in notes],
                                     action=dict(type="ask", to=cfg("people")["Head of Procurement"], question=f"Is {c['component']} ({c['description']}) really a separate part of {prio}?")))
@@ -281,11 +294,11 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
             if adj["kind"] == "revision_unverified":
                 continue
             findings.append(Finding(f"{adj['kind']}-{c['component']}-{len(findings)}", "stock", "high" if adj["cut"] else "medium",
-                                    f"{c['component']}: {int(adj['cut']):,} pcs not usable ({adj['kind'].replace('_', ' ')})", adj["detail"], c["component"],
+                                    f"{plain(c['description'])}: {int(adj['cut']):,} in stock can't be used ({adj['kind'].replace('_', ' ')})", adj["detail"], c["component"],
                                     evidence=adj.get("evidence", [])))
         if c["gap"] < 0:
             findings.append(Finding(f"gap-{c['component']}", "gap", "critical" if ce_short > 0 else "high",
-                                    f"{c['component']} {c['description']}: short {-c['gap']:,}" + (f" — {ce_short:,} CE copies" if ce_short > 0 else " (Standard only)"),
+                                    f"{plain(c['description'])}: {-c['gap']:,} short" + (f", stops {ce_short:,} Collector's copies" if ce_short > 0 else " for Standard"),
                                     f"Need {c['need_total']:,}, usable {c['usable_now']:,} (ERP {c['erp_stock']:,}, consumed since snapshot {c['consumed_since_snapshot']:,}).",
                                     c["component"], ce_short * price if ce_short > 0 else 0, max(ce_short, 0)))
 
@@ -295,8 +308,8 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
         if not s["planned_for_launch"] and s["status"] != "arrived_port":
             continue  # was never going to make Sunday; not news
         sev = "critical" if s["makes_cutoff"] is not True and s["fills_gap_of"] else "high"
-        verdict = "makes the cut-off" if s["makes_cutoff"] else ("STUCK — no arrival until someone acts" if s["arrival_at_dc"] is None else "misses the cut-off")
-        findings.append(Finding(f"ship-{s['shipment_id']}", "shipment", sev, f"{s['shipment_id']} ({s['mode']}, {s['reference']}): {verdict}",
+        verdict = "makes the cut-off" if s["makes_cutoff"] else (("waiting at the port, no truck booked" if s["status"] == "arrived_port" else "held at the supplier") if s["arrival_at_dc"] is None else "misses the cut-off")
+        findings.append(Finding(f"ship-{s['shipment_id']}", "shipment", sev, f"{', '.join(plain(cov[m]['description']) for m in s['materials'] if m in cov) or s['mode']} by {s['mode']} ({s['reference']}): {verdict}",
                                 "; ".join(s["flags"]) or "on plan", s["shipment_id"], evidence=s["evidence"]))
 
     for o in facts(con, "offer"):
@@ -306,7 +319,7 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
             closes = min(o.get("qty") or 0, -cov[mat]["gap"])
             cost = (o.get("unit_price_eur") or 0) * (o.get("qty") or 0)
             findings.append(Finding(f"offer-{o.get('supplier_id')}-{mat}", "opportunity", "critical",
-                                    f"{o.get('supplier_id')} offers {o.get('qty'):,} × {mat} — closes {closes:,} of the gap",
+                                    f"{sup_name(o.get('supplier_id'))} offers {o.get('qty'):,} {plain(cov[mat]['description']).lower()}s, closes {closes:,} of the gap",
                                     f"{o.get('lead_time_note', '')} Valid until {o.get('valid_until', '?')}. Cost ≈ EUR {cost:,.0f} vs EUR {min(closes, ce_short) * price:,.0f} refunds avoided.",
                                     mat, min(closes, ce_short) * price, min(closes, ce_short), evidence=[o["_path"]],
                                     action=dict(type="order_and_truck", cost_eur=cost, approver=approver_for(cost, "Collector's Items"))))
