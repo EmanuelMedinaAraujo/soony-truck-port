@@ -82,6 +82,10 @@ img { display: block; max-width: 100%; }
 .next-part:hover { color: var(--active); text-decoration: underline; text-underline-offset: 3px; }
 .next-step-line { line-height: 1.45; }
 .next-strip .next-step-line { margin-top: 2px; font-size: .86rem; }
+#chaser-count:not(:empty) { margin-top: 4px; }
+.chaser-cases { margin-top: 12px; }
+.chaser-cases ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.chaser-cases li + li { margin-top: 4px; }
 .state-chip { display: inline-block; margin-right: 4px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 4px; color: var(--active);
   font-size: .78rem; font-weight: 700; line-height: 1.2; white-space: nowrap; }
 .state-chip[data-tone="ready"] { color: var(--covered); }

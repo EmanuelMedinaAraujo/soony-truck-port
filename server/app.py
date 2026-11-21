@@ -355,3 +355,11 @@ def tracking_view():
     from core import tracking
 
     return tracking.snapshot()
+
+
+@app.get("/api/chaser")
+def chaser_view(include_messages: bool = True):
+    from core import chaser
+
+    cases, status = chaser.cases(include_messages=include_messages)
+    return {"cases": cases, "status": status}

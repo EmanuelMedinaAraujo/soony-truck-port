@@ -392,6 +392,10 @@ def snapshot(checked_at: str | None) -> dict:
         supplier_rows = conn.execute("SELECT supplier_id,name,contact_email FROM suppliers").fetchall()
         suppliers = {sid: name for sid, name, _ in supplier_rows}
         contacts = {sid: address.casefold() for sid, _, address in supplier_rows if address}
+        orders = defaultdict(list)
+        for material, supplier, po in conn.execute(
+                "SELECT DISTINCT material_id,supplier_id,po_number FROM purchase_orders ORDER BY supplier_id,po_number"):
+            orders[material].append({"supplierId": supplier, "poNumber": po})
         places = {code: {"name": name, "lat": lat, "lon": lon} for code, name, lat, lon in
                   conn.execute("SELECT locode,name,lat,lon FROM ports") if coordinates(lat, lon)}
         site = rules.CONFIG["site"]
@@ -450,7 +454,8 @@ def snapshot(checked_at: str | None) -> dict:
             routes = [route for route, _ in route_options] + list(shipment_routes.values()) + [stock_route]
             latest = latest_summary(gap_actions)
             components.append({"id": cid, "name": name, "status": status, "usable": inventory, "required": stock["need_total"],
-                               "shared": len(rows) > 1, "allocations": rows, "routes": routes, "option": option, "includedIn": embedded.get(cid),
+                               "shared": len(rows) > 1, "allocations": rows, "purchaseOrders": orders[cid],
+                               "routes": routes, "option": option, "includedIn": embedded.get(cid),
                                "adjustments": [{"detail": adj["detail"], "evidence": adj.get("evidence", [])} for adj in stock["adjustments"]],
                                "latestActivity": latest["summary_en"] if latest else None, "default_route_id": primary_route["id"],
                                "current_stage": primary_route["current_stage"],

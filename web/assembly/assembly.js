@@ -32,6 +32,8 @@ let assumeConfirmation = true;
 let overviewKey = "";
 let inspectorKey = "";
 let requestOpen = false;
+let chaserCases = [];
+let chaserRequestOpen = false;
 let mapLand;
 let loadingMap = false;
 const premiums = new Map();
@@ -215,6 +217,17 @@ function routePicker(routes, active) {
   }).join("")}</select></label>`;
 }
 
+function renderChaserCases(part) {
+  const cases = chaserCases.filter(item => item.material === part.id && part.purchaseOrders?.some(order =>
+    order.supplierId === item.supplier_id && order.poNumber === item.po_number));
+  if (!cases.length) return "";
+  const labels = {open: "Open", waiting: "Waiting for reply", answered: "Reply received", escalated: "Escalated"};
+  const tones = {waiting: "waiting", answered: "ready", escalated: "alert"};
+  return `<section class="chaser-cases" aria-labelledby="chaser-heading"><h3 id="chaser-heading">Supplier Chaser cases</h3>
+    <ul>${cases.map(item => `<li class="next-step-line"><span class="state-chip" data-tone="${tones[item.status] ?? "active"}">${labels[item.status]}</span>
+      <a href="${html(item.url)}" target="_blank" rel="noreferrer">${html(item.supplier_name)}, purchase order ${html(item.po_number)}</a></li>`).join("")}</ul></section>`;
+}
+
 function renderInspector(force = false) {
   const inspector = $("inspector");
   const part = activePart();
@@ -222,7 +235,8 @@ function renderInspector(force = false) {
   if (!part) return;
   const route = activeRoute();
   const routes = routesFor(part);
-  const key = JSON.stringify([part, routes, route?.id, assumeConfirmation]);
+  const chaser = renderChaserCases(part);
+  const key = JSON.stringify([part, routes, route?.id, assumeConfirmation, chaser]);
   if (!force && key === inspectorKey) return;
   const line = nextStepLine(routeSelection ? route?.next_step ?? part.next_step : part.next_step);
   const currentStage = route?.current_stage ?? part.current_stage;
@@ -256,6 +270,7 @@ function renderInspector(force = false) {
       <p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p></div>
       ${renderRouteDetails(route, showConfirmation)}</div>
     </div>
+    ${chaser}
     ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
     <div class="info-grid"><div>
@@ -303,9 +318,41 @@ function selectPart(id, fromNextSteps = false) {
   else if (previous) (nextStepsButton || partControl(previous))?.focus();
 }
 
+async function refreshChaser() {
+  if (chaserRequestOpen) return;
+  chaserRequestOpen = true;
+  let status = "chaser offline";
+  let cases = [];
+  try {
+    const response = await fetch("/api/chaser?include_messages=false", {cache: "no-store"});
+    if (response.ok) ({status, cases} = await response.json());
+  } catch {
+    // Dockside remains usable if Supplier Chaser is unavailable.
+  } finally {
+    chaserRequestOpen = false;
+  }
+  chaserCases = cases.filter(item => item.status !== "closed");
+  const count = chaserCases.length;
+  const summary = $("chaser-count");
+  const label = status === "ok" ? `${number(count)} open supplier ${count === 1 ? "case" : "cases"}` : "Supplier Chaser offline";
+  const inbox = count ? new URL("/", chaserCases[0].url).href : null;
+  if (inbox && (summary.textContent !== label || summary.firstElementChild?.href !== inbox)) {
+    const link = document.createElement("a");
+    link.href = inbox;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = label;
+    summary.replaceChildren(link);
+  } else if (!inbox && summary.textContent !== label) {
+    summary.textContent = label;
+  }
+  if (state) renderInspector();
+}
+
 async function refresh() {
   if (requestOpen) return;
   requestOpen = true;
+  void refreshChaser();
   try {
     const response = await fetch("/api/dispatch", {cache: "no-store"});
     if (!response.ok) throw new Error(response.status);
