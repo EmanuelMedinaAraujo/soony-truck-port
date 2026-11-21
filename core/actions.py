@@ -58,6 +58,17 @@ def open_action_for(finding_id: str) -> dict | None:
 def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: float, eur_protected: float, ce_copies: int,
             category: str | None, owner: str | None, due_in_minutes: int = 60, payload: dict | None = None) -> dict:
     ap = approver_for(cost_eur, category)
+    special = cfg("approval_by_kind").get(kind)
+    if special:  # non-monetary sign-offs (quality concession, dock slot) follow their own rule, not the cost ladder
+        people, names = cfg("people"), []
+        for role in special:
+            name = people.get(f"{role}:{category}") if role == "Category Lead" else people.get(role)
+            if role == "Category Lead" and not name:
+                role, name = "Head of Procurement", people.get("Head of Procurement")  # vacant seat -> next tier
+            names.append((role, name))
+        if cost_eur and approver_for(cost_eur, category).get("role") not in [r for r, _ in names]:
+            names.append((ap.get("role"), ap.get("name")))
+        ap = {"role": " + ".join(r for r, _ in names), "name": " + ".join(n for _, n in names)}
     t = now()
     aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     with con() as c:
