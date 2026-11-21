@@ -1,58 +1,39 @@
-# How we win — Truck & Port agent ("Dockside", working name)
+# Dockside and the Sunday dispatch
 
-## The one-sentence pitch
-**"We find out at the dock" → the dock finds out from us.** An agent that watches every container, plane and truck heading
-to Hamburg, prices each one in Collector's Editions and euros, and gets the *right person* to approve the *right fix*
-in one tap — before the CE cell runs dry.
+**The supplier can find 8,000 art books. How many more games will actually leave on Sunday?** Dockside follows the offer through legal transport, dock release and the packing line. It recalculates how many finished copies that offer could add, then works through the open steps and shows the buyer any decision that needs them.
 
-## Why this wins on each judging criterion
-| Criterion | What we show |
+## The case for paying
+
+| Decision input | Soony launch scenario |
+|---|---:|
+| Collector’s copies at risk in the stock-backed forecast | 5,900 |
+| Extra Collector’s copies if 8,000 art books arrive usable in time | 2,500 |
+| Refunds those 2,500 copies could avoid | €300,000 |
+| Cost of the rush offer | €16,800 |
+| Refunds avoided less purchase cost if the plan lands in time | €283,200 |
+| Collector’s gap that still remains because of statues | 3,400 |
+
+The result is a conditional forecast. The supplier is holding stock while it checks transport. A receiving slot and formal order are still open. The stock-backed view takes no credit for the offer while these steps are open.
+
+The illustrated trace can treat confirmation as a scenario input. A future handoff would pass a verified, matching supplier claim keyed by purchase order, line and supplier, with committed quantities, delivery time and evidence. Dockside can then follow the carrier, dock slot and receipt against the same commitment. [Negotiator’s confirmation model](https://github.com/ManuelLerchner/HACKLeague2026-lio/blob/main/src/supplier_chaser/domain/models.py)
+
+An illustrative €3,000 standby van would break even if it improved the chance of getting those copies onto the trucks by at least **one percentage point**. Both options still need a dock slot, an authorized order and usable receipt. The buyer supplies a real premium or sees the threshold for the example. Dockside shows the latest viable release time from the offer lead times and displays the evidence the estimate uses.
+
+Test a €5,000 pilot for one launch at one site with buyers who have a hard retail commitment. This is a pricing hypothesis. Discovery should test willingness to pay against avoided losses and buyer time saved. A seasonal toy launch is a next prospect with the same multipart packing, shared parts and receiving constraints. The forecast already takes product, component, priority, price and timing inputs. A second live customer would still need site-specific connectors, approval policy and operating data.
+
+## The three-minute demo
+
+1. Open the dependency overview and select Art Book. The buyer sees the active path from supplier stock through transport and receiving into Collector’s dispatch. The shared game card appears once across both editions.
+2. Open the evidence and show the corrected goods receipt, the real supplier reply and the checks still open. Then compare the rush offer and standby premium. The art books unlock at most 2,500 copies under the current model because statues become the next constraint.
+3. Show the action already taken and the live decision queue. An email records that Dockside asked. A reply records what the supplier actually confirmed. A verified receiving record changes the supply picture. When a real approval is required, show who can act and by when.
+
+## What the jury can verify
+
+| Criterion | Live proof |
 |---|---|
-| Pitch that sticks | A real moment: *"350,000 cases have been sitting at the CTA terminal since Thursday. Nobody booked a truck. The spreadsheet still says 'in transit'."* Then: *"every hour the CE cell waits costs €108,000"* (900 copies/h × €120 refund — from our interview). |
-| Business case | €708k of CE refunds at risk this weekend alone (5,900 art books). Our fix costs €16.8k + a van → buyer-level signature. ROI > 40×. Beyond Soony: every hard-deadline launch (toys before Christmas, consumer electronics, pharma, automotive JIT where a line stop costs €20k+/min). |
-| Technical depth | sha256 change feed → deterministic rebuild of a provenance-tracked master DB → rules engine (numbers) → LLM agents (read multilingual docs, decide, draft, route approval by signature ladder, follow up, escalate). Nothing hardcoded: interview facts live in `config/business.json` with sources. Contradictions are kept and surfaced, never silently overwritten. |
-| Taste | Not dashboard #41. One screen: **€ at risk meter + 3 decisions + arrival timeline vs. Sunday cut-off**. Push to the person's phone (Discord) with Approve / Reject. |
+| A pitch that sticks | Follow a single art book from a corrected receipt to one more finished game on the Sunday truck. |
+| A real business case | Compare verified offer cost with marginal refund exposure and show the effect of the next bottleneck. Apply the same calculation to a seasonal retail launch. |
+| Technical depth | Pull source changes by hash, retain evidence for receipt and inspection corrections, show real multilingual supplier replies and real outbound activity. Recompute forecasts from the shared bill of materials and the current packing clock. |
+| Taste | Keep the overview quiet. Select a part to open the exact path, evidence and decision. Keep the work Dockside is doing visible without asking the buyer to manage it. |
 
-## Demo storyline (3 min)
-1. **Problem (30 s)** — 72k numbered CEs, €120 refund each, CE cell has ~2 h slack. Truth lives in ERP + a spreadsheet called `v37_FINAL_final2` + PDFs in Korean and Polish, and they disagree.
-2. **Live (2 min)**
-   - Open Dockside: *"5,900 CE copies at risk — €708k"*.
-   - Card 1: **Art books** — the ERP says 91k in stock; the agent read the Polish delivery note: someone typed 80.000, the dock corrected it to 8 000 by hand. Karton Nowak has 8,000 in stock (Polish offer, translated). Sunday truck ban → van ≤ 7.5 t or leave Saturday. Cost €16.8k → **Buyer Mei Lin can sign** (CE category lead is vacant — the agent knows). Tap *Approve* in Discord → agent emails the supplier (teammate's supplier channel) → follows up.
-   - Card 2: **Container NHSU4471921 at CTA** — book drayage, request dock slot from Katrin Jansen. Port-to-DC is exempt from the Sunday ban.
-   - Card 3: **Air game cards**: only 28k of 48k flew (Korean shipping advice). The agent recomputes: CE is still covered because CE gets cards first; Standard short — *not worth air-freight money* (Standard sells on Tuesday). Judgment, not just alerts.
-   - **Live drop**: a file changes on the portal → within 90 s the agent re-plans and pings the owner.
-3. **Business (30 s)** — pricing per launch / per site, path to the next 10 customers.
-
-## Product decisions
-- **Dashboard + Discord, same brain.** The web "control room" is for the planner (Raj); Discord is where approvals and
-  "what if" questions happen on a stressful Sunday (Katrin on the dock, Maren on her phone). Every action, approval and
-  message is in one action log.
-- **Follow-up loop = real agent work.** Each action has owner, deadline and next check. No reply or no data change →
-  re-ping → escalate one tier up the signature ladder (vacancy-aware).
-- **What-if via chat**: "What if the Polish truck is 3 h late?" → agent runs the rules engine with a modified ETA and answers in copies and euros.
-
-## Architecture
-```
-portal ──sha256 poll──▶ sync (blobs, change events)
-                          │
-                          ▼
-           ingest → master SQLite (provenance, observations, conflicts)
-                          │                 ▲
-   doc reader agent ──────┘ (facts from PDFs/scans, cached by sha256)
-                          ▼
-                rules engine (coverage, arrival vs cut-off, € impact, approver)
-                          ▼
-     action agent (LLM + tools: query, what-if, draft, request approval, send, follow-up)
-           │                         │
-     web control room          Discord bot (push, approve, chat)
-```
-
-## Open questions for office hours (Sun 09:00, Felix Brunner)
-- How many dock doors / slots at DC-HAM on Sat evening & Sunday? Who books drayage from CTA?
-- Do you use vans or permits for Sunday deliveries? (Sunday truck ban)
-- How do carriers tell you about delays today — portal, email, phone?
-- Approval ladder: interview said CEO + CPO above €5M, PP-07 says CPO + CFO. Which is right?
-
-## Known data traps (also a pitch asset: "how we handle messy data")
-See `findings.md`. Key: synthetic ship positions on land; tracker misses all air/road; 80.000 vs 8 000; sleeve revisions
-differ per supplier (our first analysis got this wrong — the per-batch provenance model caught it).
+The judging guide calls for a live prototype, repo, deck and backup video of up to three minutes by Sunday at 12:00. The stage slot is three minutes plus two minutes of questions.

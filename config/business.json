@@ -112,6 +112,10 @@
     "value": 5000,
     "source": "assumption: drayage from CTA, a dock slot, a phone call or a terms confirmation is always worth doing, also for Standard. Validate with Maren."
   },
+  "assurance_example_eur": {
+    "value": 3000,
+    "source": "Buyer tool design discussion: illustrative standby premium, editable in the prototype. No supplier quote."
+  },
   "autonomy": {
     "value": {
       "auto_kinds": [

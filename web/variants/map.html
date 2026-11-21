@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Dockside | Dispatch map</title>
+<!--
+Design plan
+  Folded card #ecf1f0, print ink #1d333a, molded tray #29434a, recess #20353c,
+  amber #f6d083 for a selected path, sea glass #93d4c7 for cleared dependencies.
+  Newsreader handles large display type. IBM Plex Sans handles the controls and labels.
+
+  Header [Dockside]                                     [Sunday deadline] [Live]
+  [Inputs]         [Parts]        [Pack]            [Dispatch]
+  (routes) -------- (book) ------- (Collector's) ------- (Sunday)  | Buyer queue
+  (stock) --------- (card) -------<                               |
+                                   (Standard) ---------/
+  [Selected part: supplier / travel / receiving]      [Van comparison]
+  At phone width, use a compact part picker and a vertical selected trace.
+
+  The packaging relief belongs to the dependency graph. Keep the other surfaces
+  flat. Use short nouns in the graph and put ETA, money and uncertainty in the
+  selected trace. Use visible state words alongside color. Routes converge, and
+  choosing a shared part highlights both editions without changing any data.
+  After the first screen review: collapse repeated route counts into supply
+  families, remove the duplicate edition totals, and keep route details below.
+  On the phone, let both edition rows visibly converge at Sunday dispatch.
+-->
+<script>
+try {
+  const theme = localStorage.getItem("dockside.theme");
+  if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper:#ecf1f0; --ink:#1d333a; --muted:#536969; --line:#b9c9c7; --white:#f7faf8;
+  --tray:#29434a; --well:#20353c; --lip:#466266; --tray-text:#f4f8f5; --tray-muted:#bdcdca;
+  --wire:#76948e; --amber:#f6d083; --sea:#93d4c7; --alert:#ffb4a8;
+  --risk:#854030; --good:#276b5d; --serif:Newsreader, Georgia, serif; --sans:"IBM Plex Sans", system-ui, sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#192a31; --ink:#edf4ec; --muted:#b2c3bc; --line:#516762; --white:#21343a;
+    --risk:#ffb6a2; --good:#93d4c7;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#192a31; --ink:#edf4ec; --muted:#b2c3bc; --line:#516762; --white:#21343a;
+  --risk:#ffb6a2; --good:#93d4c7;
+  color-scheme:dark;
+}
+* {box-sizing:border-box}
+body {margin:0;background:var(--paper);color:var(--ink);font:400 15px/1.45 var(--sans);font-variant-numeric:tabular-nums}
+h1,h2,h3,p,ol,ul,dl,dd {margin:0}
+ol,ul {padding:0;list-style:none}
+button,input {font:inherit;color:inherit}
+button {cursor:pointer}
+a {color:inherit}
+:focus-visible {outline:2px solid currentColor;outline-offset:4px}
+[hidden] {display:none!important}
+.wrap {width:min(1440px,100%);margin-inline:auto;padding-inline:clamp(16px,3.4vw,52px)}
+.top {min-height:60px;display:flex;gap:18px;align-items:center;border-bottom:1px solid var(--line)}
+.brand {font:500 23px/1 var(--serif);text-decoration:none}
+.status {margin-left:auto;color:var(--muted);font-size:13px;min-width:0}
+.status[data-error] {color:var(--risk)}
+.theme {background:none;border:1px solid var(--line);border-radius:50%;width:36px;height:36px;padding:0;flex:none}
+.theme svg {display:block;width:18px;height:18px;margin:auto}
+.lede {padding-block:clamp(24px,4vw,56px) 22px;display:flex;justify-content:space-between;align-items:end;gap:20px}
+.lede h1 {font:400 clamp(35px,5vw,67px)/.98 var(--serif);letter-spacing:-.022em}
+.lede .risk {margin-top:10px;color:var(--muted);max-width:61ch}
+.countdown {border-left:1px solid var(--line);padding-left:20px;color:var(--muted);font-size:13px;flex:none}
+.countdown strong {display:block;font:500 25px/1.15 var(--serif);color:var(--ink)}
+.workspace {display:grid;grid-template-columns:minmax(0,1fr) minmax(210px,252px);gap:clamp(20px,3vw,42px);align-items:start}
+.tray {position:relative;min-width:0;padding:clamp(14px,2vw,27px);background:var(--tray);color:var(--tray-text);
+  border:1px solid #506d70;border-radius:26px 26px 26px 10px;box-shadow:inset 0 2px 1px #81959166,inset 0 -5px 0 #1f353a,0 5px 0 #162b2d45}
+.tray h2 {font:500 23px/1 var(--serif)}
+.tray-top {display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding-bottom:15px}
+.tray-top p {color:var(--tray-muted);font-size:12px}
+.graph {display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.42fr) minmax(0,1fr) minmax(0,.83fr);
+  gap:clamp(14px,2.9vw,42px);position:relative;isolation:isolate}
+.graph-col {display:flex;flex-direction:column;gap:5px;min-width:0}
+.graph-col h3 {color:var(--tray-muted);font-weight:500;font-size:12px;margin-bottom:5px}
+.graph-items {display:grid;grid-template-rows:repeat(var(--rows,1),minmax(44px,auto));gap:5px;height:100%;align-items:stretch}
+.graph-col.outputs .graph-items {display:flex;flex-direction:column;justify-content:center;gap:20px}
+.well {min-width:0;position:relative;display:flex;align-items:center;justify-content:space-between;gap:7px;padding:6px 10px;
+  border:1px solid #56716e;border-radius:13px;background:var(--well);box-shadow:inset 0 2px 1px #0f272a85,0 1px 0 #78918b66;
+  color:var(--tray-text);font-size:13px;line-height:1.18;text-align:left;overflow-wrap:anywhere}
+button.well:hover {border-color:var(--sea)}
+button.well[aria-pressed="true"],.well.highlight {border-color:var(--amber);box-shadow:inset 0 0 0 1px var(--amber);color:var(--amber)}
+.well.deemphasized {color:var(--tray-muted);border-color:#506764}
+.well .mark {font-size:11px;color:var(--tray-muted);white-space:nowrap}
+.well.short .mark {color:var(--alert)}
+.well.shared:not(.short) .mark {color:var(--sea)}
+.well.source,.well.packing,.well.dispatch {display:grid;min-height:66px;align-content:center}
+.well.source {min-height:46px}
+.well.dispatch {border-radius:32px;text-align:center}
+.well.dispatch span {font-weight:600;font-size:15px}
+.well small {font-size:11px;font-weight:400;color:var(--tray-muted)}
+.channels {position:absolute;inset:0;z-index:-1;width:100%;height:100%;overflow:visible;pointer-events:none}
+.channel {fill:none;stroke:var(--wire);stroke-opacity:.8;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.channel.muted {stroke-opacity:.35}
+.channel.active {stroke:var(--amber);stroke-opacity:1;stroke-width:2}
+.handheld {display:none}
+.empty {font-size:14px;color:var(--muted);padding-block:12px}
+.rail h2,.trace h2,.support h2 {font:500 27px/1 var(--serif)}
+.rail-group {padding-block:15px 13px;border-bottom:1px solid var(--line)}
+.rail-group h3 {font-size:13px;font-weight:500;color:var(--muted);margin-bottom:6px}
+.action {padding-block:9px}
+.action+.action {border-top:1px solid var(--line)}
+.action p {margin-top:5px;color:var(--muted);font-size:13px}
+.action h4 {margin:0;font:600 14px/1.35 var(--sans)}
+.action-buttons {display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px}
+.button {border:1px solid var(--ink);border-radius:3px;min-height:38px;padding:7px 12px;line-height:1.25;font-weight:600;font-size:13px;background:none;color:var(--ink)}
+.button.primary {background:var(--ink);color:var(--paper)}
+.button[aria-expanded="true"] {background:var(--ink);color:var(--paper)}
+.button:disabled {opacity:.65;cursor:wait}
+.text-button {border:0;background:none;padding:4px 0;color:inherit;text-decoration:underline;text-underline-offset:3px;font-size:13px}
+.notice {font-size:13px;color:var(--risk)}
+.trace {margin-block:32px 24px;border-top:1px solid var(--line);padding-top:22px;scroll-margin-top:20px}
+.trace-heading {display:flex;justify-content:space-between;align-items:start;gap:15px;margin-bottom:18px}
+.trace-heading h2 {font-size:clamp(30px,4vw,46px)}
+.trace-heading p {color:var(--muted);margin-top:5px}
+.trail {display:flex;align-items:center;gap:5px 12px;flex-wrap:wrap;margin:-2px 0 18px;font-size:13px;color:var(--muted)}
+.trail li {display:flex;gap:12px;align-items:center}
+.trail li+li::before {content:"";width:14px;border-bottom:1px solid var(--line)}
+.trace-body {display:grid;grid-template-columns:minmax(0,1.22fr) minmax(0,1fr);gap:clamp(22px,3.8vw,56px)}
+.trace h3 {font:500 23px/1.1 var(--serif);margin-bottom:10px}
+.route {border-top:1px solid var(--line);padding-block:12px}
+.route:first-of-type {margin-top:7px}
+.route h4 {font-size:15px;margin:0}
+.route>.quantity {font-size:13px;color:var(--muted);margin-top:3px}
+.steps {margin:10px 0 0 7px;padding-left:14px;border-left:1px solid var(--line)}
+.step {position:relative;padding:4px 0 11px}
+.step::before {content:"";position:absolute;left:-18px;top:11px;width:6px;height:6px;border:1px solid var(--muted);border-radius:50%;background:var(--paper)}
+.step.confirmed::before {background:var(--good);border-color:var(--good)}
+.step.blocked::before {background:var(--risk);border-color:var(--risk)}
+.step strong,.step span {font-size:13px}
+.step small {color:var(--muted);font-size:12px;margin-left:7px}
+.step.blocked small {color:var(--risk)}
+.step p {font-size:14px;color:var(--muted);margin-top:2px}
+.allocation {font-size:14px;margin-bottom:20px}
+.allocation li {border-top:1px solid var(--line);padding-block:8px;display:flex;justify-content:space-between;gap:10px}
+.allocation li span {color:var(--muted);text-align:right}
+.option {border-top:2px solid var(--good);padding-top:13px}
+.option p {margin-top:6px;font-size:14px;color:var(--muted)}
+.option .result {color:var(--ink);font-size:17px;font-weight:600}
+.option .next {color:var(--ink)}
+.option .button {margin-top:13px}
+.compare {border-top:1px solid var(--line);margin-top:13px;padding-top:11px}
+.compare figure {margin:9px 0}
+.branch {display:grid;grid-template-columns:minmax(0,1fr) clamp(17px,5vw,32px) minmax(0,1fr);gap:8px;align-items:center}
+.branch-paths {display:grid;gap:5px}
+.branch-part {background:var(--white);border:1px solid var(--line);padding:8px;border-radius:8px;font-size:13px;line-height:1.3;overflow-wrap:anywhere}
+.branch-part.alt {border-color:var(--good);color:var(--good);font-weight:600}
+.branch path {stroke:var(--muted);stroke-width:1.5;fill:none}
+.branch-end span {display:block;margin-top:4px;color:var(--muted)}
+.compare ul {padding-left:17px;list-style:disc;margin:5px 0 0;font-size:13px;color:var(--muted)}
+.premium {display:flex;flex-wrap:wrap;align-items:center;gap:6px 9px;margin-top:12px;font-size:13px}
+.premium input {width:105px;padding:6px 8px;background:var(--white);border:1px solid var(--line);border-radius:3px}
+.trace details,.support details {border-top:1px solid var(--line);margin-top:12px;font-size:13px;padding:8px 0}
+.trace summary,.support summary {cursor:pointer;font-weight:600}
+.support .recent {border:0;margin:0;padding:0}
+.recent summary h2 {display:inline}
+.evidence-list {padding-left:16px;list-style:disc;margin-top:8px;color:var(--muted);overflow-wrap:anywhere}
+.evidence-list li {margin-bottom:5px}
+.support {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px;border-top:1px solid var(--line);margin-top:32px;padding-block:18px 39px}
+.support form {display:flex;align-items:center;gap:8px;margin-top:10px}
+.support input {min-width:0;flex:1;background:var(--white);border:1px solid var(--line);padding:7px 8px;min-height:38px}
+.support li,.support p {color:var(--muted);font-size:13px;margin-top:6px}
+.support #answer {white-space:pre-wrap;overflow-wrap:anywhere}
+.sr-only {position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media (min-width:951px) {
+  .rail {position:sticky;top:12px}
+}
+@media (max-width:950px) {
+  .workspace {grid-template-columns:minmax(0,1fr)}
+  .rail {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:22px}
+  .rail h2 {grid-column:1/-1}
+}
+@media (max-width:600px) {
+  .top {gap:10px}
+  .status {font-size:12px}
+  .lede {display:block;padding-top:25px}
+  .countdown {margin-top:12px;border-left:0;padding-left:0;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+  .countdown strong {font:600 13px/1.35 var(--sans)}
+  .tray {border-radius:18px 18px 18px 7px}
+  .graph {display:none}
+  .handheld {display:block}
+  .part-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:10px}
+  .part-grid .well {min-height:38px}
+  .mobile-merge {display:grid;grid-template-columns:minmax(0,1fr) 24px auto;align-items:center;gap:3px;color:var(--tray-muted)}
+  .mobile-editions {display:grid;gap:3px}
+  .mobile-editions li {display:flex;align-items:center;justify-content:space-between;gap:4px;min-height:23px;padding:3px 5px;
+    border:1px solid #56716e;border-radius:5px;background:var(--well);font-size:10.5px}
+  .mobile-editions li strong {color:var(--tray-text)}
+  .mobile-editions .highlight,.mobile-editions .highlight strong {color:var(--amber)}
+  .mobile-editions .highlight {border-color:var(--amber)}
+  .mobile-merge svg {width:24px;height:48px}
+  .mobile-dispatch {display:grid;line-height:1.2;text-align:center;border:1px solid #56716e;border-radius:14px;padding:4px 8px;background:var(--well);font-size:10px}
+  .mobile-dispatch strong {font-size:12px;color:var(--tray-text)}
+  .mobile-dispatch.highlight {border-color:var(--amber)}
+  .mobile-dispatch.highlight strong {color:var(--amber)}
+  .trail {display:grid;gap:5px}
+  .trail li+li::before {height:12px;width:0;border-bottom:0;border-left:1px solid var(--line)}
+  .trace-body,.support,.rail {grid-template-columns:1fr}
+  .trace-heading {flex-wrap:wrap;gap:9px}
+  .trace-body {gap:16px}
+  .trace .option {padding-bottom:7px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="/">Dockside</a>
+    <p id="status" class="status" role="status">Checking dispatch…</p>
+    <button type="button" class="theme" id="theme" aria-label="Switch theme"></button>
+  </header>
+  <main>
+    <header class="lede">
+      <div>
+        <h1>Sunday dispatch</h1>
+        <p class="risk" id="headline"></p>
+      </div>
+      <p class="countdown" id="clock"></p>
+    </header>
+    <div class="workspace">
+      <div>
+        <section class="tray" aria-labelledby="map-title">
+          <div class="tray-top">
+            <h2 id="map-title" tabindex="-1">Dispatch map</h2>
+            <p>Pick a part to trace</p>
+          </div>
+          <div id="graph" class="graph"></div>
+          <div id="handheld" class="handheld"></div>
+        </section>
+        <section id="trace" class="trace" hidden aria-labelledby="trace-title"></section>
+      </div>
+      <aside class="rail" aria-labelledby="buyer-title">
+        <h2 id="buyer-title" tabindex="-1">Buyer queue</h2>
+        <div id="buyer-actions"></div>
+        <p id="decision-result" class="notice" role="status"></p>
+      </aside>
+    </div>
+    <section class="support" aria-label="Dispatch support">
+      <details class="recent">
+        <summary><h2>Recent changes</h2></summary>
+        <ol id="activity"></ol>
+      </details>
+      <div>
+        <h2>Ask Dockside</h2>
+        <form id="ask">
+          <label class="sr-only" for="question">Ask about dispatch</label>
+          <input type="search" id="question" placeholder="Ask about dispatch" required>
+          <button class="button primary" type="submit">Ask</button>
+        </form>
+        <p id="answer" role="status"></p>
+        <details id="notes" hidden><summary>Model notes</summary><ul id="note-list"></ul></details>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+const $ = selector => document.querySelector(selector);
+const TZ = "Europe/Berlin";
+const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
+const number = value => new Intl.NumberFormat("en-GB", {maximumFractionDigits:2}).format(value);
+const money = value => `€${number(value)}`;
+const time = value => new Date(value).toLocaleTimeString("en-GB", {hour:"2-digit",minute:"2-digit",timeZone:TZ});
+const day = value => new Date(value).toLocaleDateString("en-GB", {weekday:"short",day:"numeric",month:"short",timeZone:TZ});
+const at = value => value ? `${day(value)} ${time(value)}` : "Time unconfirmed";
+const sortState = {short:0, verify:1, covered:2};
+const labels = {short:"Short", verify:"Check", covered:"Covered"};
+const stepLabels = {confirmed:"Confirmed", pending:"Pending", blocked:"Blocked", unknown:"Unconfirmed"};
+const edit = document.documentElement;
+let state, skew = 0, selected = null, compare = false, refreshError = false, busyDecision = null;
+const premiums = new Map();
+const paintKeys = new Map();
+
+function paint(id, key, render) {
+  if (paintKeys.get(id) === key) return false;
+  paintKeys.set(id, key);
+  document.getElementById(id).innerHTML = render();
+  return true;
+}
+
+function editionName(id) {
+  return state.editions.find(e => e.id === id)?.name ?? "";
+}
+
+function liveStatus() {
+  const el = $("#status");
+  const message = refreshError ? (state ? "Refresh failed. Showing the last dispatch check." : "Can't load dispatch. Check the server and refresh.") :
+    state?.checkedAt ? `Checked at ${time(state.checkedAt)}` : "Live dispatch";
+  if (el.textContent !== message) el.textContent = message;
+  el.toggleAttribute("data-error", refreshError);
+}
+
+function clock() {
+  if (!state) return;
+  const left = Math.max(0, Math.floor((Date.parse(state.deadline) - Date.now() - skew) / 60000));
+  const remaining = left > 0 ? `${Math.floor(left / 60)} h ${String(left % 60).padStart(2, "0")} min to dispatch` : "Dispatch deadline reached";
+  const deadline = at(state.deadline);
+  const cutoff = state.cutoff ? `. Receiving closes at ${time(state.cutoff)}` : "";
+  paint("clock", `${remaining}${deadline}${cutoff}`, () => `<strong>${remaining}</strong><span>${deadline}${cutoff}</span>`);
+}
+
+function renderOverview() {
+  const focus = state.components.find(c => c.id === state.focusComponentId);
+  const priority = state.editions.find(e => e.id === state.priorityId);
+  const str = focus && priority?.short > 0 ? `${focus.name} is the first blocker. ${number(priority.short)} ${priority.name} copies short.` :
+    focus ? `${focus.name} is the first constraint.` : "Projected packing and incoming supply.";
+  paint("headline", str, () => esc(str));
+  clock();
+  drawOverview();
+}
+
+function partButton(c, onMobile = false) {
+  const focused = selected === c.id;
+  const tag = c.status !== "covered" ? labels[c.status] ?? "Check" : c.shared ? "Shared" : "";
+  return `<button type="button" class="well part ${esc(c.status)}${c.shared ? " shared" : ""}${selected && !focused ? " deemphasized" : ""}"
+    data-part="${esc(c.id)}" ${onMobile ? "" : `data-node="part-${esc(c.id)}"`} aria-controls="trace" aria-pressed="${focused}">
+    <span>${esc(c.name)}${c.shared && tag !== "Shared" ? '<span class="sr-only">, shared</span>' : ""}</span>${tag ? `<span class="mark">${esc(tag)}</span>` : ""}</button>`;
+}
+
+function editionsFor(component) {
+  return component ? (component.allocations ?? []).filter(a => a.required > 0 || a.perCopy > 0).map(a => a.editionId) : [];
+}
+
+function source(c) {
+  if (c.option) return "offer";
+  if (c.status === "verify") return "stock";
+  if (c.routes?.some(r => !r.id.startsWith("stock-"))) return "inbound";
+  return "stock";
+}
+const supply = {offer:"Supplier offer", inbound:"Inbound freight", stock:"Hamburg stock"};
+
+function drawOverview() {
+  const components = [...state.components].sort((a,b) => {
+    const focusOrder = Number(b.id === state.focusComponentId) - Number(a.id === state.focusComponentId);
+    return focusOrder || (sortState[a.status] ?? 3) - (sortState[b.status] ?? 3) || Number(b.shared) - Number(a.shared);
+  });
+  const active = new Set(editionsFor(components.find(c => c.id === selected)));
+  const activeSupply = source(components.find(c => c.id === selected) ?? {});
+  const groups = Object.keys(supply).filter(key => components.some(c => source(c) === key));
+  const key = JSON.stringify([components.map(c => [c.id,c.name,c.status,c.shared,source(c),editionsFor(c)]),
+    state.editions.map(e => [e.id,e.name,e.projected,e.demand]),state.deadline,selected]);
+  const graphChanged = paint("graph", key, () => {
+    const rows = Math.max(1, components.length);
+    return `<svg class="channels" aria-hidden="true"></svg>
+      <section class="graph-col outputs"><h3>Supply</h3><div class="graph-items">${groups.map(key =>
+        `<span class="well source${selected && activeSupply === key ? " highlight" : ""}" data-node="supply-${key}">${supply[key]}</span>`).join("")}</div></section>
+      <section class="graph-col"><h3>Parts</h3><div class="graph-items" style="--rows:${rows}">${components.map(c => partButton(c)).join("")}</div></section>
+      <section class="graph-col outputs"><h3>Pack</h3><div class="graph-items">${state.editions.map(e =>
+        `<div class="well packing${active.has(e.id) ? " highlight" : ""}" data-node="edition-${esc(e.id)}"><strong>${esc(e.name)}</strong><small>${number(e.projected)} / ${number(e.demand)}</small></div>`).join("")}</div></section>
+      <section class="graph-col outputs"><h3>Dispatch</h3><div class="graph-items"><div class="well dispatch${selected ? " highlight" : ""}" data-node="dispatch"><span>${esc(at(state.deadline).split(" ").at(-1))}</span><small>${esc(day(state.deadline))}</small></div></div></section>`;
+  });
+  paint("handheld", key, () => `<div class="part-grid">${components.map(c => partButton(c, true)).join("")}</div>
+    <div class="mobile-merge">
+      <ul class="mobile-editions" aria-label="Projected pack-out">${state.editions.map(e =>
+        `<li${active.has(e.id) ? ' class="highlight"' : ""}><strong>${esc(e.name.replace(/ Edition$/, ""))}</strong>
+          <span>${number(e.projected)} / ${number(e.demand)}</span></li>`).join("")}</ul>
+      <svg viewBox="0 0 24 48" aria-hidden="true">
+        <path class="channel${active.has(state.editions[0]?.id) ? " active" : ""}" d="M0 11H4Q12 11 12 19V24H24"/>
+        <path class="channel${active.has(state.editions[1]?.id) ? " active" : ""}" d="M0 37H4Q12 37 12 29V24H24"/>
+      </svg>
+      <div class="mobile-dispatch${active.size ? " highlight" : ""}"><strong>${esc(time(state.deadline))}</strong>
+        <span>${esc(at(state.deadline).split(" ")[0])} dispatch</span></div>
+    </div>`);
+  if (graphChanged) drawChannels();
+}
+
+function drawChannels() {
+  const graph = $("#graph"), svg = graph.querySelector(".channels");
+  if (!state || !svg || !graph.clientWidth) return;
+  const bounds = graph.getBoundingClientRect();
+  const nodes = new Map([...graph.querySelectorAll("[data-node]")].map(el => [el.dataset.node, el.getBoundingClientRect()]));
+  const trails = [];
+  function connect(from, to, on) {
+    const a = nodes.get(from), b = nodes.get(to);
+    if (!a || !b) return;
+    const x = a.right - bounds.left, y = a.top + a.height / 2 - bounds.top, ex = b.left - bounds.left, ey = b.top + b.height / 2 - bounds.top;
+    const mid = x + (ex - x) / 2;
+    trails.push({on, d:`M ${x} ${y} C ${mid} ${y} ${mid} ${ey} ${ex} ${ey}`});
+  }
+  for (const c of state.components) {
+    const on = selected === c.id;
+    connect("supply-" + source(c), "part-" + c.id, on);
+    for (const id of editionsFor(c)) connect("part-" + c.id, "edition-" + id, on);
+  }
+  const active = new Set(editionsFor(state.components.find(c => c.id === selected)));
+  for (const e of state.editions) connect("edition-" + e.id, "dispatch", active.has(e.id));
+  svg.innerHTML = trails.sort((a,b) => Number(a.on) - Number(b.on)).map(path =>
+    `<path class="channel${path.on ? " active" : selected ? " muted" : ""}" d="${path.d}"></path>`).join("");
+}
+new ResizeObserver(drawChannels).observe($("#graph"));
+
+function evidence(items) {
+  const rows = items.filter(Boolean).map(row => typeof row === "string" ? `<li>${esc(row)}</li>` :
+    `<li><strong>${esc(row.label)}</strong>${row.detail ? `<br>${esc(row.detail)}` : ""}</li>`);
+  return rows.length ? `<details><summary>Evidence</summary><ul class="evidence-list">${rows.join("")}</ul></details>` : "";
+}
+
+function renderTrace() {
+  const tray = $("#trace"), c = state.components.find(row => row.id === selected);
+  tray.hidden = !c;
+  if (!c) return;
+  const key = JSON.stringify([c, state.editions.map(e => [e.id,e.name]), compare]);
+  if (document.activeElement?.id === "premium") return;
+  paint("trace", key, () => `
+    <div class="trace-heading"><div><h2 id="trace-title" tabindex="-1">${esc(c.name)}</h2>
+      <p>${c.usable == null ? "" : `${number(c.usable)} usable`}${c.required == null ? "" : ` of ${number(c.required)} required`}${c.shared ? " · Shared by both editions" : ""}</p></div>
+      <button type="button" class="button" id="back">Back to map</button></div>
+    <ol class="trail" aria-label="Path to dispatch"><li>${supply[source(c)]}</li>${editionsFor(c).length ?
+      `<li>${esc(editionsFor(c).map(editionName).join(" + "))}</li><li>${esc(at(state.deadline))} dispatch</li>` : ""}</ol>
+    <div class="trace-body">
+      <div>
+        <h3>Incoming supply</h3>
+        ${c.routes?.length ? c.routes.map(routeView).join("") : '<p class="empty">No incoming route in the current plan.</p>'}
+        ${c.adjustments?.length ? `<details><summary>Stock checks</summary><ul class="evidence-list">${c.adjustments.map(a =>
+          `<li>${esc(a.detail)}${a.evidence?.length ? `<br>${a.evidence.map(esc).join(" · ")}` : ""}</li>`).join("")}</ul></details>` : ""}
+      </div>
+      <div>
+        <h3>Packing dependencies</h3>
+        <ul class="allocation">${(c.allocations ?? []).filter(a => a.required > 0 || a.perCopy > 0).map(a =>
+          `<li><strong>${esc(editionName(a.editionId))}</strong><span>${number(a.allocated)} of ${number(a.required)} allocated</span></li>`).join("")}</ul>
+        ${c.option ? optionView(c.option) : ""}
+      </div>
+    </div>`);
+}
+
+function routeView(route) {
+  const steps = (route.steps ?? []).map(step => `<li class="step ${esc(step.state)}"><strong>${esc(step.name)}</strong>
+    <small>${esc(stepLabels[step.state] ?? "Unconfirmed")}</small>${step.detail ? `<p>${esc(step.detail)}</p>` : ""}</li>`);
+  return `<article class="route"><h4>${esc(route.name)}</h4>${route.quantity == null ? "" : `<p class="quantity">${number(route.quantity)} units</p>`}
+    ${steps.length ? `<ol class="steps">${steps.join("")}</ol>` : ""}
+    ${evidence(route.evidence ?? [])}</article>`;
+}
+
+function optionView(option) {
+  const result = option.copiesAdded == null || option.refundsAvoided == null ? "Incremental impact unconfirmed" :
+    `With timely receipt, ${number(option.copiesAdded)} extra ${editionName(option.editionId)} copies and ${money(option.refundsAvoided)} in refunds avoided.`;
+  const timing = option.timingState === "expired" ? "The useful delivery window has closed." : option.timingState === "unknown" ? "A useful delivery time is still unconfirmed." :
+    option.latestUsefulAt ? `Estimated latest order release ${at(option.latestUsefulAt)}, with a legal vehicle and receiving slot.` : "Impact depends on timely receipt.";
+  const terms = [option.quantity != null ? `${number(option.quantity)} units` : "", option.cost != null ? `${money(option.cost)} cost` : "",
+    option.netIfTimely != null ? `${money(option.netIfTimely)} net if timely` : ""].filter(Boolean).join(" · ");
+  return `<section class="option" aria-labelledby="option-title">
+    <h3 id="option-title">${esc(option.name)}</h3>
+    ${option.supplier ? `<p>${esc(option.supplier)}</p>` : ""}
+    <p class="result">${esc(result)}</p>
+    ${terms ? `<p>${esc(terms)}</p>` : ""}
+    <p>${esc(timing)}${option.validUntil ? ` Offer valid until ${esc(option.validUntil.length === 10 ? day(option.validUntil) : at(option.validUntil))}.` : ""}</p>
+    ${option.nextConstraint ? `<p class="next"><strong>${esc(option.nextConstraint)}</strong> becomes the next blocker.</p>` : ""}
+    ${option.assurance ? `<button type="button" id="compare" class="button" aria-controls="comparison" aria-expanded="${compare}">${compare ? "Hide standby van" : "Compare standby van"}</button>
+      <div id="comparison" ${compare ? "" : "hidden"}>${compare ? comparison(option) : ""}</div>` : ""}
+    ${evidence(option.evidence ?? [])}
+    </section>`;
+}
+
+function comparison(option) {
+  const {coveredStep, examplePremium, sharedSteps} = option.assurance;
+  const premium = premiums.get(selected) ?? examplePremium ?? "";
+  return `<div class="compare">
+    <figure class="branch" aria-label="A standby van adds a second way to cover ${esc(coveredStep)}. Shared checks apply to both routes.">
+      <div class="branch-paths"><div class="branch-part">Primary transport</div><div class="branch-part alt">Standby van</div></div>
+      <svg viewBox="0 0 34 74" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 18 H 10 Q 17 18 17 27 V 37 M 0 56 H 10 Q 17 56 17 47 V 37 H 34"/></svg>
+      <div class="branch-part branch-end"><strong>${esc(coveredStep)}</strong><span>Shared checks remain</span></div>
+    </figure>
+    ${sharedSteps?.length ? `<ul aria-label="Open checks on both branches">${sharedSteps.map(step => `<li>${esc(step)}</li>`).join("")}</ul>` : ""}
+    <div class="premium"><label for="premium">Example standby premium in euros</label>
+      <input id="premium" type="number" min="0" step="any" inputmode="decimal" value="${esc(premium)}"></div>
+    <p id="break-even">${breakEvenText(option, premium)}</p>
+    <p>Standby protects the same shipment. The gain depends on whether it improves on-time delivery.</p>
+  </div>`;
+}
+
+function breakEvenText(option, premium) {
+  if (!(option.refundsAvoided > 0)) return "A break-even threshold needs a positive refund estimate.";
+  if (premium === "" || !Number.isFinite(Number(premium)) || Number(premium) < 0) return "Enter a nonnegative premium to compare.";
+  const points = Number(premium) * 100 / option.refundsAvoided;
+  if (points > 100) return "Avoided refunds cannot cover this premium even if standby guarantees timely delivery.";
+  return `Breaks even if standby improves the chance of timely delivery by <strong>at least ${number(points)} percentage ${points === 1 ? "point" : "points"}</strong>.`;
+}
+
+function rail() {
+  const scheduled = state.decisions.filter(a => a.status === "scheduled");
+  const signatures = state.decisions.filter(a => ["proposed","escalated"].includes(a.status));
+  paint("buyer-actions", JSON.stringify([scheduled,signatures,busyDecision]), () => {
+    if (!scheduled.length && !signatures.length) return '<p class="empty">No scheduled actions or signatures due.</p>';
+    return `${scheduled.length ? `<section class="rail-group" aria-label="Scheduled">
+      <h3>Scheduled</h3>${scheduled.map(actionView).join("")}</section>` : ""}
+      ${signatures.length ? `<section class="rail-group" aria-label="Needs a signature">
+      <h3>Needs a signature</h3>${signatures.map(actionView).join("")}</section>` : ""}`;
+  });
+}
+
+function actionView(action) {
+  const scheduled = action.status === "scheduled";
+  const person = action.approver_name || "the buyer";
+  const line = scheduled ? `Goes ahead ${action.next_check_at ? "at " + time(action.next_check_at) : "when its stop window closes"} unless ${person} stops it.` :
+    `Waiting for ${person}${action.due_at ? ` by ${time(action.due_at)}` : ""}.`;
+  return `<article class="action">
+    <h4>${esc(action.title)}</h4><p>${esc(line)}</p>
+    ${action.rationale ? `<p>${esc(action.rationale)}</p>` : ""}
+    <div class="action-buttons"><button type="button" class="button primary" data-decision="approve" data-id="${esc(action.id)}" ${busyDecision ? "disabled" : ""}>${scheduled ? "Do it now" : "Approve"}</button>
+    <button type="button" class="button" data-decision="reject" data-id="${esc(action.id)}" ${busyDecision ? "disabled" : ""}>${scheduled ? "Stop" : "Decline"}</button></div></article>`;
+}
+
+function support() {
+  const entries = state.activity.slice(0,4);
+  paint("activity", JSON.stringify(entries), () => entries.length ? entries.map(e =>
+     `<li>${e.ts ? `<time datetime="${esc(e.ts)}">${time(e.ts)}</time> ` : ""}${esc(e.text)}</li>`).join("") :
+     "<li>No dispatch changes yet.</li>");
+  $("#notes").hidden = !state.notes.length;
+  paint("note-list", JSON.stringify(state.notes), () => state.notes.map(note => `<li>${esc(note)}</li>`).join(""));
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/dispatch", {cache:"no-store"});
+    if (!r.ok) throw new Error(String(r.status));
+    state = await r.json();
+    skew = Date.parse(state.now) - Date.now();
+    refreshError = false;
+    renderOverview();
+    renderTrace();
+    rail();
+    support();
+  } catch {
+    refreshError = true;
+  }
+  liveStatus();
+}
+
+function choose(id) {
+  if (!state?.components.some(c => c.id === id)) return;
+  selected = id;
+  compare = false;
+  drawOverview();
+  renderTrace();
+  $("#trace-title")?.focus({preventScroll:true});
+  $("#trace").scrollIntoView({block:"start"});
+}
+
+function back() {
+  const id = selected;
+  selected = null;
+  compare = false;
+  drawOverview();
+  renderTrace();
+  const region = matchMedia("(max-width:600px)").matches ? "#handheld" : "#graph";
+  const button = $(`${region} [data-part="${CSS.escape(id)}"]`);
+  (button || $("#map-title")).focus();
+}
+
+async function decide(id, decision) {
+  if (busyDecision) return;
+  busyDecision = id;
+  rail();
+  const result = $("#decision-result");
+  result.textContent = "Recording decision…";
+  try {
+    const res = await fetch(`/api/actions/${encodeURIComponent(id)}/decide`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({decision, by:"web"})});
+    const row = await res.json();
+    if (!res.ok) throw new Error(typeof row.detail === "string" ? row.detail : "Try again after checking the current queue.");
+    const statuses = new Set((row.messages ?? []).map(m => m.status));
+    result.textContent = decision === "reject" ? "Action stopped." :
+      statuses.has("outbox") || statuses.has("draft") ? "Approved. Messages are queued." :
+      statuses.has("delivery_unknown") || statuses.has("sending") ? "Approved. Email delivery is unconfirmed." : "Action approved.";
+    state.decisions = state.decisions.map(a => a.id === id ? {...a, status:row.status} : a);
+  } catch (error) {
+    result.textContent = `Couldn't confirm the decision. ${error.message}`;
+  } finally {
+    busyDecision = null;
+    rail();
+    const button = $(`[data-id="${CSS.escape(id)}"][data-decision="${decision}"]`);
+    (button || $("#buyer-title")).focus();
+    load();
+  }
+}
+
+document.addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.dataset.part) choose(button.dataset.part);
+  else if (button.dataset.decision) decide(button.dataset.id, button.dataset.decision);
+  else if (button.id === "back") back();
+  else if (button.id === "compare") {
+    compare = !compare;
+    renderTrace();
+    $("#compare")?.focus({preventScroll:true});
+  }
+});
+
+$("#trace").addEventListener("input", event => {
+  if (event.target.id !== "premium") return;
+  const option = state.components.find(c => c.id === selected)?.option;
+  if (!option) return;
+  premiums.set(selected, event.target.value);
+  $("#break-even").innerHTML = breakEvenText(option, event.target.value);
+});
+
+$("#ask").addEventListener("submit", async event => {
+  event.preventDefault();
+  const input = $("#question"), q = input.value.trim(), answer = $("#answer");
+  const button = event.target.querySelector("button");
+  if (!q) return;
+  button.disabled = true;
+  answer.textContent = "Checking the shipment data…";
+  try {
+    const response = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"},body:JSON.stringify({q})});
+    const result = await response.json();
+    if (!response.ok || !result.answer) throw new Error("Dockside could not answer.");
+    answer.textContent = result.answer;
+  } catch {
+    answer.textContent = "Dockside could not answer. Try again in a moment.";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+const systemTheme = matchMedia("(prefers-color-scheme: dark)");
+const icon = {dark:'<path d="M20 14.5a8 8 0 0 1-10.5-10.5A8 8 0 1 0 20 14.5z"/>',
+  light:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11 1.5 1.5M19 5l-1.5 1.5m-11 11L5 19"/>'};
+function darkMode() { return edit.dataset.theme ? edit.dataset.theme === "dark" : systemTheme.matches; }
+function paintTheme() {
+  const button = $("#theme"), target = darkMode() ? "light" : "dark";
+  button.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">${icon[target]}</svg>`;
+  button.setAttribute("aria-label", `Switch to ${target} theme`);
+}
+systemTheme.addEventListener("change", paintTheme);
+$("#theme").addEventListener("click", () => {
+  edit.dataset.theme = darkMode() ? "light" : "dark";
+  try { localStorage.setItem("dockside.theme", edit.dataset.theme); } catch {}
+  paintTheme();
+});
+paintTheme();
+load();
+setInterval(load, 15000);
+setInterval(clock, 1000);
+</script>
+</body>
+</html>

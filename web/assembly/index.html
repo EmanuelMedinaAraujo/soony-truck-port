@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Dockside | Sunday dispatch</title>
+  <link rel="stylesheet" href="/assembly/assembly.css">
+  <script defer src="/assembly/transport-map.js"></script>
+  <script defer src="/assembly/operations.js"></script>
+  <script defer src="/assembly/assembly.js"></script>
+</head>
+<body>
+<!--
+Design plan, Lio deep dive slides 17–19.
+Ink #18203C carries the interface, sheet #F7F8FE supports the paper artwork,
+periwinkle #DDE2F9 marks the shared supply, cobalt #314EB2 marks selection,
+poppy #AB301D marks a shortage, and spruce #1A6756 marks covered stock.
+Barlow Semi Condensed sets stage names and the deadline. Atkinson Hyperlegible
+Next sets the operating text. Labels and values align directly to the artwork.
+
+  Sunday dispatch                                Sun 20:00
+                    [steel] [tray] [book] [map] [statue]   → [Collector’s box]
+  [card] [leaflet] <
+                    [clear case] [sleeve]                 → [Standard box]
+  Select a part to open seven steps, live evidence and delivery economics.
+
+Brief review. A supplier-first flow forced buyers to interpret freight before
+seeing what they were packing. The product illustrations now carry the overview.
+One shared branch replaces a duplicate card and leaflet in each edition. Stage
+icons, lead times and the assumed confirmation appear only inside a part trace.
+-->
+<header class="mast">
+  <div class="shell mast-inner">
+    <a class="wordmark" href="/" aria-label="Dockside home">Dockside</a>
+    <span class="site">Grand Heist 6 / Hamburg</span>
+    <div class="utility"><span id="sync" role="status">Connecting</span><a href="#operations">Actions</a></div>
+  </div>
+</header>
+<main class="shell">
+  <header class="dispatch-heading">
+    <div><h1>Sunday dispatch</h1><p>Select a part to trace it to the box.</p></div>
+    <div class="deadline"><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
+  </header>
+
+  <section id="overview" aria-label="Shared supply and the two editions">
+    <p class="loading" id="initial">Loading the assembly plan.</p>
+    <div class="assembly" id="assembly" hidden></div>
+    <footer class="graph-footer" id="legend" hidden>
+      <div class="legend" aria-label="Part status key">
+        <span><i class="status-dot covered"></i> Covered</span>
+        <span><i class="status-dot short"></i> Short on site</span>
+        <span>Projected dispatch / target</span>
+      </div>
+    </footer>
+  </section>
+
+  <section class="inspector" id="inspector" aria-labelledby="part-heading" hidden></section>
+  <section class="operations" id="operations" aria-labelledby="operations-title">
+    <header><h2 id="operations-title">Actions</h2><p id="attention">Checking for decisions</p></header>
+    <div id="decision-list"></div>
+    <p id="operation-result" class="operation-result" role="status"></p>
+    <details class="operation-details"><summary>Recent activity</summary><ol id="activity-list"></ol></details>
+    <details class="operation-details"><summary>Ask Dockside</summary>
+      <form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label>
+        <input id="question" required placeholder="What could hold up the art books?"><button class="action-button" type="submit">Ask</button></form>
+      <p id="answer" role="status" class="answer"></p>
+    </details>
+  </section>
+</main>
+</body>
+</html>

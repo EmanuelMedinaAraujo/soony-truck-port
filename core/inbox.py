@@ -54,13 +54,16 @@ def fetch() -> list[dict]:
         return []
     with actions.con() as c:
         c.executescript(REPLY_SCHEMA)
-        ours = c.execute("SELECT id, action_id, subject, provider_id FROM messages WHERE channel='email' AND status='sent'").fetchall()
+        ours = c.execute("SELECT id, action_id, subject, provider_id, to_address FROM messages WHERE channel='email' AND status='sent'").fetchall()
         known = {r[0] for r in c.execute("SELECT message_id FROM replies")}
     by_mid = {r["provider_id"]: r for r in ours if r["provider_id"]}
-    by_subj = {_norm(r["subject"]): r for r in ours}
+    by_subj = {}
+    for r in ours:
+        if not r["provider_id"]:
+            by_subj.setdefault((_norm(r["subject"]), (r["to_address"] or "").casefold()), []).append(r)
     if not ours:
         return []
-    M = imaplib.IMAP4_SSL(host, int(os.environ.get("IMAP_PORT") or 993))
+    M = imaplib.IMAP4_SSL(host, int(os.environ.get("IMAP_PORT") or 993), timeout=20)
     M.login(os.environ["IMAP_USER"], os.environ["IMAP_PASSWORD"])
     new = []
     try:
@@ -71,12 +74,18 @@ def fetch() -> list[dict]:
             mid = (hdr["Message-ID"] or "").strip() or hashlib.sha1(bytes(hdr)).hexdigest()
             if mid in known:
                 continue
-            refs = (hdr["In-Reply-To"] or "") + " " + (hdr["References"] or "")
-            ours_msg = next((m for k, m in by_mid.items() if k and k in refs), None) or by_subj.get(_norm(_h(hdr["Subject"])))
-            if not ours_msg or not _h(hdr["Subject"]).lower().lstrip().startswith(("re", "aw", "odp", "回复", "답장")):
+            subject = _h(hdr["Subject"])
+            name, addr = parseaddr(_h(hdr["From"]))
+            direct = re.findall(r"<[^<>]+>", hdr["In-Reply-To"] or "")
+            refs = re.findall(r"<[^<>]+>", hdr["References"] or "")
+            ours_msg = next((by_mid[ref] for ref in direct + refs[::-1] if ref in by_mid), None)
+            if ours_msg is None:
+                candidates = by_subj.get((_norm(subject), addr.casefold()), [])
+                if len(candidates) == 1 and _norm(subject) != subject.strip().lower():
+                    ours_msg = candidates[0]
+            if not ours_msg or (ours_msg["to_address"] or "").casefold() != addr.casefold():
                 continue
             full = email.message_from_bytes(M.fetch(i, "(BODY.PEEK[])")[1][0][1])
-            name, addr = parseaddr(_h(full["From"]))
             try:
                 when = parsedate_to_datetime(full["Date"]).astimezone().isoformat(timespec="seconds")
             except Exception:
@@ -85,8 +94,10 @@ def fetch() -> list[dict]:
             row = dict(id=rid, message_id=mid, msg_id=ours_msg["id"], action_id=ours_msg["action_id"], from_addr=addr, from_name=name or addr,
                        subject=_h(full["Subject"]), received_at=when, body=_strip_quote(_body(full)))
             with actions.con() as c:
-                c.execute("INSERT OR IGNORE INTO replies(id,message_id,msg_id,action_id,from_addr,from_name,subject,received_at,body) VALUES (?,?,?,?,?,?,?,?,?)",
-                          tuple(row.values()))
+                inserted = c.execute("INSERT OR IGNORE INTO replies(id,message_id,msg_id,action_id,from_addr,from_name,subject,received_at,body) VALUES (?,?,?,?,?,?,?,?,?)",
+                                     tuple(row.values())).rowcount
+            if not inserted:
+                continue
             actions.log_event("reply", row["action_id"], f"{row['from_name']} replied: {row['subject']}")
             new.append(row)
     finally:
@@ -100,14 +111,24 @@ def unhandled() -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM replies WHERE handled=0 ORDER BY received_at")]
 
 
+def get_reply(rid: str) -> dict | None:
+    with actions.con() as c:
+        c.executescript(REPLY_SCHEMA)
+        row = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
+    return dict(row) if row else None
+
+
 def mark_handled(rid: str, summary_en: str) -> dict | None:
     with actions.con() as c:
+        c.executescript(REPLY_SCHEMA)
+        c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
         if not r:
             return None
-        c.execute("UPDATE replies SET handled=1, summary_en=? WHERE id=?", (summary_en, rid))
-    if r["action_id"]:
-        a = actions.get(r["action_id"])
-        if a:
-            actions.set_status(a["id"], a["status"], f"reply from {r['from_name']}: {summary_en}")
+        if not r["handled"]:
+            c.execute("UPDATE replies SET handled=1, summary_en=? WHERE id=?", (summary_en, rid))
+            a = c.execute("SELECT history FROM actions WHERE id=?", (r["action_id"],)).fetchone()
+            if a:
+                c.execute("UPDATE actions SET history=? WHERE id=?",
+                          (actions._hist(a, f"reply from {r['from_name']}: {summary_en}"), r["action_id"]))
     return dict(r)

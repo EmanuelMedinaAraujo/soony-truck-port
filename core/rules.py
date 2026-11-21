@@ -239,6 +239,7 @@ def inbound(con, coverage: dict) -> list[dict]:
         planned_for_launch = bool(planned_at_dc and planned_at_dc <= cutoff)
         out.append(dict(shipment_id=s["shipment_id"], mode=s["mode"], status=s["status"], reference=s["reference"], supplier_id=s["supplier_id"],
                         carrier_id=s["carrier_id"], materials=mats, quantity=qty, po_numbers=s["po_numbers"], origin=s["origin"], destination=s["destination"],
+                        via=s["via"] or r.get("via"), dest_site=s["dest_site"],
                         etd=s["etd"], eta_erp=s["eta"], arrival_at_dc=at_dc.isoformat() if at_dc else None,
                         makes_cutoff=(at_dc <= cutoff) if at_dc else None, cutoff=cutoff.isoformat(), flags=flags, evidence=ev,
                         fills_gap_of=critical_for, planned_for_launch=planned_for_launch, last_lat=s["last_lat"], last_lon=s["last_lon"], updated_at=s["updated_at"]))

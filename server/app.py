@@ -1,11 +1,12 @@
 """Dockside server: background loop (sync -> rebuild -> read new docs -> rules -> agent -> follow-ups) + JSON API + web UI.
 
-Run:  .venv/bin/uvicorn server.app:app --port 8000
+Run: .venv/bin/uvicorn server.app:app --env-file .env --port 8765
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -17,16 +18,18 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "sync"))
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import soony_sync  # noqa: E402
-from core import actions, agent, ingest, rules  # noqa: E402
+from core import actions, agent, dispatch, ingest, outbound, rules  # noqa: E402
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
 app = FastAPI(title="Dockside")
-STATE = {"last_sync": None, "last_change": None, "sync_error": None, "busy": None, "agent_summary": None}
+STATE = {"last_sync": None, "last_change": None, "sync_error": None, "last_inbox": None, "inbox_error": None,
+         "busy": None, "agent_summary": None}
 LOCK = threading.Lock()
 listeners: list = []  # callables(event_dict) — the Discord bot registers here
 
@@ -39,10 +42,29 @@ def notify(kind: str, payload: dict) -> None:
             traceback.print_exc()
 
 
+def notify_action(result: dict) -> None:
+    aid = result.get("created") or result.get("done_automatically") or result.get("scheduled")
+    if aid:
+        a = actions.get(aid)
+        kind = {"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed")
+        notify(kind, {"action": a})
+
+
 def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
     """One pass of the whole pipeline. Safe to call from the loop or an API request."""
     with LOCK:
         out = {"changes": 0}
+        STATE["busy"] = "executing scheduled actions"
+        for a in actions.due_scheduled():
+            try:
+                actions.decide(a["id"], "approve", "Dockside", "stop window elapsed", scheduled_only=True)
+            except ValueError:
+                continue  # a simultaneous Stop or Do it now already took effect
+            a = outbound.dispatch(a["id"], "executed by Dockside after the stop window")
+            if a["status"] == "sent":
+                notify("action_executed", {"action": a})
+        for a in actions.pending_dispatch():
+            outbound.dispatch(a)
         token = os.environ.get("SOONY_TOKEN")
         try:
             STATE["busy"] = "sync"
@@ -73,7 +95,6 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                     ingest.build()
             if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
                 STATE["busy"] = "agent planning"
-                before = {a["id"] for a in actions.list_actions()}
                 steps = {"n": 0}
                 labels = {"get_situation": "reading the launch picture", "get_shipment": "checking a shipment", "query_db": "querying the data",
                           "search_documents": "reading documents", "plan_truck": "planning a truck", "what_if": "running a what-if",
@@ -83,19 +104,18 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                     steps["n"] += 1
                     STATE["busy"] = f"agent planning: step {steps['n']}, {labels.get(name, name)}"
                     if name == "propose_action":
-                        a = actions.get(out.get("created") or out.get("done_automatically") or "")
-                        if a:  # stream each action to the UI/Discord as soon as it exists
-                            notify({"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed"), {"action": a})
+                        notify_action(out)
 
                 STATE["agent_summary"] = agent.plan(progress, model=plan_model)
                 actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
-        if os.environ.get("IMAP_HOST") and os.environ.get("OPENAI_API_KEY"):
+        if os.environ.get("IMAP_HOST"):
             try:
                 STATE["busy"] = "reading supplier replies"
                 from core import inbox
                 for r in inbox.fetch():
                     notify("reply", {"reply": r})
-                if inbox.unhandled():
+                STATE["last_inbox"], STATE["inbox_error"] = rules.now().isoformat(timespec="seconds"), None
+                if AUTO_AGENT and os.environ.get("OPENAI_API_KEY") and inbox.unhandled():
                     STATE["busy"] = "agent handling replies"
                     n = {"k": 0}
 
@@ -103,26 +123,18 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                         n["k"] += 1
                         STATE["busy"] = f"agent handling replies: step {n['k']}"
                         if name == "propose_action":
-                            a = actions.get(out.get("created") or out.get("done_automatically") or out.get("scheduled") or "")
-                            if a:
-                                notify({"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed"), {"action": a})
+                            notify_action(out)
                     STATE["reply_summary"] = agent.handle_replies(rprog)
                     actions.log_event("agent_replies_done", None, (STATE["reply_summary"] or "")[:300])
             except Exception as e:
+                STATE["inbox_error"] = type(e).__name__
                 actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
-        STATE["busy"] = "executing scheduled actions"
-        for a in actions.due_scheduled():
-            for m in a["messages"]:
-                if m["status"] == "draft":
-                    from core import outbound
-                    outbound.send(m)
-            a = actions.set_status(a["id"], "sent", f"executed by Dockside: nobody stopped it within the window ({a['approver_name']} was informed)")
-            notify("action_executed", {"action": a})
         STATE["busy"] = "follow-ups"
         for a in actions.due_followups():
             if a["status"] in ("proposed", "escalated"):
                 a = actions.escalate(a)
-                notify("action_escalated", {"action": a})
+                if a:
+                    notify("action_escalated", {"action": a})
         STATE["busy"] = None
         return out
 
@@ -187,6 +199,11 @@ def state():
     return _compact_state()
 
 
+@app.get("/api/dispatch")
+def dispatch_view():
+    return dispatch.snapshot(STATE["last_sync"])
+
+
 class Decision(BaseModel):
     decision: str
     by: str = "web"
@@ -197,8 +214,7 @@ def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "") -> dic
     """The one approval path for web and Discord: record the decision, release messages, tell everyone."""
     a = actions.decide(aid, decision, by, note)
     if a["status"] == "approved":
-        dispatch(a)
-    a = actions.get(aid)
+        a = outbound.dispatch(aid)
     notify("action_decided", {"action": a})
     return a
 
@@ -211,15 +227,6 @@ def decide(aid: str, d: Decision):
         raise HTTPException(404, f"No decision {aid}. It may have been replaced; reload the page.")
     except ValueError as e:
         raise HTTPException(409, f"{e}. Someone already decided; reload to see who.")
-
-
-def dispatch(a: dict) -> None:
-    """Send what an approval releases. E-mail goes through the team's supplier mailer when configured, else the outbox."""
-    from core import outbound
-    for m in a["messages"]:
-        if m["status"] == "draft":
-            outbound.send(m)
-    actions.set_status(a["id"], "sent", "messages released after approval", next_check_at=rules.now().isoformat(timespec="seconds"))
 
 
 class Ask(BaseModel):
@@ -243,25 +250,62 @@ def run_cycle(plan: bool = False, model: str | None = None):
     return {"started": True}
 
 
+LAYOUTS = {"assembly": "Supply chain", "board": "Departure board", "map": "Dependency map",
+           "papers": "Dispatch papers", "radio": "Dispatch signal"}
+
+
+def layout_links(current: str | None = None) -> str:
+    links = []
+    paths = {"assembly": "/"}
+    for name, label in LAYOUTS.items():
+        href = paths.get(name, f"/v/{name}")
+        if name in paths or (ROOT / "web" / "variants" / f"{name}.html").is_file():
+            selected = ' aria-current="page"' if name == current else ""
+            links.append(f'<li><a href="{href}"{selected}>{label}</a></li>')
+    return "".join(links)
+
+
+def render_layout(path: Path, name: str) -> HTMLResponse:
+    label = LAYOUTS.get(name, name)
+    menu = (f'<nav class="layout-picker" aria-label="Dockside layouts"><details>'
+            f'<summary>Layout <strong>{label}</strong></summary>'
+            f'<ul>{layout_links(name)}</ul></details></nav>')
+    html = path.read_text(encoding="utf-8")
+    html = html.replace("</head>", '<link rel="stylesheet" href="/layouts.css"></head>', 1)
+    html = html.replace("<body>", f"<body>{menu}", 1)
+    return HTMLResponse(html)
+
+
+@app.get("/layouts.css")
+def layout_styles():
+    return FileResponse(ROOT / "web" / "layouts.css", media_type="text/css")
+
+
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "web" / "index.html")
+    return FileResponse(ROOT / "web" / "assembly" / "index.html")
+
+
+app.mount("/assembly", StaticFiles(directory=ROOT / "web" / "assembly"), name="assembly_assets")
+
+
+@app.get("/control-room")
+def control_room():
+    return RedirectResponse("/#operations")
 
 
 @app.get("/v/{name}")
 def variant(name: str):
     """UI prototypes: web/variants/<name>.html, same API. /v/ lists them."""
-    import re as _re
     f = ROOT / "web" / "variants" / f"{name}.html"
-    if not _re.fullmatch(r"[a-z0-9-]+", name) or not f.exists():
+    if not re.fullmatch(r"[a-z0-9-]+", name) or not f.is_file():
         raise HTTPException(404, "No such prototype. See /v/ for the list.")
-    return FileResponse(f)
+    return render_layout(f, name)
 
 
 @app.get("/v/")
 def variants():
-    from fastapi.responses import HTMLResponse
-    names = sorted(p.stem for p in (ROOT / "web" / "variants").glob("*.html"))
-    links = "".join(f'<li><a href="/v/{n}">{n}</a></li>' for n in names)
-    return HTMLResponse(f'<!doctype html><meta charset=utf-8><title>Dockside prototypes</title><body style="font:16px system-ui;padding:24px;background:#fff">'
-                        f'<h1>Dockside prototypes</h1><ul><li><a href="/">current (main)</a></li>{links}</ul></body>')
+    return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8">'
+                        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                        '<title>Dockside layouts</title><body style="color-scheme:light dark;font:16px/2 system-ui;padding:24px">'
+                        f'<main><h1>Compare Dockside layouts</h1><ul>{layout_links()}</ul></main></body></html>')

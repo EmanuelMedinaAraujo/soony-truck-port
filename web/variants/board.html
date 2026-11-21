@@ -1,0 +1,901 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dockside board</title>
+<meta name="description" content="Arrivals board for DC Hamburg: every inbound shipment against the Sunday 20:00 retail trucks, and what Dockside does next.">
+<meta name="color-scheme" content="light dark">
+<!--
+BUYER DEPENDENCY PLAN, ARRIVALS BOARD
+Enamel #0D2A4F carries the network; Lamp #F2F5F8 carries type and the Sunday time;
+Amethyst #DBCAFA is Collector's; Mint #BEEBD4 is Standard; Tarmac #BDCDE0 is shared;
+Amber #FFC23D identifies the dependency that needs attention. Overpass labels the
+lanes and times; Atkinson Hyperlegible Next labels evidence and the controls.
+
+  DC Hamburg dependencies                         [Sun 20:00 | countdown]
+  Collector's lane  [component]  [component]       ┐
+  Standard lane     [component]  [component]       ├ shared component feed
+  [supplier] ─ [transit] ─ [receiving] ─ [box]      ┘ selected dependency
+  [recovery economics]            [standby premium check]
+  Dispatch desk and detailed arrivals follow the overview.
+
+Critique: A dense departure table hides why a buyer cares about a shipment. Put the
+edition dependency and Sunday boundary first, align component lanes on one feeder,
+and render one path at a time. Keep the supporting rows reachable below. Use the
+accent on active risk, a text label on every status, and a vertical path at phone width.
+-->
+<!--
+TOKEN PLAN, "board" prototype
+
+Idea: the arrivals board at the warehouse gate. Every inbound shipment is a row in arrival order; the receiving
+close (Sun 16:00) and the retail trucks leaving (Sun 20:00) are rows on the same board, so "makes it / misses"
+reads as above or below the anchor line. Beside it, Dockside's own departures: what it does next, what needs a
+signature, what it already did.
+
+Colours (named)
+  Gate blue     #0D2A4F  enamel board ground (both themes; dark mode lifts it to #0E3262), ink in light mode
+  Lamp white    #F2F5F8  board lettering, anchor bar ground
+  Concourse     #E3E9EF  light page ground   (dark: Night #06162B)
+  Go green      #4BD69A  "makes it" flap on the board
+  Stop red      #FF6B70  "misses the trucks" flap, Stop button (off-board light: #C42B32)
+  Port amber    #FFC23D  "stuck at port", money-at-risk notice, focus ring on the board
+
+Type
+  Overpass 800/900 (Highway Gothic lineage, signage) for the board, times, headings; tabular numerals everywhere
+  a time is shown. Atkinson Hyperlegible Next 400/700 for prose, remarks, messages (made for legibility).
+
+Layout (>= 1100 px; wall screen scales the board with viewport width)
+  +---------------------------------------------------------------------+
+  | Dockside, Grand Heist 6 at DC Hamburg      * Live, synced 18:22  (o) |
+  +------------------------------------------------+--------------------+
+  | Arrivals at DC Hamburg                Sat 18:24 | Dockside does next |
+  | ! EUR 708,000 at risk, art books run out first  |  18:40 Book truck  |
+  | Expected  Carrying          From       Status   |  [Stop] [Do it now]|
+  | Sat 12:00 Game card 64 GB   [ship] Busan Overdue| Needs a signature  |
+  | Sun 00:00 -- Sunday truck ban starts ---------  |  ...               |
+  | Sun 12:00 Cover sleeve      [truck] Poznan Makes| Done on its own    |
+  | Sun 16:00 -- Receiving closes ----------------  |  18:01 ...         |
+  | ### Sun 20:00 Trucks to retail leave  25 h 35 ##|                    |
+  | Tue 12:00 Game card 128 GB  [plane] Incheon Miss|                    |
+  | --:--     Game card case    [ship] Yantian Port |                    |
+  +------------------------------------------------+                    |
+  | Ask Dockside [..........................] [Ask] |                    |
+  +------------------------------------------------+--------------------+
+  < 1100 px: one column: board, next, signature, done, ask. <= 720 px: each row becomes a stacked list item
+  and a lamp-white countdown bar sits under the board title.
+  Removed accessory after critique: a "Now" marker row on the board (the station clock already says it).
+
+Principles
+  - Boldness is spent once: the gate-blue board with the inverted lamp-white anchor bar. Everything else is quiet ink on concourse.
+  - Status is a word on a coloured flap, never colour alone. Plain part names, sentence case, no codes.
+  - Dockside's actions use the board's row grammar (time | what | who can stop it), but on paper, not enamel.
+  - One motion moment: a status flap turns over when it first appears or when its status changes. Off with reduced motion.
+-->
+<script>
+  try { const t = localStorage.getItem("dockside.theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700&family=Overpass:wght@500;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --gate:#0D2A4F; --lamp:#F2F5F8; --go:#4BD69A; --stop:#FF6B70; --amber:#FFC23D;
+  --board:var(--gate); --board-ink:var(--lamp); --board-dim:rgba(242,245,248,.72); --board-rule:rgba(242,245,248,.14);
+  --page:#E3E9EF; --ink:#0D2A4F; --muted:#46607C; --rule:rgba(13,42,79,.18); --field:#F7F9FB;
+  --stop-btn:#C42B32; --stop-btn-ink:#FFFFFF; --go-ink:#11643F;
+  --focus:#0D2A4F;
+  --sign:"Overpass", "Arial Narrow", sans-serif;
+  --text:"Atkinson Hyperlegible Next", "Atkinson Hyperlegible", Verdana, sans-serif;
+  --gutter:clamp(16px, 2.2vw, 40px);
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --board:#0E3262; --page:#06162B; --ink:#E6EDF5; --muted:#9DB2C8; --rule:rgba(230,237,245,.16); --field:#0B2240;
+    --stop-btn:#FF6B70; --stop-btn-ink:#06162B; --go-ink:#4BD69A; --focus:#FFC23D;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --board:#0E3262; --page:#06162B; --ink:#E6EDF5; --muted:#9DB2C8; --rule:rgba(230,237,245,.16); --field:#0B2240;
+  --stop-btn:#FF6B70; --stop-btn-ink:#06162B; --go-ink:#4BD69A; --focus:#FFC23D;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0; background:var(--page); color:var(--ink); font:16px/1.5 var(--text); font-variant-numeric:tabular-nums}
+h1,h2,h3,p,ol,ul{margin:0}
+ol,ul{padding:0; list-style:none}
+button,input{font:inherit; color:inherit}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--focus); outline-offset:2px}
+.board :focus-visible{outline-color:var(--amber)}
+.sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+
+/* ---------- top strip ---------- */
+.strip{display:flex; align-items:center; gap:16px; padding:12px var(--gutter); border-bottom:1px solid var(--rule)}
+.mark{font:900 22px/1 var(--sign); letter-spacing:-.01em}
+.where{color:var(--muted); font-size:15px}
+.live{margin-left:auto; display:flex; align-items:center; gap:8px; font-size:15px; color:var(--muted); min-width:0; text-align:right}
+.live::before{content:""; flex:none; width:10px; height:10px; border-radius:50%; background:var(--go-ink)}
+.live[data-s="busy"]::before{background:var(--amber); box-shadow:0 0 0 2px var(--ink) inset}
+.live[data-s="error"]::before{background:var(--stop-btn)}
+.live[data-s="error"]{color:var(--ink)}
+.icon-btn{flex:none; width:40px; height:40px; display:grid; place-items:center; border:1px solid var(--rule); background:transparent; border-radius:4px; cursor:pointer}
+.icon-btn svg{width:20px; height:20px}
+.demo-note{padding:8px var(--gutter); background:var(--amber); color:#0D2A4F; font-size:15px}
+
+/* ---------- layout ---------- */
+.wrap{display:grid; gap:clamp(24px, 3vw, 48px); padding:var(--gutter); align-items:start}
+@media (min-width:1100px){ .wrap{grid-template-columns:minmax(0, 1.85fr) minmax(340px, 1fr)} }
+@media (max-width:1099px){ .wrap > .gate{display:contents} .wrap .ask{order:1} }
+
+/* ---------- the board ---------- */
+.board{background:var(--board); color:var(--board-ink); border-radius:4px; padding:clamp(16px, 1.6vw, 32px) clamp(14px, 1.6vw, 32px) clamp(12px, 1.2vw, 24px);
+  font-size:clamp(15px, .5rem + .72vw, 30px); line-height:1.35}
+.b-head{display:flex; align-items:baseline; gap:16px; flex-wrap:wrap}
+.b-head h2{font:900 1.75em/1.05 var(--sign); letter-spacing:-.015em}
+.clock{margin-left:auto; font:800 1.75em/1 var(--sign); font-variant-numeric:tabular-nums; white-space:nowrap}
+.clock small{font:700 .5em/1 var(--sign); color:var(--board-dim); margin-right:.4em; vertical-align:.35em}
+.notice{margin-top:.8em; display:grid; grid-template-columns:auto 1fr; gap:.2em .7em; align-items:start; max-width:62ch}
+.notice::before{content:""; grid-row:1 / span 2; width:.35em; align-self:stretch; background:var(--amber)}
+.notice p:first-child{font:800 1.15em/1.25 var(--sign); color:var(--amber)}
+.notice p + p{color:var(--board-dim); font-size:.9em}
+.busy{margin-top:.6em; color:var(--board-dim); font-size:.85em; min-height:1.35em}
+
+.cols, .row{display:grid; grid-template-columns:6.6em minmax(0, 1.5fr) minmax(0, 1fr) 9.4em; column-gap:1em; align-items:center}
+.cols{margin-top:1.1em; padding:.4em 0; border-bottom:2px solid var(--board-ink); color:var(--board-dim)}
+.cols span{font:700 .8em/1.2 var(--sign)}
+.row{padding:.6em 0; border-bottom:1px solid var(--board-rule); grid-template-areas:"time what from status" ". rem rem rem"}
+.c-time{grid-area:time; font:800 1.25em/1 var(--sign); white-space:nowrap}
+.c-time .d{font:700 .62em/1 var(--sign); color:var(--board-dim); margin-right:.25em; display:inline-block; min-width:2.2em}
+.c-what{grid-area:what; min-width:0}
+.c-what b{display:block; font:800 1.08em/1.2 var(--sign)}
+.c-what .sub{display:block; color:var(--board-dim); font-size:.82em}
+.c-from{grid-area:from; display:flex; align-items:center; gap:.55em; font:700 1em/1.2 var(--sign); min-width:0}
+.pict{flex:none; width:1.6em; height:1.6em; display:grid; place-items:center; border:1.5px solid var(--board-ink); border-radius:3px}
+.pict svg{width:1.1em; height:1.1em; fill:currentColor}
+.c-status{grid-area:status}
+.flap{position:relative; display:block; padding:.42em .5em .36em; border-radius:3px; font:800 .9em/1.1 var(--sign); text-align:left; color:var(--gate)}
+.s-ok .flap{background:var(--go)}
+.s-late .flap{background:var(--stop)}
+.s-port .flap{background:var(--amber)}
+.s-held .flap{background:transparent; color:var(--stop); box-shadow:inset 0 0 0 2px var(--stop)}
+.s-due .flap, .s-nodate .flap{background:transparent; color:var(--amber); box-shadow:inset 0 0 0 2px var(--amber)}
+.c-rem{grid-area:rem; margin-top:.35em; font-size:.82em; color:var(--board-dim); max-width:70ch}
+.c-rem:empty{display:none}
+.c-rem a{color:var(--board-ink); text-underline-offset:.18em}
+.c-rem .dock{color:var(--board-ink)}
+
+.tick{display:flex; align-items:baseline; gap:1em; padding:.5em 0; border-bottom:1px solid var(--board-rule); color:var(--board-dim); font:700 .9em/1.25 var(--sign)}
+.tick .c-time{font-size:1.25em; color:var(--board-ink); flex:none; min-width:5.8em}
+.tick.cut{color:var(--board-ink); border-bottom:2px solid var(--board-ink)}
+.tick.ban{background:repeating-linear-gradient(135deg, transparent 0 10px, rgba(255,194,61,.08) 10px 20px)}
+.tick.now .c-time{color:var(--board-dim)}
+.tick.none{margin-top:1em; border-bottom:2px solid var(--board-ink); color:var(--board-ink)}
+
+.anchor{display:flex; align-items:center; flex-wrap:wrap; gap:.3em 1em; margin:.5em calc(-1 * clamp(14px, 1.6vw, 32px)); padding:.8em clamp(14px, 1.6vw, 32px);
+  background:var(--lamp); color:var(--gate)}
+.anchor .c-time{font:900 1.6em/1 var(--sign)}
+.anchor .c-time .d{color:var(--gate); opacity:.75}
+.anchor .lbl{font:900 1.3em/1.1 var(--sign)}
+.anchor .count{margin-left:auto; font:900 1.6em/1 var(--sign); font-variant-numeric:tabular-nums; white-space:nowrap}
+.anchor .count small{font:700 .5em/1 var(--sign); margin-right:.3em}
+.mini{display:none}
+.b-foot{margin-top:.9em; color:var(--board-dim); font-size:.82em}
+.b-empty{padding:2em 0; font:700 1.1em/1.4 var(--sign); max-width:40ch}
+
+@media (prefers-reduced-motion: no-preference){
+  .flip .flap{animation:flap .6s cubic-bezier(.25,.8,.25,1) both; animation-delay:calc(var(--i, 0) * 70ms); transform-origin:50% 0}
+  @keyframes flap{0%{transform:perspective(500px) rotateX(-92deg); opacity:.15} 65%{transform:perspective(500px) rotateX(10deg); opacity:1} 100%{transform:none}}
+}
+
+/* ---------- desk column ---------- */
+.desk, .ask{font-size:clamp(16px, .6rem + .4vw, 21px)}
+.desk{display:grid; gap:clamp(28px, 3vw, 44px)}
+.desk h2{font:900 1.45em/1.15 var(--sign); letter-spacing:-.01em; padding-bottom:8px; border-bottom:2px solid var(--ink)}
+.desk .lead{color:var(--muted); font-size:.94em; margin-top:8px; max-width:60ch}
+.slips > li{display:grid; grid-template-columns:4.4em minmax(0, 1fr); gap:4px 14px; padding:14px 0; border-bottom:1px solid var(--rule)}
+.slip-t{font:900 1.5em/1 var(--sign); font-variant-numeric:tabular-nums}
+.slip-t small{display:block; margin-top:6px; font:700 .55em/1.2 var(--sign); color:var(--muted); white-space:nowrap}
+.slip h3{font:800 1.08em/1.3 var(--sign)}
+.slip .money{font-size:.94em; margin-top:4px}
+.slip .why{color:var(--muted); font-size:.94em; margin-top:4px; max-width:62ch}
+.slip .who{font-size:.94em; margin-top:8px}
+.slip .err{margin-top:8px; padding:8px 10px; border-left:4px solid var(--stop-btn); font-size:.94em}
+.slip .ok{margin-top:8px; font-size:.94em; font-weight:700}
+.btns{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
+.btn{min-height:44px; padding:8px 16px; border-radius:4px; border:2px solid var(--ink); background:transparent; font:800 1em/1 var(--sign); cursor:pointer}
+.btn.stop{background:var(--stop-btn); border-color:var(--stop-btn); color:var(--stop-btn-ink)}
+.btn.sign{background:var(--ink); color:var(--page)}
+.btn[disabled]{opacity:.6; cursor:progress}
+details{margin-top:10px; font-size:.94em}
+summary{cursor:pointer; font-weight:700; text-decoration:underline; text-underline-offset:.2em; width:fit-content}
+summary::marker{color:var(--muted)}
+.msg{margin-top:10px; padding:10px 12px; background:var(--field); border-left:3px solid var(--rule)}
+.msg .to{font-weight:700}
+.msg .meta{color:var(--muted)}
+.msg .body{margin-top:6px; white-space:pre-wrap; max-width:68ch}
+.msg .en{margin-top:8px; padding-top:8px; border-top:1px dashed var(--rule); white-space:pre-wrap}
+.hist{margin-top:10px; color:var(--muted)}
+.hist li{display:flex; gap:10px}
+.hist time{font:700 .88em/1.5 var(--sign); flex:none}
+
+.done > li{display:grid; grid-template-columns:3.6em minmax(0, 1fr); gap:2px 12px; padding:10px 0; border-bottom:1px solid var(--rule)}
+.done .slip-t{font-size:1.05em; color:var(--muted)}
+.done h3{font:700 1em/1.3 var(--sign)}
+.done .who{color:var(--muted); font-size:.94em; margin-top:2px}
+.sub-h{margin-top:20px; font:800 1em/1.2 var(--sign); color:var(--muted)}
+.empty{padding:14px 0; color:var(--muted); font-size:.94em; max-width:56ch; border-bottom:1px solid var(--rule)}
+
+.gate{display:grid; gap:clamp(28px, 3vw, 44px); min-width:0}
+.ask h2{font:900 1.45em/1.15 var(--sign); letter-spacing:-.01em; padding-bottom:8px; border-bottom:2px solid var(--ink)}
+.ask{max-width:72ch}
+.ask form{display:flex; gap:8px; margin-top:12px}
+.ask input{flex:1; min-width:0; min-height:44px; padding:8px 12px; border:2px solid var(--ink); border-radius:4px; background:var(--field)}
+.ask input::placeholder{color:var(--muted); opacity:1}
+.ask .btn{background:var(--ink); color:var(--page)}
+.answer{margin-top:14px; font-size:.94em; max-width:68ch}
+.answer .q{color:var(--muted)}
+.answer .a{margin-top:6px; white-space:pre-wrap}
+.answer .how{margin-top:6px; color:var(--muted)}
+.answer .err{border-left:4px solid var(--stop-btn); padding-left:10px}
+.sugg{display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:10px; font-size:.94em}
+.link{background:none; border:0; padding:4px 0; text-decoration:underline; text-underline-offset:.2em; cursor:pointer; color:var(--muted)}
+
+/* ---------- edition lanes and selected route ---------- */
+.switchyard{grid-column:1 / -1; min-width:0; padding:clamp(18px, 3vw, 42px); background:var(--gate); color:var(--lamp); border-radius:4px}
+.switchyard :focus-visible{outline-color:var(--amber)}
+.yard-head{display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:20px; align-items:end; padding-bottom:22px; border-bottom:1px solid var(--board-rule)}
+.yard-head h1{font:900 clamp(30px, 4vw, 58px)/.98 var(--sign); letter-spacing:-.035em}
+.yard-outlook{margin-top:10px; color:var(--board-dim)}
+.yard-cutoff{padding:10px 15px; background:var(--lamp); color:var(--gate); border-inline-start:6px solid var(--amber); text-align:right}
+.yard-cutoff strong{display:block; font:900 clamp(27px, 4vw, 52px)/1 var(--sign); white-space:nowrap}
+.yard-cutoff span{display:block; margin-bottom:3px; font-size:14px}
+.yard-cutoff small{display:block; margin-top:4px; font-size:14px}
+.yard-lane{--lane:#BDCDE0; display:grid; grid-template-columns:minmax(132px, .24fr) minmax(0, 1fr); align-items:center; gap:16px; padding:14px 0; border-bottom:1px solid var(--board-rule)}
+.yard-lane:first-child{--lane:#DBCAFA}
+.yard-lane:nth-child(2){--lane:#BEEBD4}
+.yard-lane h2{font:800 20px/1.15 var(--sign); color:var(--lane); margin:0}
+.yard-lane p{font-size:14px; color:var(--board-dim); margin-top:2px}
+.yard-line{display:flex; flex-wrap:wrap; gap:7px; align-items:center; position:relative; padding-inline-start:21px; border-inline-start:2px solid var(--lane)}
+.yard-line::before{content:""; position:absolute; left:0; top:50%; width:15px; border-top:1px solid var(--lane)}
+.yard-part{font:700 15px/1.2 var(--text); padding:8px 11px; min-height:40px; border:1px solid var(--lane); border-radius:3px; background:var(--lane); color:var(--gate); cursor:pointer; text-align:left}
+.yard-part[data-status="short"]{border:2px solid var(--amber); background:var(--gate); color:var(--amber)}
+.yard-part[data-status="verify"]{border-style:dashed; background:var(--gate); color:var(--lamp)}
+.yard-part[aria-expanded="true"]{outline:2px solid var(--lamp); outline-offset:2px}
+.yard-part:hover{box-shadow:inset 0 -3px 0 currentColor}
+.yard-drawer{margin-top:24px; background:var(--field); color:var(--ink); padding:clamp(16px, 3vw, 30px); border-top:5px solid var(--amber)}
+.yard-drawer :focus-visible{outline-color:var(--focus)}
+.yard-drawer-head{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap}
+.yard-drawer h2{font:900 28px/1.1 var(--sign); margin:0}
+.yard-drawer h3{font:800 19px/1.2 var(--sign); margin:0 0 6px}
+.yard-drawer-close{min-height:40px; padding:6px 12px; border:1px solid currentColor; border-radius:3px; background:none; cursor:pointer}
+.yard-trace{margin-top:20px; border-top:1px solid var(--rule); padding-top:14px}
+.yard-stages{display:grid; grid-template-columns:repeat(auto-fit,minmax(124px, 1fr)); gap:12px; margin:12px 0}
+.yard-stages li{padding:8px 0 4px 10px; border-inline-start:2px solid var(--rule); min-width:0; overflow-wrap:anywhere}
+.yard-stages li[data-state="blocked"]{border-color:var(--stop-btn)}
+.yard-stages strong,.yard-stages span{display:block}
+.yard-stages span{font-size:14px; color:var(--muted)}
+.yard-stages p{margin-top:4px; font-size:14px}
+.yard-impact,.yard-evidence{margin-top:12px}
+.yard-evidence summary,.arrival-fold > summary{cursor:pointer; padding:8px 0; font-weight:700}
+.yard-evidence li{padding:6px 0; overflow-wrap:anywhere}
+.yard-econ{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin-top:22px}
+.yard-econ section{padding-top:12px; border-top:3px solid var(--ink)}
+.yard-econ p{margin-top:7px}
+.yard-econ dl{display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; margin:8px 0}
+.yard-econ dt,.yard-econ dd{margin:0}
+.yard-econ dd{font-weight:700; text-align:right}
+.yard-econ label{display:grid;gap:3px;max-width:16rem;margin:8px 0;font-weight:700}
+.yard-econ input{min-width:0;min-height:42px;background:var(--field);border:1px solid var(--rule);padding:5px 7px}
+.arrival-fold{margin-bottom:24px}
+.arrival-fold > summary{margin-bottom:6px}
+@media (max-width:680px){
+  .switchyard{margin-inline:calc(-1 * var(--gutter));border-radius:0}
+  .yard-head{grid-template-columns:1fr;gap:14px;align-items:start}
+  .yard-cutoff{text-align:left}
+  .yard-lane{grid-template-columns:1fr;gap:8px}
+  .yard-line{padding-inline-start:12px}
+  .yard-line::before{width:8px}
+  .yard-stages,.yard-econ{grid-template-columns:1fr}
+}
+
+/* ---------- narrow: board becomes a list ---------- */
+@media (max-width:720px){
+  .cols{display:none}
+  .board{font-size:16px; border-radius:0; margin:0 calc(-1 * var(--gutter))}
+  .b-head h2{font-size:1.4em}
+  .clock{display:none}
+  .mini{display:block; width:100%; padding:.5em .7em; background:var(--lamp); color:var(--gate); font:800 1.05em/1.2 var(--sign)}
+  .row{grid-template-columns:auto minmax(0, 1fr); grid-template-areas:"time status" "what what" "from from" "rem rem"; row-gap:.25em; padding:.7em 0}
+  .pict{width:1.4em; height:1.4em}
+  .c-status{justify-self:end}
+  .flap{display:inline-block}
+  .c-from{font-size:.92em}
+  .tick{flex-wrap:wrap; gap:.2em .8em}
+  .anchor{margin:.5em calc(-1 * clamp(14px, 1.6vw, 32px)); }
+  .anchor .count{margin-left:0; width:100%}
+  .where{display:none}
+  .strip{gap:10px}
+  .live{font-size:14px}
+}
+</style>
+</head>
+<body>
+<header class="strip">
+  <span class="mark">Dockside</span>
+  <span class="where">Grand Heist 6 launch at DC Hamburg</span>
+  <p class="live" id="live" role="status" data-s="busy">Loading the board</p>
+  <button class="icon-btn" id="theme" type="button" data-act="theme"></button>
+</header>
+<p class="demo-note" id="demo-note" hidden>Demo data: three actions are made scheduled and one needs a signature so the panels have something to show. Buttons only change this page, nothing is sent.</p>
+
+<main class="wrap">
+  <section class="switchyard" aria-labelledby="yard-heading">
+    <div class="yard-head">
+      <div><h1 id="yard-heading">Launch dependencies</h1><p class="yard-outlook" id="yard-outlook" role="status">Loading the component lanes…</p></div>
+      <div class="yard-cutoff"><span>Retail trucks leave</span><strong id="yard-deadline">Sun 20:00</strong><small id="yard-countdown"></small></div>
+    </div>
+    <div id="yard-lanes"></div>
+    <div class="yard-drawer" id="yard-drawer" hidden></div>
+  </section>
+  <div class="gate">
+  <details class="arrival-fold">
+  <summary>Detailed arrivals at DC Hamburg</summary>
+  <section class="board" aria-labelledby="board-h">
+    <div class="b-head">
+      <h2 id="board-h">Arrivals at DC Hamburg</h2>
+      <p class="clock" aria-hidden="true"><small id="clock-d"></small><span id="clock-t">--:--</span></p>
+      <p class="mini" id="mini"></p>
+    </div>
+    <div id="notice"></div>
+    <p class="busy" id="busy"></p>
+    <div class="cols" aria-hidden="true"><span>Expected</span><span>Carrying</span><span>From</span><span>Status</span></div>
+    <ol id="rows" aria-label="Inbound shipments and launch times, in order of arrival"></ol>
+    <p class="b-foot" id="b-foot"></p>
+  </section>
+  </details>
+  <section class="ask" aria-labelledby="ask-h">
+      <h2 id="ask-h">Ask Dockside</h2>
+      <form id="ask">
+        <label class="sr" for="q">Your question</label>
+        <input id="q" name="q" autocomplete="off" placeholder="Which trucks still need a dock slot?">
+        <button class="btn" id="ask-btn" type="submit">Ask</button>
+      </form>
+      <div class="sugg">
+        <button type="button" class="link" data-act="suggest">What could still stop the art books?</button>
+        <button type="button" class="link" data-act="suggest">Is the port container reachable before 16:00?</button>
+      </div>
+      <div id="answer" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <div class="desk">
+    <section aria-labelledby="next-h">
+      <h2 id="next-h">Dockside will do next</h2>
+      <p class="lead">Each of these goes ahead on its own at the time shown unless the person named stops it.</p>
+      <div id="next"></div>
+    </section>
+    <section aria-labelledby="sign-h">
+      <h2 id="sign-h">Needs a signature</h2>
+      <div id="sign"></div>
+    </section>
+    <section aria-labelledby="done-h">
+      <h2 id="done-h">Done on its own</h2>
+      <div id="done"></div>
+    </section>
+  </div>
+</main>
+<p class="sr" id="announce" aria-live="assertive"></p>
+
+<script>
+const $ = s => document.querySelector(s);
+const TZ = "Europe/Berlin";
+const DEMO = new URLSearchParams(location.search).has("demo");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const n = v => Math.round(v).toLocaleString("en-US");
+const eur = v => "€" + n(v);
+const t24 = d => new Date(d).toLocaleTimeString("en-GB", {hour:"2-digit", minute:"2-digit", timeZone:TZ});
+const wkd = d => new Date(d).toLocaleDateString("en-GB", {weekday:"short", timeZone:TZ});
+const day = d => new Date(d).toLocaleDateString("en-GB", {weekday:"short", day:"numeric", month:"short", timeZone:TZ});
+const berlinHM = d => { const p = new Intl.DateTimeFormat("en-GB", {hour:"2-digit", minute:"2-digit", hourCycle:"h23", timeZone:TZ}).formatToParts(d);
+  return [+p.find(x => x.type === "hour").value, +p.find(x => x.type === "minute").value]; };
+const cap1 = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+const plural = (k, w, ws = w + "s") => `${n(k)} ${k === 1 ? w : ws}`;
+const andList = a => a.length < 2 ? (a[0] || "") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+const shortPart = d => String(d || "").replace(/\s?(–\s)?Grand Heist 6/, "").replace(/\s*\(.*?\)\s*/g, " ").trim();
+const lang = c => ({pl:"Polish", de:"German", en:"English", cs:"Czech", fr:"French", it:"Italian", es:"Spanish", ko:"Korean", zh:"Chinese"}[c] || c);
+const PLACES = {CNYTN:"Yantian", CNSHA:"Shanghai", CNSZX:"Shenzhen", CNNGB:"Ningbo", HKHKG:"Hong Kong", KRPUS:"Busan", TWKHH:"Kaohsiung",
+  VNSGN:"Ho Chi Minh City", INBOM:"Mumbai", INNSA:"Nhava Sheva", DEHAM:"Hamburg", NLRTM:"Rotterdam", BEANR:"Antwerp", PLPOZ:"Poznań",
+  CZPRG:"Prague", ORD:"Chicago", ICN:"Incheon", FRA:"Frankfurt", PVG:"Shanghai", HKG:"Hong Kong", TPE:"Taipei", BOI:"Boise", "DC-HAM":"DC Hamburg"};
+const place = c => PLACES[c] || c;
+const isoDay = s => s.replace(/\b(\d{4}-\d\d-\d\d)\b/g, m => day(m + "T12:00:00Z"));
+const tidy = s => isoDay(String(s ?? ""))
+  .replace(/<=\s?(\d+(?:\.\d+)?)\s?t\b/g, "up to $1 t").replace(/\bEUR\s?/g, "€").replace(/ -> /g, ". Fix: ")
+  .replace(/\b(\d[\d,]*)\.0\b/g, "$1").replace(/\bDC-HAM\b/g, "DC Hamburg");
+const MODE = {sea:"sea", air:"air", road:"road"};
+const PICT = {
+  sea:`<svg viewBox="0 0 24 24"><path d="M2 14h20l-3.2 5.5H5.2z"/><rect x="5" y="9" width="4.5" height="4"/><rect x="10.5" y="9" width="4.5" height="4"/><rect x="10.5" y="4.5" width="4.5" height="3.5"/></svg>`,
+  air:`<svg viewBox="0 0 24 24"><path d="M21.5 15.6v-2.1L13.4 8.4V3.6a1.4 1.4 0 0 0-2.8 0v4.8l-8.1 5.1v2.1l8.1-2.5v5l-2.1 1.5V21l3.5-1 3.5 1v-1.4l-2.1-1.5v-5z"/></svg>`,
+  road:`<svg viewBox="0 0 24 24"><path d="M1.5 5.5h12.5v10.5H1.5z"/><path d="M15 8.5h4.2l3.3 3.8V16H15z"/><circle cx="5.5" cy="18" r="2.2"/><circle cx="18.2" cy="18" r="2.2"/></svg>`
+};
+
+let S = null, skew = 0, lastOk = null, fetchErr = null, polls = 0;
+const prevStatus = {}, keys = {}, openDetails = new Set(), busy = {}, outcome = {}, demoDecided = {};
+let asking = null, showAllDone = false;
+const me = (() => { try { return localStorage.getItem("dockside.me") } catch (e) { return null } })() || "web";
+const nowMs = () => Date.now() + skew;
+let dispatchState = null, selectedPart = null, dispatchClockSkew = 0;
+const yardPremiums = new Map();
+const partStatus = {covered:"Covered", short:"Short", verify:"Verify"};
+const stepStatus = {confirmed:"Confirmed", pending:"Pending", blocked:"Blocked", unknown:"Unknown"};
+
+function paint(id, key, html){
+  if (keys[id] === key) return false;
+  keys[id] = key;
+  const el = document.getElementById(id), fid = document.activeElement?.dataset?.fid;
+  el.innerHTML = html();
+  if (fid && !el.contains(document.activeElement)) { const f = el.querySelector(`[data-fid="${CSS.escape(fid)}"]`); if (f) f.focus({preventScroll:true}); }
+  return true;
+}
+
+async function load(){
+  try {
+    const r = await fetch("/api/state", {cache:"no-store"});
+    if (!r.ok) throw new Error(`the server answered ${r.status}`);
+    let d = await r.json();
+    if (DEMO) d = demoize(d);
+    S = d; skew = new Date(S.now) - Date.now(); lastOk = new Date(); fetchErr = null; polls++;
+  } catch (e) { fetchErr = e.message; }
+  render();
+}
+
+async function loadDispatch(){
+  try {
+    const res = await fetch("/api/dispatch", {cache:"no-store"});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    dispatchState = await res.json();
+    dispatchClockSkew = Date.parse(dispatchState.now) - Date.now();
+    paintDispatch();
+  } catch (error) {
+    $("#yard-outlook").textContent = dispatchState ? "Showing the last component update." : "Component data unavailable. Retrying soon.";
+  }
+}
+
+function paintDispatch(){
+  const data = dispatchState;
+  if (!data) return;
+  const selected = data.components.find(c => c.id === selectedPart);
+  const exclusive = e => data.components.filter(c => !c.shared && c.allocations.some(a => a.editionId === e.id));
+  const feeder = data.components.filter(c => c.shared || !c.allocations.length);
+  const part = c => `<button type="button" class="yard-part" data-act="yard-part" data-id="${esc(c.id)}" data-fid="yard-${esc(c.id)}"
+      data-status="${esc(c.status)}" aria-controls="yard-drawer" aria-expanded="${c.id === selectedPart}">${esc(c.name)}${c.status === "short" ? ` <span aria-hidden="true">!</span>` : c.status === "verify" ? ` <span aria-hidden="true">?</span>` : ""}<span class="sr">, ${esc(partStatus[c.status] || c.status)}</span></button>`;
+  const lane = (name, meta, components) => `<div class="yard-lane"><div><h2>${esc(name)}</h2><p>${esc(meta)}</p></div><div class="yard-line">${components.map(part).join("")}</div></div>`;
+  const priority = data.editions.find(e => e.id === data.priorityId);
+  $("#yard-outlook").textContent = priority?.short ? `${n(priority.short)} ${priority.name} copies short` : "Select a component to trace its supply";
+  $("#yard-deadline").textContent = `${wkd(data.deadline)} ${t24(data.deadline)}`;
+  paint("yard-lanes", JSON.stringify([data.editions, data.components.map(c => [c.id, c.name, c.status, c.shared, c.allocations]), selectedPart]), () =>
+    data.editions.map(e => lane(e.name, `${n(e.projected)} of ${n(e.demand)} projected`, exclusive(e))).join("") + lane("Shared feed", "Feeds both editions", feeder));
+  $("#yard-drawer").hidden = !selected;
+  const selectedKey = JSON.stringify([selected, data.editions.map(e => [e.id,e.name])]);
+  paint("yard-drawer", selectedKey, () => selected ? dispatchDetail(selected, data) : "");
+  tickDispatch();
+}
+
+function dispatchDetail(part, data){
+  const labels = new Map(data.editions.map(e => [e.id, e.name]));
+  const allocations = part.allocations.map(a => `<li>${esc(labels.get(a.editionId) || "Edition")}: ${n(a.allocated)} of ${n(a.required)} allocated</li>`).join("");
+  const evidence = (entries = []) => entries.length ? `<details class="yard-evidence"><summary>Source notes</summary><ul>${entries.map(e => `<li><strong>${esc(e.label)}</strong>${e.detail ? `<br>${esc(e.detail)}` : ""}</li>`).join("")}</ul></details>` : "";
+  const route = r => `<div class="yard-trace"><h3>${esc(r.name)}</h3>${r.quantity == null ? "" : `<p>${n(r.quantity)} units</p>`}
+      <ol class="yard-stages">${r.steps.map(s => `<li data-state="${esc(s.state)}"><strong>${esc(s.name)}</strong><span>${esc(stepStatus[s.state] || s.state)}</span>${s.detail ? `<p>${esc(s.detail)}</p>` : ""}</li>`).join("")}</ol>${evidence(r.evidence)}</div>`;
+  const adjustments = part.adjustments.length ? `<details class="yard-evidence"><summary>Stock checks</summary><ul>${part.adjustments.map(a => `<li>${esc(a.detail)}${a.evidence.length ? `<br><small>${esc(a.evidence.join(" · "))}</small>` : ""}</li>`).join("")}</ul></details>` : "";
+  const [firstRoute, ...otherRoutes] = part.routes;
+  return `<div class="yard-drawer-head"><h2 id="yard-drawer-title" tabindex="-1">${esc(part.name)}</h2><button type="button" class="yard-drawer-close" data-act="yard-close">Close detail</button></div>
+    <div class="yard-impact"><p><strong>${esc(partStatus[part.status] || part.status)}</strong> · ${n(part.usable)} usable / ${n(part.required)} required</p><ul>${allocations}</ul></div>
+    ${firstRoute ? route(firstRoute) : `<p class="yard-impact">No inbound route is linked to this component.</p>`}${part.option ? dispatchEconomics(part, labels, evidence) : ""}
+    ${otherRoutes.length ? `<details class="yard-evidence"><summary>${plural(otherRoutes.length, "other route")}</summary>${otherRoutes.map(route).join("")}</details>` : ""}${adjustments}`;
+}
+
+function dispatchEconomics(part, labels, evidence){
+  const option = part.option;
+  const amount = (v, render) => v == null ? "Not confirmed" : render(v);
+  const formatDate = value => value.includes("T") ? `${day(value)} at ${t24(value)}` : day(value);
+  const time = option.latestUsefulAt ? formatDate(option.latestUsefulAt) : "Not confirmed";
+  const assurance = option.assurance;
+  const premium = yardPremiums.get(part.id) ?? assurance?.examplePremium;
+  const timing = {expired:" The recovery window has passed.", unknown:" Timing is uncertain."}[option.timingState] || "";
+  return `<div class="yard-econ"><section><h3>Recovery if timely</h3><p>${esc(option.name)}${option.supplier ? ` · ${esc(option.supplier)}` : ""}</p>
+      <dl><dt>Cost</dt><dd>${amount(option.cost, eur)}</dd><dt>Extra ${esc(labels.get(option.editionId) || "edition")} copies</dt><dd>${amount(option.copiesAdded, n)}</dd>
+      <dt>Refunds avoided</dt><dd>${amount(option.refundsAvoided, eur)}</dd><dt>Net benefit</dt><dd>${amount(option.netIfTimely, eur)}</dd></dl>
+      <p>Estimated latest order release: ${esc(time)}.${timing}</p>
+      ${option.validUntil ? `<p>Offer valid through ${esc(formatDate(option.validUntil))}.</p>` : ""}
+      ${option.nextConstraint ? `<p>Next constraint: ${esc(option.nextConstraint)}.</p>` : ""}${evidence(option.evidence)}</section>
+      ${assurance ? `<section><h3>Standby premium</h3><p>Example for ${esc(assurance.coveredStep)}.</p>
+      <label>Example premium (€)<input id="yard-premium" type="number" min="0" step="any" value="${esc(premium)}"></label>
+      <div id="yard-premium-result" aria-live="polite">${yardPremiumResult(option, premium)}</div>
+      ${assurance.sharedSteps.length ? `<p>Still depends on ${esc(andList(assurance.sharedSteps))}.</p>` : ""}</section>` : ""}</div>`;
+}
+
+function yardPremiumResult(option, premium){
+  if (!Number.isFinite(premium) || premium < 0) return "<p>Enter a nonnegative premium.</p>";
+  const threshold = option.refundsAvoided > 0 ? 100 * premium / option.refundsAvoided : null;
+  return `${threshold == null ? "" : `<p>Breaks even if it adds at least <strong>${threshold.toFixed(1)} percentage points</strong> to the chance of avoiding the refunds.</p>`}
+    ${option.netIfTimely == null ? "" : `<p>Net if timely with standby: <strong>${eur(option.netIfTimely - premium)}</strong>.</p>`}`;
+}
+
+$("#yard-drawer").addEventListener("input", event => {
+  if (event.target.id !== "yard-premium") return;
+  const option = dispatchState.components.find(c => c.id === selectedPart)?.option;
+  if (!option) return;
+  const value = event.target.valueAsNumber;
+  if (Number.isFinite(value) && value >= 0) yardPremiums.set(selectedPart, value);
+  $("#yard-premium-result").innerHTML = yardPremiumResult(option, value);
+});
+
+function tickDispatch(){
+  if (!dispatchState) return;
+  const time = Date.parse(dispatchState.deadline) - (Date.now() + dispatchClockSkew);
+  const count = time > 0 ? `${Math.floor(time / 36e5)} h ${Math.floor(time % 36e5 / 6e4)} min left` : "Trucks departed";
+  const cutoff = `${wkd(dispatchState.cutoff)} ${t24(dispatchState.cutoff)} receiving cutoff`;
+  $("#yard-countdown").textContent = `${count} · ${cutoff}`;
+}
+
+function render(){
+  live();
+  if (!S) { if (fetchErr) $("#rows").innerHTML = `<li class="b-empty">The board is blank because Dockside's server didn't answer (${esc(fetchErr)}). Check that it is running on this address; the board tries again every 15 seconds.</li>`; return; }
+  tick(); notice(); board(); desk();
+}
+
+function live(){
+  const el = $("#live"), sys = S?.system || {};
+  let s = "ok", txt = "Live";
+  if (fetchErr) { s = "error"; txt = lastOk ? `Can't reach the server. Showing the board from ${t24(lastOk)}, trying again every 15 s` : "Can't reach the server. Trying again every 15 s"; }
+  else if (sys.sync_error) { s = "error"; txt = `Data sync failed: ${sys.sync_error}. The board shows the last good data.`; }
+  else if (sys.busy) { s = "busy"; txt = "Dockside is working"; }
+  else if (sys.last_sync) txt = `Live, synced ${t24(sys.last_sync)}`;
+  el.dataset.s = s; el.textContent = txt;
+  $("#busy").textContent = sys.busy && !fetchErr ? `Dockside is ${String(sys.busy).replace(/^agent\s+/i, "").replace(/\.+$/, "")}…` : "";
+}
+
+function countdown(ms){
+  if (ms <= 0) return {txt:"Gone", sr:"The trucks have left"};
+  const h = Math.floor(ms / 36e5), m = Math.floor(ms % 36e5 / 6e4);
+  return {txt:`${h}<small>h</small> ${String(m).padStart(2, "0")}<small>min</small>`, sr:`in ${plural(h, "hour")} ${plural(m, "minute")}`};
+}
+function tick(){
+  tickDispatch();
+  if (!S) return;
+  const now = nowMs();
+  $("#clock-t").textContent = t24(now); $("#clock-d").textContent = wkd(now);
+  const c = countdown(new Date(S.deadline) - now), el = $("#count");
+  const mini = `Trucks to retail leave ${wkd(S.deadline)} ${t24(S.deadline)}, ${c.sr.replace(/^in /, "in ").replace(/ hours? /, "\u00a0h ").replace(/ minutes?$/, "\u00a0min")}`;
+  if ($("#mini").textContent !== mini) $("#mini").textContent = mini;
+  if (el && el.dataset.v !== c.txt) { el.dataset.v = c.txt; el.innerHTML = `<span aria-hidden="true">${c.txt}</span><span class="sr">${c.sr}</span>`; }
+}
+
+function partName(id){ const c = S.coverage.find(c => c.component === id); return c ? shortPart(c.description) : "a part"; }
+
+function notice(){
+  const h = S.headline, ce = S.picture[S.priority] || {};
+  let a, b;
+  if (h.ce_copies > 0) {
+    const bind = h.binding?.name;
+    a = `${eur(h.eur)} in Collector's refunds at risk.${bind ? ` ${cap1(bind.toLowerCase())}s run out first.` : ""}`;
+    b = `${n(h.ce_copies)} Collector's copies can't be packed without them, at ${eur(h.refund_per_copy)} refunded per copy. The packing cell has ${plural(ce.slack_copies || 0, "copy", "copies")} of slack.`;
+  } else {
+    a = "Every Collector's copy is covered for Sunday's trucks.";
+    b = `Packed so far: about ${n(ce.packed_est_now || 0)} of ${n(ce.demand || 0)} Collector's copies.`;
+  }
+  paint("notice", a + b, () => `<div class="notice"><p>${esc(a)}</p><p>${esc(b)}</p></div>`);
+}
+
+/* ---------- board ---------- */
+function flagText(f){
+  let m;
+  if ((m = /^at ([A-Z]{5}) since (\S+): (.*)$/.exec(f))) return `In ${place(m[1])} port since ${day(m[2] + "T12:00:00Z")}, ${m[3]}`;
+  if ((m = /^ETD (\S+) passed but still 'booked'/.exec(f))) return `Departure was due ${day(m[1] + "T12:00:00Z")} and isn't confirmed`;
+  if ((m = /^ETA assumes (\d+) d, route standard is (\d+) d/.exec(f))) return `The arrival date assumes ${plural(+m[1], "day")} in transit; this route usually takes ${m[2]}`;
+  if ((m = /^short shipment: ([\d,]+) of ([\d,]+) shipped/.exec(f))) return `Only ${m[1]} of ${m[2]} were shipped`;
+  if (/truck ban/i.test(f)) return "Arrives inside the Sunday truck ban: needs a van up to 7.5 t, a permit, or a Saturday arrival";
+  if ((m = /^supplier hold: (.*?)(?: -> .*)?$/.exec(f))) {
+    const exw = /DDP (\w+).*EXW (\w+)/.exec(m[1]);
+    return exw ? `Supplier hold: our order says delivered to ${exw[1]}, but the supplier only hands goods over at its own dock in ${exw[2]}` : `Supplier hold: ${m[1]}`;
+  }
+  return cap1(tidy(f));
+}
+function relatedAction(r){
+  const comps = r.fills_gap_of || [];
+  const acts = S.actions.filter(a => a.status !== "superseded" && (a.finding_id === "ship-" + r.shipment_id || comps.some(c => a.finding_id === "gap-" + c)));
+  const rank = {scheduled:0, proposed:1, escalated:1, approved:2, sent:2, auto:3, done:3, rejected:4};
+  return acts.sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))[0];
+}
+function actWord(a){
+  const last = a.history?.length ? a.history[a.history.length - 1].ts : a.updated_at;
+  return {scheduled:`goes ahead at ${t24(a.next_check_at)} unless ${a.approver_name} stops it`, proposed:`waiting for ${a.approver_name}'s signature`,
+    escalated:`overdue, now with ${a.approver_name}`, approved:`approved ${t24(last)}`, sent:`released ${t24(last)}`, done:`done ${t24(last)}`,
+    auto:`done on its own ${t24(last)}`, rejected:`stopped ${t24(last)}`}[a.status] || a.status;
+}
+function shipStatus(r, now, cut){
+  const a = r.arrival_at_dc ? +new Date(r.arrival_at_dc) : null;
+  const flags = r.flags || [];
+  const arrived = /^(arrived_dc|delivered|received)$/.test(r.status);
+  if (!a) {
+    if (r.status === "arrived_port") return {cls:"port", label:"Stuck at port"};
+    if (flags.some(f => /supplier hold/i.test(f))) return {cls:"held", label:"Held at supplier"};
+    return {cls:"nodate", label:"No date yet"};
+  }
+  if (r.makes_cutoff === false || a > cut) return {cls:"late", label:"After cutoff"};
+  if (arrived) return {cls:"ok", label:"Arrived"};
+  if (a < now) return {cls:"due", label:"Overdue"};
+  if (flags.some(f => /truck ban|no departure confirmed|no carrier update/i.test(f))) return {cls:"due", label:"At risk"};
+  return {cls:"ok", label:"Due before cutoff"};
+}
+function remarks(r, st){
+  const out = [];
+  const a = r.arrival_at_dc ? new Date(r.arrival_at_dc) : null;
+  if (st.cls === "late" && a) out.push(`Due ${day(a)} at ${t24(a)}, after receiving closes`);
+  if (st.label === "Overdue" && a) out.push(`Was due ${t24(a)} ${wkd(a) === wkd(nowMs()) ? "today" : wkd(a)}`);
+  const first = {held:/supplier hold/i, port:/^at [A-Z]{5} since/};
+  const flags = (r.flags || []).filter(f => !(st.cls === "late" && /^ETA assumes/.test(f)))
+    .sort((x, y) => first[st.cls] ? first[st.cls].test(y) - first[st.cls].test(x) : 0);
+  flags.slice(0, st.cls === "held" || st.cls === "port" ? 1 : 2).forEach(f => out.push(flagText(f)));
+  if (r.mode === "air" && r.destination && r.destination !== "DEHAM" && r.destination !== "DC-HAM") out.push(`Flies into ${place(r.destination)}, then by road`);
+  let txt = out.map(s => esc(s.replace(/\.$/, ""))).join(". ") + (out.length ? "." : "");
+  const act = relatedAction(r);
+  if (act) txt += `${txt ? " " : ""}<span class="dock">Dockside: <a href="#act-${esc(act.id)}" data-act="see-action" data-id="${esc(act.id)}">${esc(act.title)}</a>, ${esc(actWord(act))}.</span>`;
+  return txt;
+}
+function carryLine(r){
+  const bits = [r.quantity ? n(r.quantity) : "Quantity not advised"];
+  const shorts = (r.fills_gap_of || []).map(c => S.coverage.find(x => x.component === c)).filter(c => c && c.gap < 0 && !c.suspect_master_data);
+  shorts.forEach(c => bits.push(`we're ${n(-c.gap)} short without it`));
+  return bits.join(", ");
+}
+
+function board(){
+  const now = nowMs(), dl = +new Date(S.deadline), cut = dl - S.cutoff_hours * 36e5;
+  const [dh, dm] = berlinHM(new Date(dl));
+  const banS = dl - (dh * 60 + dm) * 6e4;
+  const ships = S.inbound.map(r => ({kind:"ship", r, t:r.arrival_at_dc ? +new Date(r.arrival_at_dc) : null, st:shipStatus(r, now, cut)}));
+  const timed = ships.filter(x => x.t != null), untimed = ships.filter(x => x.t == null);
+  const marks = [{kind:"cut", t:cut}, {kind:"leave", t:dl}];
+  if (banS > now && ships.some(x => x.r.mode === "road")) marks.push({kind:"ban", t:banS});
+  const list = [...timed, ...marks].sort((a, b) => a.t - b.t || (a.kind === "ship" ? -1 : 1));
+  if (untimed.length) list.push({kind:"none"}, ...untimed);
+
+  const minute = Math.floor(now / 6e4);
+  const key = JSON.stringify([S.deadline, minute, ships.map(x => [x.r.shipment_id, x.st, x.r.arrival_at_dc, x.r.flags, x.r.quantity]),
+    S.actions.map(a => [a.id, a.status, a.next_check_at])]);
+  const first = !Object.keys(prevStatus).length;
+  const changed = new Set();
+  ships.forEach(x => { const id = x.r.shipment_id, v = x.st.label; if (first || (prevStatus[id] && prevStatus[id] !== v)) changed.add(id); prevStatus[id] = v; });
+  if (changed.size && !first) keys.rows = null;
+
+  let i = 0;
+  paint("rows", key, () => list.map(x => {
+    if (x.kind === "ship") {
+      const r = x.r, names = (r.material_names?.length ? r.material_names : (r.materials || []).map(partName)).join(", ");
+      const flip = changed.has(r.shipment_id) ? " flip" : "";
+      const time = x.t != null ? `<span class="d">${wkd(x.t)}</span>${t24(x.t)}` : `<span aria-hidden="true">--:--</span><span class="sr">No arrival time</span>`;
+      return `<li class="row s-${x.st.cls}${flip}" style="--i:${i++}">
+        <div class="c-time">${x.t != null ? `<span class="sr">Expected </span>` : ""}${time}</div>
+        <div class="c-what"><span class="sr">, carrying </span><b>${esc(names)}</b><span class="sub">${esc(carryLine(r))}</span></div>
+        <div class="c-from"><span class="pict" aria-hidden="true">${PICT[r.mode] || ""}</span><span><span class="sr">, by ${esc(MODE[r.mode] || r.mode)} from </span>${esc(place(r.origin))}</span></div>
+        <div class="c-status"><span class="sr">, status: </span><span class="flap">${esc(x.st.label)}</span></div>
+        <p class="c-rem">${remarks(r, x.st)}</p></li>`;
+    }
+    if (x.kind === "leave") {
+      return `<li class="anchor"><span class="c-time"><span class="d">${wkd(x.t)}</span>${t24(x.t)}</span><span class="lbl">Trucks to retail leave</span><span class="count" id="count"></span></li>`;
+    }
+    if (x.kind === "none") return `<li class="tick none"><span>No arrival time. These don't reach the trucks unless something changes.</span></li>`;
+    const txt = {cut:"Receiving closes. Anything later can't be unpacked in time for the trucks.",
+      ban:"Sunday truck ban starts: trucks over 7.5 t stay off the road until 22:00.", now:"Now"}[x.kind];
+    return `<li class="tick ${x.kind}"><span class="c-time"><span class="d">${wkd(x.t)}</span>${t24(x.t)}</span><span>${esc(txt)}</span></li>`;
+  }).join("") || `<li class="b-empty">No shipments are due before the trucks leave. When a new shipment is booked, it shows up here.</li>`);
+  $("#count") && ($("#count").dataset.v = "", tick());
+  $("#b-foot").textContent = S.inbound_later ? `${plural(S.inbound_later, "more shipment")} arrive after the launch and aren't on this board.` : "";
+}
+
+/* ---------- desk ---------- */
+const NEXT = ["scheduled"], SIGN = ["proposed", "escalated"], PEOPLE = ["approved", "sent", "done", "rejected"];
+const lastTs = a => a.history?.length ? a.history[a.history.length - 1].ts : a.updated_at;
+const recipients = a => [...new Set((a.messages || []).map(m => tidy(m.to_name)).filter(Boolean))];
+const role = a => a.approver_role && a.approver_role !== a.approver_name ? ` (${a.approver_role.replace(/\s*\(.*?\)/g, "").toLowerCase().replace(/\bdc-ham\b/i, "DC Hamburg")})` : "";
+function money(a){
+  const cost = a.cost_eur ? `Costs up to ${eur(a.cost_eur)}` : "No cost";
+  return a.eur_protected > 0 ? `${cost}, protects ${eur(a.eur_protected)}${a.ce_copies ? ` (${plural(a.ce_copies, "Collector's copy", "Collector's copies")})` : ""}` : `${cost}, no Collector's refunds at stake`;
+}
+function msgHTML(a, m){
+  const kind = {email:"Email", discord:"Discord message", phone_script:"Phone script"}[m.channel] || cap1(m.channel);
+  const state = m.status === "draft" ? "Draft" : m.status === "outbox" ? "In the outbox" :
+    m.status === "delivery_unknown" ? "Mail server acceptance unknown" :
+    m.status === "sent" || m.status === "delivered" ? `${m.channel === "phone_script" ? "Script logged" : cap1(m.status)}${m.sent_at ? " " + t24(m.sent_at) : ""}` : cap1(m.status);
+  return `<div class="msg"><p class="to">${kind} ${m.channel === "phone_script" ? "for" : "to"} ${esc(m.to_name)}</p>
+    <p class="meta">${m.language && m.language !== "en" ? `In ${lang(m.language)}. ` : ""}${esc(state)}.</p>
+    <p class="body" lang="${esc(m.language || "en")}"><b>${esc(m.subject)}</b>\n${esc(m.body)}</p>
+    ${m.body_en ? `<p class="en" lang="en"><b>In English:</b> ${esc(m.body_en)}</p>` : ""}</div>`;
+}
+function detailsHTML(a){
+  const k = (a.messages || []).length, id = "dt-" + a.id;
+  const sum = k ? (k === 1 ? `Read the message to ${recipients(a)[0] || "the recipient"}` : `Read the ${k} messages`) : "Show the details";
+  return `<details data-did="${esc(id)}"${openDetails.has(id) ? " open" : ""}><summary data-fid="${esc(id)}">${esc(sum)}</summary>
+    ${a.payload?.details ? `<p class="msg body">${esc(tidy(a.payload.details))}</p>` : ""}${(a.messages || []).map(m => msgHTML(a, m)).join("")}
+    ${a.history?.length ? `<ol class="hist">${a.history.map(h => `<li><time>${t24(h.ts)}</time><span>${esc(cap1(tidy(h.entry)))}</span></li>`).join("")}</ol>` : ""}</details>`;
+}
+function slip(a){
+  const b = busy[a.id], o = outcome[a.id], sched = a.status === "scheduled";
+  const due = sched ? a.next_check_at : a.due_at;
+  const mins = due ? Math.round((new Date(due) - nowMs()) / 6e4) : null;
+  const when = mins == null ? "" : mins > 0 ? `in ${mins} min` : sched ? "now" : "overdue";
+  const who = sched ? `${esc(a.approver_name)}${esc(role(a))} can stop it.`
+    : a.status === "escalated" ? `Not signed in time. Now needs ${esc(a.approver_name)}${esc(role(a))}.`
+    : `Needs ${esc(a.approver_name)}${esc(role(a))}${due ? `, by ${t24(due)}` : ""}.`;
+  const to = andList(recipients(a));
+  const goLabel = sched ? "Do it now" : (a.messages || []).length ? "Approve and send" : "Approve";
+  const noLabel = sched ? "Stop" : "Decline";
+  return `<li class="slip" id="act-${esc(a.id)}">
+    <p class="slip-t">${due ? t24(due) : "--:--"}<small>${esc(when)}</small></p>
+    <div>
+      <h3>${esc(tidy(a.title))}</h3>
+      <p class="money">${esc(money(a))}${to ? `. ${sched ? "Goes" : "Sends"} to ${esc(to)}` : ""}.</p>
+      <p class="why">${esc(tidy(a.rationale))}</p>
+      <p class="who" tabindex="-1" data-fid="st-${esc(a.id)}">${who}</p>
+      ${o && !o.ok ? `<p class="err" role="alert">${esc(o.text)}</p>` : ""}
+      <div class="btns">
+        <button class="btn ${sched ? "stop" : "sign"}" data-act="${sched ? "reject" : "approve"}" data-id="${esc(a.id)}" data-fid="b1-${esc(a.id)}" ${b ? "disabled" : ""}
+          aria-label="${esc((sched ? noLabel : goLabel) + ": " + a.title)}">${b === (sched ? "reject" : "approve") ? (sched ? "Stopping…" : "Sending…") : (sched ? noLabel : goLabel)}</button>
+        <button class="btn" data-act="${sched ? "approve" : "reject"}" data-id="${esc(a.id)}" data-fid="b2-${esc(a.id)}" ${b ? "disabled" : ""}
+          aria-label="${esc((sched ? goLabel : noLabel) + ": " + a.title)}">${b === (sched ? "approve" : "reject") ? (sched ? "Starting…" : "Declining…") : (sched ? goLabel : noLabel)}</button>
+      </div>
+      ${detailsHTML(a)}
+    </div></li>`;
+}
+function doneRow(a){
+  const emails = a.messages.filter(m => m.channel === "email");
+  const sent = andList([...new Set(emails.filter(m => m.status === "sent").map(m => tidy(m.to_name)).filter(Boolean))]);
+  const entry = a.status === "auto" ? "Dockside released this on its own." :
+    a.status === "rejected" ? "Stopped or declined." : a.status === "approved" ? "Approved." : "Action recorded.";
+  const delivery = [sent ? `Email sent to ${sent}.` : "",
+    emails.some(m => m.status === "outbox") ? "Email in the outbox." : "",
+    emails.some(m => m.status === "delivery_unknown") ? "Email acceptance unknown." : "",
+    emails.some(m => m.status === "sending") ? "Email sending." : ""].filter(Boolean).join(" ");
+  return `<li id="act-${esc(a.id)}"><p class="slip-t">${t24(lastTs(a))}</p><div><h3>${esc(tidy(a.title))}</h3><p class="who">${esc([entry, delivery].filter(Boolean).join(" "))}</p>${detailsHTML(a)}</div></li>`;
+}
+function desk(){
+  const all = S.actions.filter(a => a.status !== "superseded");
+  const next = all.filter(a => NEXT.includes(a.status)).sort((a, b) => String(a.next_check_at).localeCompare(String(b.next_check_at)));
+  const sign = all.filter(a => SIGN.includes(a.status)).sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)));
+  const byTime = (a, b) => new Date(lastTs(b)) - new Date(lastTs(a));
+  const auto = all.filter(a => a.status === "auto").sort(byTime);
+  const ppl = all.filter(a => PEOPLE.includes(a.status)).sort(byTime);
+  const key = JSON.stringify([all, busy, outcome, Math.floor(nowMs() / 6e4)]);
+  paint("next", key, () => next.length ? `<ol class="slips">${next.map(slip).join("")}</ol>`
+    : `<p class="empty">No actions scheduled.</p>`);
+  paint("sign", key, () => sign.length ? `<ol class="slips">${sign.map(slip).join("")}</ol>`
+    : `<p class="empty">No signature needed right now. Written releases and commitments outside the automatic policy appear here.</p>`);
+  const autoShown = showAllDone ? auto : auto.slice(0, 5);
+  paint("done", key + showAllDone, () => (auto.length ? `<ol class="done">${autoShown.map(doneRow).join("")}</ol>${auto.length > 5
+      ? `<button type="button" class="link" data-act="more-done" data-fid="more-done" aria-expanded="${showAllDone}">${showAllDone ? "Show only the latest 5" : `Show all ${auto.length}`}</button>` : ""}`
+    : `<p class="empty">Dockside hasn't acted on its own yet. Free steps, like asking a supplier or flagging a data error, show up here once it does.</p>`)
+    + (ppl.length ? `<h3 class="sub-h">Decided by people</h3><ol class="done">${ppl.map(doneRow).join("")}</ol>` : ""));
+}
+
+async function decide(id, decision){
+  busy[id] = decision; delete outcome[id]; desk();
+  const a0 = S.actions.find(a => a.id === id), sched = a0?.status === "scheduled";
+  try {
+    let d;
+    if (DEMO) { await new Promise(r => setTimeout(r, 500)); demoDecided[id] = decision; d = null; }
+    else {
+      const r = await fetch(`/api/actions/${encodeURIComponent(id)}/decide`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({decision, by:me, note:""})});
+      d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail ? String(d.detail) : `The server answered ${r.status}. Reload the page and try again.`);
+    }
+    outcome[id] = {ok:true};
+    $("#announce").textContent = `${a0 ? a0.title : "Action"}: ${decision === "approve" ? (d?.status === "approved" ? "approved, awaiting dispatch" : "approved") : (sched ? "stopped" : "declined")}.`;
+  } catch (e) {
+    outcome[id] = {ok:false, text: /fetch|network/i.test(e.message)
+      ? "Dockside didn't confirm the decision. Check the current status before trying again." : e.message};
+  }
+  delete busy[id]; keys.next = keys.sign = null;
+  await load();
+  const st = document.querySelector(`[data-fid="${outcome[id]?.ok ? "st-" : "b1-"}${CSS.escape(id)}"]`) || document.getElementById("act-" + id);
+  if (st) { st.setAttribute("tabindex", "-1"); st.focus(); }
+}
+
+/* ---------- demo data (?demo) ---------- */
+function demoize(d){
+  d = structuredClone(d);
+  const now = +new Date(d.now), at = m => new Date(now + m * 6e4).toISOString();
+  const pick = d.actions.filter(a => ["sent", "approved"].includes(a.status)).slice(0, 3);
+  [11, 4, 26].forEach((m, i) => { const a = pick[i]; if (!a) return;
+    a.status = "scheduled"; a.next_check_at = at(m); a.messages.forEach(x => x.status = "draft");
+    a.history = [...a.history.slice(0, 1), {ts:at(m - 15), entry:`scheduled, goes ahead at ${t24(at(m))} unless ${a.approver_name} stops it`}]; });
+  d.actions.push({id:"ACT-DEMO-Q", finding_id:"quality_reject-demo", title:"Release 5,600 statues with minor paint marks under a written concession",
+    rationale:"9 of 125 sampled statues had paint marks. A signed concession lets the lot be packed and keeps 3,400 Collector's copies on the trucks.",
+    kind:"quality", cost_eur:0, eur_protected:408000, ce_copies:3400, approver_name:"Dr. Maren Vogt", approver_role:"Head of procurement", status:"proposed",
+    due_at:at(38), next_check_at:at(38), history:[{ts:at(-3), entry:"proposed; needs Head of procurement (Dr. Maren Vogt)"}], payload:{details:"Concession limited to lot 5000413063, Collector's Edition only, cosmetic defects on the base."},
+    messages:[{id:"MSG-DEMO", channel:"email", to_name:"Supplier Quality, DC Hamburg", language:"en", subject:"Concession for statue lot, Collector's Edition only",
+      body:"Please release the rejected statue lot for Collector's packing under concession. Defects are cosmetic, on the base, and not visible in the box.", status:"draft"}]});
+  if (polls % 2 === 1) { const s = d.inbound.find(r => r.status === "arrived_port");
+    if (s) { s.arrival_at_dc = new Date(new Date(d.deadline) - 12 * 36e5).toISOString(); s.makes_cutoff = true; s.status = "in_delivery"; s.flags = ["Local truck booked by Dockside, pick-up tonight"]; } }
+  if (polls % 2 === 0) d.system.busy = "agent planning: step 7, reading documents";
+  Object.entries(demoDecided).forEach(([id, dec]) => { const a = d.actions.find(x => x.id === id); if (!a) return;
+    a.status = dec === "approve" ? "sent" : "rejected"; a.history = [...(a.history || []), {ts:new Date().toISOString(), entry:`${dec === "approve" ? "approved" : "stopped"} by ${me}`}]; });
+  return d;
+}
+
+/* ---------- ask ---------- */
+async function ask(q){
+  q = q.trim();
+  const out = $("#answer");
+  if (!q) { $("#q").focus(); return; }
+  if (asking) return;
+  const t0 = Date.now(), btn = $("#ask-btn");
+  btn.disabled = true; btn.textContent = "Asking…";
+  const wait = () => `Dockside is reading the data: ${Math.round((Date.now() - t0) / 1000)} s so far. Answers take up to 90 s.`;
+  out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><p class="a">${wait()}</p></div>`;
+  asking = setInterval(() => { const a = out.querySelector(".a"); if (a) a.textContent = wait(); }, 1000);
+  try {
+    const r = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({q})});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail ? String(d.detail) : `the server answered ${r.status}`);
+    const tools = [...new Set((d.steps || []).map(s => String(s.tool).replace(/_/g, " ")))];
+    out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><div class="a">${esc(tidy(d.answer)).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</div>${tools.length ? `<p class="how">Checked: ${esc(tools.join(", "))}.</p>` : ""}</div>`;
+    load();
+  } catch (e) {
+    out.innerHTML = `<div class="answer"><p class="q">You asked: ${esc(q)}</p><p class="a err" role="alert">No answer: ${/fetch|network/i.test(e.message) ? "the server didn't respond" : esc(e.message)}. Ask again, or try a shorter question.</p></div>`;
+  } finally { clearInterval(asking); asking = null; btn.disabled = false; btn.textContent = "Ask"; }
+}
+
+/* ---------- theme + events ---------- */
+const sun = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`;
+const moon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>`;
+const isDark = () => (document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark";
+function themeBtn(){ const d = isDark(), b = $("#theme"); b.innerHTML = d ? sun : moon; b.setAttribute("aria-label", d ? "Switch to light theme" : "Switch to dark theme"); b.title = b.getAttribute("aria-label"); }
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", themeBtn);
+
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-act]"); if (!el) return;
+  const id = el.dataset.id;
+  switch (el.dataset.act) {
+    case "yard-part":
+      selectedPart = id; paintDispatch(); $("#yard-drawer-title")?.focus(); break;
+    case "yard-close": {
+      const prior = selectedPart;
+      selectedPart = null; paintDispatch(); document.querySelector(`[data-fid="yard-${CSS.escape(prior)}"]`)?.focus(); break;
+    }
+    case "approve": decide(id, "approve"); break;
+    case "reject": decide(id, "reject"); break;
+    case "more-done": showAllDone = !showAllDone; desk(); break;
+    case "see-action": {
+      if (!document.getElementById(`act-${id}`)) { showAllDone = true; desk(); }
+      const action = document.getElementById(`act-${id}`);
+      if (action) { action.tabIndex = -1; action.focus({preventScroll:true}); }
+      break;
+    }
+    case "suggest": $("#q").value = el.textContent.trim(); ask(el.textContent); break;
+    case "theme": {
+      const t = isDark() ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      try { localStorage.setItem("dockside.theme", t); } catch (err) {}
+      themeBtn(); break;
+    }
+  }
+});
+document.addEventListener("toggle", e => { const d = e.target.dataset?.did; if (!d) return; e.target.open ? openDetails.add(d) : openDetails.delete(d); }, true);
+$("#ask").addEventListener("submit", e => { e.preventDefault(); ask($("#q").value); });
+
+if (DEMO) $("#demo-note").hidden = false;
+themeBtn();
+load();
+loadDispatch();
+setInterval(load, 15000);
+setInterval(loadDispatch, 15000);
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<!--
+Pass 1 · Countdown and incident log. The yellow deadline strip was recognizable from the dock
+floor, but the log forced buyers to reconstruct why a late part mattered.
+
+Pass 2 · Dispatch signal. Put the part-to-edition graph inside one navy instrument panel.
+  Mast                    Dockside Radio                              Theme
+  Signal                  Collector's parts  ─── Collector's ─┐
+                          Shared parts ──────────┤              ├─ Retail
+                          Standard parts ──────── Standard ────┘
+  Buyer                   Next recommendation                    Attention at
+  Selected part           Source → handoffs → stock → editions → dispatch
+  Conditional recovery    Copies and refunds                     Premium math
+
+Tokens: Harbour #0B2545 (instrument), Daylight #F5F7F5 (paper), Ink #193143
+(text), Chalk #E8F0F5 (signal text), Vest #FFCE74 (short), Sea #77CDB5 (covered).
+Barlow Condensed for calls, edition labels and aligned figures. Atkinson Hyperlegible
+Next for operational copy. Align graph stages on stage headings, money on its baseline.
+Critique: a glowing radio dial would compete with the actual fork. The fork is the hero.
+Keep wire paths thin and quiet, put proof behind details, and reserve amber for shortages.
+Screenshot review: the desktop dispatch node sat at the first edition's height and
+detached shorter part rows from their wires. Centre the merge and attach to actual parts.
+Phone review: the graph filled the first viewport before the recommendation. Move one
+short recommendation ahead of the graph and keep the trace collapsed until a part is chosen.
+Second review: the clicked route now takes the viewport. Keep space above its heading and
+show the limit of the standby truck in a sentence rather than a separate status label.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Dockside Radio · Sunday dispatch</title>
+<script>
+try {
+  const theme = localStorage.getItem("dockside.theme");
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+} catch {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme:light;
+  --harbour:#0b2545;--daylight:#f5f7f5;--ink:#193143;--chalk:#e8f0f5;--vest:#ffce74;--sea:#77cdb5;
+  --surface:var(--daylight);--text:var(--ink);--muted:#455c6c;--rule:#b7c7cc;--fill:#e9eff0;--focus:#206a74;--problem:#8e4030;
+  --signal:#a8bfd2;--signal-rule:#597792;--signal-surface:#193a5a;--signal-bright:#fafcfd;
+  --heading:"Barlow Condensed","Arial Narrow",sans-serif;--body:"Atkinson Hyperlegible Next",system-ui,sans-serif;
+  --pad:clamp(16px,4vw,48px);
+}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;--surface:#132b3b;--text:#e8f0f5;--muted:#b2c6d0;--rule:#4e6878;--fill:#1b394b;--focus:#77cdb5;--problem:#ffb298;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;--surface:#132b3b;--text:#e8f0f5;--muted:#b2c6d0;--rule:#4e6878;--fill:#1b394b;--focus:#77cdb5;--problem:#ffb298;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--text);font:400 1rem/1.5 var(--body)}
+h1,h2,h3,h4,p,figure,ul,ol{margin:0}
+button,input{font:inherit;color:inherit}
+button,summary{cursor:pointer}
+button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:3px solid var(--focus);outline-offset:4px}
+a{color:inherit}
+[hidden]{display:none!important}
+.shell{width:min(100%,1340px);margin:auto;padding-inline:var(--pad)}
+.mast{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:14px}
+.brand{font:700 clamp(1.35rem,3vw,1.75rem)/1 var(--heading);text-decoration:none}
+.brand span{font-weight:500}
+.theme,.quiet,.button{min-height:44px;border:1px solid var(--rule);background:transparent;padding:6px 14px;font-weight:700}
+.theme:hover,.quiet:hover,.button:hover{background:var(--fill)}
+.signal{background:var(--harbour);color:var(--chalk);padding:clamp(18px,3vw,34px);--focus:var(--sea)}
+.signal-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:22px}
+h1{font:700 clamp(2.5rem,7vw,5rem)/.9 var(--heading);letter-spacing:-.018em}
+.departure{font-weight:700;text-align:right;color:var(--chalk)}
+.departure span{display:block;color:var(--signal);font-size:.88rem;font-weight:400}
+.status{margin-top:8px;color:var(--muted);font-size:.9rem}
+.status[data-error="true"]{color:var(--problem)}
+.graph{display:grid;position:relative;isolation:isolate;grid-template-columns:minmax(0,1fr) minmax(145px,23%) minmax(95px,14%);gap:12px clamp(24px,5vw,64px);align-items:center}
+.graph > :not(svg){position:relative;z-index:1}
+.wires{position:absolute;inset:0;pointer-events:none;overflow:visible}
+.wires path{fill:none;stroke:var(--signal-rule);stroke-width:2}
+.wires .selected{stroke:var(--vest);stroke-width:2.5}
+.feed{grid-column:1;min-width:0}
+.feed-label{margin-bottom:7px;font-size:.9rem;color:var(--signal)}
+.feed-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;list-style:none;padding:0}
+.part{height:100%;width:100%;min-height:44px;display:flex;align-items:center;gap:7px;text-align:left;padding:5px 8px;border:1px solid var(--signal-rule);background:var(--signal-surface);color:var(--signal-bright);font-weight:600;line-height:1.15;overflow-wrap:anywhere}
+.part:hover,.part[aria-expanded="true"]{border-color:var(--vest);background:#274a62}
+.mark{display:inline-block;flex:none;width:.55rem;height:.55rem;border-radius:50%;background:var(--sea)}
+[data-state="short"] .mark{background:var(--vest);border-radius:0;transform:rotate(45deg)}
+[data-state="verify"] .mark{background:transparent;border:1.5px solid var(--chalk)}
+.edition{grid-column:2;background:var(--harbour);padding:4px 0 5px 12px;border-left:2px solid var(--sea)}
+.edition[data-short="true"]{border-color:var(--vest)}
+.edition p{line-height:1.25}
+.edition strong{display:block;font:600 clamp(1.3rem,3vw,1.9rem)/1.1 var(--heading);font-variant-numeric:tabular-nums}
+.edition small{color:var(--signal);font-size:.83rem}
+.dispatch{grid-column:3;grid-row:1/-1;justify-self:start;background:var(--harbour);border:1px solid var(--signal-rule);padding:7px 9px;color:var(--chalk);font:600 1.35rem/1.02 var(--heading)}
+.signal-foot{display:flex;justify-content:space-between;gap:8px 18px;flex-wrap:wrap;align-items:center;margin-top:19px;border-top:1px solid var(--signal-rule);padding-top:11px}
+.legend{display:flex;gap:14px;list-style:none;padding:0;color:var(--chalk);font-size:.87rem}
+.legend li{display:flex;align-items:center;gap:6px}
+.exposure{font-weight:700;color:var(--vest)}
+.buyer{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px 32px;padding:0 0 18px}
+.buyer h2,.trace h2{font:700 clamp(1.55rem,4vw,2.25rem)/1.06 var(--heading)}
+.buyer p{max-width:68ch;margin-top:5px}
+.when{color:var(--muted);font-size:.93rem}
+.keys{display:flex;flex-wrap:wrap;gap:8px}
+.button{background:var(--text);color:var(--surface);border-color:var(--text)}
+.button:hover{background:var(--fill);color:var(--text)}
+.button:disabled{opacity:.6;cursor:wait}
+.action-note{grid-column:1/-1;color:var(--problem);font-weight:600}
+.trace{scroll-margin-top:12px;padding-block:27px 32px;border-bottom:1px solid var(--rule)}
+.trace-head{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:18px}
+.trace-head h2{scroll-margin-top:14px}
+.trace-head p{color:var(--muted);margin-top:5px}
+.route+.route{margin-top:17px}
+.other-routes>summary{border-block:1px solid var(--rule);margin:12px 0}
+.route h3,.subhead{font:700 1.35rem/1.15 var(--heading);margin-bottom:9px}
+.route h3 span{font:400 .92rem var(--body);color:var(--muted);margin-inline-start:6px}
+.route-steps{display:flex;list-style:none;padding:0 0 7px;margin:0;gap:15px}
+.route-steps li{position:relative;flex:1;min-width:0;border-top:3px solid var(--focus);padding-top:8px}
+.route-steps li[data-step="pending"],.route-steps li[data-step="unknown"]{border-top-style:dashed;border-color:var(--muted)}
+.route-steps li[data-step="blocked"]{border-color:var(--problem)}
+.route-steps li:not(:last-child)::after{content:"";position:absolute;top:-3px;left:100%;width:15px;height:3px;background:var(--rule)}
+.route-steps strong,.route-steps small{display:block}
+.route-steps small{color:var(--muted);font-size:.9rem}
+.route-steps p{margin-top:4px;font-size:.94rem;max-width:45ch;overflow-wrap:anywhere}
+.trace-end{margin:15px 0 0;padding:11px 14px;background:var(--fill)}
+.trace-end strong{margin-right:8px}
+.terms{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:22px;margin-top:21px;padding:17px 0;border-block:1px solid var(--rule)}
+.terms h3,.terms h4{font:700 1.45rem/1.1 var(--heading);margin-bottom:7px}
+.terms p{max-width:63ch}
+.terms p+p{margin-top:6px}
+.comparison{display:flex;flex-wrap:wrap;gap:12px 20px;margin:10px 0}
+.comparison strong{display:block;font:700 1.9rem/1 var(--heading);font-variant-numeric:tabular-nums}
+.comparison span{font-size:.89rem;color:var(--muted)}
+.premium{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:8px}
+.premium input{width:7.5ch;min-height:42px;padding:4px;border:1px solid var(--rule);background:var(--surface)}
+.break-even{margin-top:6px;font-weight:700}
+.evidence,.activity{margin:13px 0}
+details summary{padding-block:5px;font-weight:700}
+.evidence ul,.activity ol{padding-inline-start:20px}
+.evidence li,.activity li{padding-block:4px;overflow-wrap:anywhere}
+.activity time{font-weight:700;color:var(--muted);margin-right:9px;font-variant-numeric:tabular-nums}
+.bottom{padding-bottom:25px}
+@media(max-width:900px){
+  .feed-parts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .graph{gap:12px 30px}
+}
+@media(max-width:590px){
+  .signal-head{margin-bottom:16px}
+  .departure span{font-size:.83rem}
+  .graph{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .wires{display:none}
+  .feed{grid-column:1/-1;grid-row:auto!important}
+  .edition{grid-column:auto;grid-row:auto!important;align-self:stretch;margin-top:3px}
+  .edition::after{content:"";display:block;position:absolute;top:100%;left:50%;height:11px;border-left:1px solid var(--signal-rule)}
+  .dispatch{grid-column:1/-1;grid-row:auto!important;justify-self:stretch;text-align:center}
+  .signal-foot{margin-top:12px}
+  .buyer,.terms{grid-template-columns:1fr;gap:12px}
+  .route-steps{display:block}
+  .route-steps li{border-top:0;border-left:3px solid var(--focus);padding:4px 0 10px 10px}
+  .route-steps li[data-step="pending"],.route-steps li[data-step="unknown"]{border-left-style:dashed}
+  .route-steps li::after{display:none}
+}
+</style>
+</head>
+<body>
+<header class="shell mast">
+  <a class="brand" href="/">Dockside <span>Radio</span></a>
+  <button type="button" id="theme" class="theme"></button>
+</header>
+<main class="shell">
+  <section class="buyer" id="buyer" aria-label="Next buyer action" hidden></section>
+  <figure class="signal" aria-labelledby="dispatch-title">
+    <div class="signal-head">
+      <h1 id="dispatch-title">Sunday dispatch</h1>
+      <p class="departure" id="departure">Loading schedule</p>
+    </div>
+    <div class="graph" id="graph"><p>Loading parts and editions…</p></div>
+    <figcaption class="signal-foot">
+      <ul class="legend" aria-label="Part status">
+        <li data-state="covered"><span class="mark"></span>Covered</li>
+        <li data-state="short"><span class="mark"></span>Short</li>
+        <li data-state="verify"><span class="mark"></span>Verify</li>
+      </ul>
+      <p class="exposure" id="exposure"></p>
+    </figcaption>
+  </figure>
+  <p class="status" id="status" role="status"></p>
+  <section class="trace" id="component-detail" aria-labelledby="trace-title" hidden></section>
+  <div class="bottom" id="logs"></div>
+</main>
+<script>
+const $ = selector => document.querySelector(selector);
+const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+const number = new Intl.NumberFormat("en-GB");
+const money = new Intl.NumberFormat("en-GB", {style:"currency", currency:"EUR", maximumFractionDigits:0});
+const shortTime = new Intl.DateTimeFormat("en-GB", {weekday:"short", hour:"2-digit", minute:"2-digit", timeZone:"Europe/Berlin"});
+const hhmm = new Intl.DateTimeFormat("en-GB", {hour:"2-digit", minute:"2-digit", timeZone:"Europe/Berlin"});
+const day = new Intl.DateTimeFormat("en-GB", {weekday:"short", day:"numeric", month:"short", timeZone:"Europe/Berlin"});
+const isNumber = n => typeof n === "number" && Number.isFinite(n);
+const fmt = n => isNumber(n) ? number.format(n) : "—";
+const eur = n => isNumber(n) ? money.format(n) : "—";
+const at = (s, formatter=shortTime) => s && !Number.isNaN(Date.parse(s)) ? formatter.format(new Date(s)) : "";
+const list = new Intl.ListFormat("en-GB", {style:"long",type:"conjunction"});
+const statusLabel = {covered:"covered",short:"short",verify:"verify stock"};
+const stepLabel = {confirmed:"Confirmed",pending:"Awaiting confirmation",blocked:"Blocked",unknown:"Unverified"};
+const waiting = new Set(["scheduled","proposed","escalated"]);
+const cache = new Map();
+const premiums = new Map();
+let state, selected, armed, busy = false, error = "", outcome = "";
+
+function replace(id, key, markup){
+  if (cache.get(id) === key) return;
+  const container = document.getElementById(id);
+  const focus = document.activeElement?.id;
+  const open = [...container.querySelectorAll("details[open][id]")].map(el=>el.id);
+  cache.set(id, key);
+  container.innerHTML = markup();
+  for (const key of open) {
+    const details = container.querySelector("#" + CSS.escape(key));
+    if (details) details.open = true;
+  }
+  if (focus) container.querySelector("#" + CSS.escape(focus))?.focus({preventScroll:true});
+}
+function chooseEdition(id){ return state.editions.find(e=>e.id === id); }
+function chosen(){ return state.components.find(c=>c.id === selected); }
+function risk(){
+  return state.editions.reduce((total,edition)=>total+(edition.refundsAtRisk||0),0);
+}
+
+function feeds(){
+  const grouped = new Map();
+  for (const part of state.components) {
+    const ids = state.editions.filter(edition=>part.allocations.some(a=>a.editionId === edition.id)).map(edition=>edition.id);
+    const key = ids.join("|");
+    if (!grouped.has(key)) grouped.set(key,{ids,parts:[]});
+    grouped.get(key).parts.push(part);
+  }
+  const order = new Map(state.editions.map((edition,index)=>[edition.id,index]));
+  return [...grouped.values()].sort((a,b)=>rank(a)-rank(b));
+  function rank(group){
+    return group.ids.length === 1 ? order.get(group.ids[0]) : group.ids.length > 1 ? .5 : Infinity;
+  }
+}
+function editionShortName(edition){
+  return edition.name.replace(/ Edition$/i,"");
+}
+function groupLabel(feed){
+  if (feed.ids.length > 1) return "Shared parts";
+  if (!feed.ids.length) return "Parts to verify";
+  const edition = chooseEdition(feed.ids[0]);
+  return edition ? editionShortName(edition) + " parts" : "Parts to verify";
+}
+function partLabel(part){
+  return part.name.replace(/^NdFeB Disc Magnet\b.*/i,"Lid magnet").replace(/^Activation Code Leaflet$/i,"Code leaflet");
+}
+function drawGraph(){
+  const items = feeds();
+  const key = JSON.stringify([state.editions,state.components.map(c=>[c.id,c.name,c.status,c.allocations]),selected]);
+  replace("graph",key,()=>{
+    const groups = items.map((feed,index)=>`<div class="feed" data-feed="${index}" style="grid-row:${index+1}">
+      <p class="feed-label">${esc(groupLabel(feed))}</p><ul class="feed-parts">${feed.parts.map(c=>`<li><button type="button" class="part"
+      id="part-${esc(c.id)}" data-part="${esc(c.id)}" data-state="${esc(c.status)}" aria-expanded="${c.id===selected}" aria-controls="component-detail"
+      aria-label="${esc(partLabel(c))}, ${statusLabel[c.status] || "unverified"}"><span class="mark" aria-hidden="true"></span>${esc(partLabel(c))}</button></li>`).join("")}</ul></div>`).join("");
+    const editions = state.editions.map((edition,index)=>{
+      const dedicated = items.findIndex(feed=>feed.ids.length===1 && feed.ids[0]===edition.id);
+      const row = dedicated >= 0 ? dedicated+1 : index+1;
+      return `<div class="edition" data-edition="${esc(edition.id)}" data-short="${edition.short>0}" style="grid-row:${row}">
+        <strong>${esc(edition.name)}</strong><p>${fmt(edition.projected)} of ${fmt(edition.demand)}</p>
+        <small>${edition.short>0 ? fmt(edition.short)+" short" : "Projected copies"}</small></div>`;
+    }).join("");
+    const rows = Math.max(items.length,state.editions.length);
+    return `<svg class="wires" aria-hidden="true"></svg>${groups}${editions}<p class="dispatch" id="retail-node" style="grid-row:1 / span ${rows}">Retail trucks</p>`;
+  });
+  drawWires();
+}
+function drawWires(){
+  const graph = $("#graph"), svg = graph.querySelector(".wires");
+  if (!state || !svg || !svg.getClientRects().length) return;
+  const bounds = graph.getBoundingClientRect();
+  svg.setAttribute("width",bounds.width);
+  svg.setAttribute("height",bounds.height);
+  const point=(node,side)=>{
+    const rect=node.getBoundingClientRect();
+    return [rect[side]-bounds.left,rect.top+rect.height/2-bounds.top];
+  };
+  function path(from,to,highlight=false){
+    const x=(from[0]+to[0])/2;
+    return `<path class="${highlight?"selected":""}" d="M${from.join(" ")} H${x} V${to[1]} H${to[0]}"></path>`;
+  }
+  const terminal=point($("#retail-node"),"left");
+  const items=feeds();
+  const paths=[];
+  for (const edition of state.editions) {
+    const tile=graph.querySelector('[data-edition="'+CSS.escape(edition.id)+'"]');
+    const left=point(tile,"left");
+    for (const [i,feed] of items.entries()) {
+      if(!feed.ids.includes(edition.id)) continue;
+      const parts=graph.querySelectorAll('[data-feed="'+i+'"] .part');
+      const rightmost = [...parts].map(part=>point(part,"right")).sort((a,b)=>b[0]-a[0])[0];
+      paths.push([rightmost,left,feed.parts.some(c=>c.id===selected)]);
+    }
+    paths.push([point(tile,"right"),terminal,Boolean(chosen()?.allocations.some(a=>a.editionId===edition.id))]);
+  }
+  svg.innerHTML=paths.sort((a,b)=>Number(a[2])-Number(b[2])).map(args=>path(...args)).join("");
+}
+new ResizeObserver(drawWires).observe($("#graph"));
+
+function actionKeys(action){
+  if(!action)return "";
+  const scheduled=action.status==="scheduled";
+  return `<div class="keys"><button type="button" class="button" id="approve-action" data-decision="approve" data-id="${esc(action.id)}" ${busy?"disabled":""}>
+    ${armed===action.id+":approve"?"Confirm release":scheduled?"Do it now":"Approve"}</button>
+    <button type="button" class="quiet" id="reject-action" data-decision="reject" data-id="${esc(action.id)}" ${busy?"disabled":""}>
+    ${armed===action.id+":reject"?"Confirm "+(scheduled?"stop":"decline"):scheduled?"Stop":"Decline"}</button></div>`;
+}
+function buyer(){
+  const active=state.decisions.filter(a=>waiting.has(a.status));
+  const immediate=active.find(a=>a.status!=="scheduled")??active[0];
+  const supplied=state.recommendation;
+  const focus=state.components.find(c=>c.id===state.focusComponentId);
+  const currentRoute=focus?.routes.find(r=>r.steps.some(s=>s.state==="pending"||s.state==="blocked"));
+  const step=currentRoute?.steps.find(s=>s.state==="pending"||s.state==="blocked");
+  const option=focus?.option;
+  const title=immediate?.title || supplied?.title || (option?.timingState==="expired" ? `Replan the ${focus.name.toLowerCase()} recovery`
+    : option ? `Hold the ${focus.name.toLowerCase()} order` : "Dockside is watching the launch");
+  const assurance=focus?.option?.assurance;
+  const dockPending=currentRoute?.steps.some(s=>s.state==="pending"&&s.name==="Dock slot");
+  const explanation=immediate?.rationale || supplied?.detail || (assurance&&dockPending ? "Dockside is waiting on transport and a dock slot."
+    : step ? `${step.name} ${step.state==="blocked"?"is blocked":"needs confirmation"}.` : "");
+  const latest=at(focus?.option?.latestUsefulAt);
+  const when=immediate
+    ? `${immediate.approver_name || "The buyer"}${immediate.status==="scheduled"? " can stop this until " + (at(immediate.next_check_at)||"the scheduled time") : " needs to approve" +(immediate.due_at ? " by " + at(immediate.due_at):"")}.`
+    : supplied?.who ? `${supplied.who}${supplied.nextAt ? " at "+at(supplied.nextAt):""}`
+    : latest && option.timingState==="open" ? `No decision now. Latest useful release ${latest}.` : "No buyer decision is waiting.";
+  $("#buyer").hidden=false;
+  replace("buyer",JSON.stringify([immediate,title,explanation,when,armed,busy,outcome]),()=>`
+    <div><h2>${esc(title)}</h2>${explanation&&explanation!==when?`<p>${esc(explanation)}</p>`:""}<p class="when">${esc(when)}</p></div>
+    ${actionKeys(immediate)}${outcome?`<p class="action-note" role="status">${esc(outcome)}</p>`:""}`);
+}
+
+function proofEntries(entries){
+  return entries.map(e=>typeof e==="string" ? `<li>${esc(e)}</li>` : `<li><strong>${esc(e.label)}</strong>${e.detail?`<p>${esc(e.detail)}</p>`:""}</li>`).join("");
+}
+function route(r){
+  return `<div class="route"><h3>${esc(r.name)}${isNumber(r.quantity)?`<span>${fmt(r.quantity)} units</span>`:""}</h3>
+    <ol class="route-steps">${r.steps.map(s=>`<li data-step="${esc(s.state)}"><strong>${esc(s.name)}</strong><small>${stepLabel[s.state]||"Unverified"}</small>${s.detail?`<p>${esc(s.detail)}</p>`:""}</li>`).join("")}</ol>
+    ${r.evidence.length?`<details class="evidence" id="evidence-${esc(r.id)}"><summary>Route evidence</summary><ul>${proofEntries(r.evidence)}</ul></details>`:""}</div>`;
+}
+function optionHTML(o){
+  const assurance=o.assurance;
+  const timing=o.timingState==="expired" ? "The latest useful release time has passed." : o.timingState==="unknown" ? "Release timing still needs confirmation." : "";
+  return `<div class="terms">
+    <div><h3>${esc(o.name)}</h3>
+      ${o.supplier||isNumber(o.quantity)||isNumber(o.cost)?`<p>${[o.supplier,isNumber(o.quantity)?fmt(o.quantity)+" units":"",isNumber(o.cost)?eur(o.cost):""].filter(Boolean).map(esc).join(", ")}</p>`:""}
+      <div class="comparison" aria-label="Conditional gain">
+        ${isNumber(o.copiesAdded)?`<div><strong>+${fmt(o.copiesAdded)}</strong><span>copies if it works</span></div>`:""}
+        ${isNumber(o.refundsAvoided)?`<div><strong>${eur(o.refundsAvoided)}</strong><span>refunds avoided</span></div>`:""}
+        ${isNumber(o.netIfTimely)?`<div><strong>${eur(o.netIfTimely)}</strong><span>after recovery cost</span></div>`:""}
+      </div>
+      ${o.nextConstraint?`<p>Still limited by ${esc(o.nextConstraint.toLowerCase())}.</p>`:""}
+      ${o.latestUsefulAt?`<p>Latest useful release ${esc(at(o.latestUsefulAt))}.</p>`:""}
+      ${o.validUntil?`<p>Quote valid until ${esc(at(o.validUntil,o.validUntil.length===10?day:shortTime))}.</p>`:""}
+      ${timing?`<p>${timing}</p>`:""}
+    </div>
+    ${assurance?`<div><h4>Standby transport</h4><p>Covers ${esc(assurance.coveredStep.toLowerCase())} only.</p>
+      ${assurance.sharedSteps?.length?`<p>Both options still need ${esc(list.format(assurance.sharedSteps.map(step=>step.replace(/^(Dock|Formal)/,word=>word.toLowerCase()))))}.</p>`:""}
+      ${o.refundsAvoided>0?`<div class="premium"><label for="premium">Example standby premium, €</label><input id="premium" type="number" inputmode="decimal" min="0" step="any" value="${esc(premiums.get(selected)??assurance.examplePremium??"")}"></div>
+      <p class="break-even" id="break-even" aria-live="polite"></p>`:""}
+    </div>`:""}
+  </div>${o.evidence?.length?`<details class="evidence" id="recovery-proof"><summary>Recovery evidence</summary><ul>${proofEntries(o.evidence)}</ul></details>`:""}`;
+}
+function updatePremium(){
+  const field=$("#premium"), out=$("#break-even");
+  if(!field||!out)return;
+  const premium=field.valueAsNumber, upside=chosen()?.option?.refundsAvoided;
+  if(!isNumber(premium)||premium<0||!(upside>0)){
+    out.textContent="Enter a premium to see the break-even.";
+    return;
+  }
+  const points=Math.round(premium/upside*10000)/100;
+  out.textContent=premium>upside
+    ? "This premium exceeds the refunds the recovery could avoid."
+    : `Standby breaks even if it raises the chance of timely recovery by ${fmt(points)} percentage ${points===1?"point":"points"}.`;
+}
+function trace(){
+  const part=chosen(), section=$("#component-detail");
+  section.hidden=!part;
+  if(!part)return;
+  replace("component-detail",JSON.stringify([part,state.cutoff]),()=>{
+    const allocations=part.allocations.map(a=>{
+      const e=chooseEdition(a.editionId);
+      const rate=isNumber(a.perCopy)&&a.perCopy!==1?` at ${fmt(a.perCopy)} per copy`:"";
+      return e?`${fmt(a.allocated)} of ${fmt(a.required)} for ${editionShortName(e)}${rate}`:"";
+    }).filter(Boolean);
+    return `<div class="trace-head"><div><h2 id="trace-title" tabindex="-1">${esc(partLabel(part))}</h2><p>${part.status === "verify" ? "Confirm whether this part is stocked separately."
+      : `${fmt(part.usable)} usable of ${fmt(part.required)} needed`}</p></div>
+      <button type="button" class="quiet" id="close-trace">Back to parts</button></div>
+      ${part.routes.length?route(part.routes[0]):`<p>No inbound route is recorded for this part. The graph uses current usable stock.</p>`}
+      <p class="trace-end"><strong>Pack allocation</strong>${esc(list.format(allocations))}${state.cutoff?`. Receiving cutoff ${esc(at(state.cutoff))}.`:""}${state.deadline?` Retail dispatch ${esc(at(state.deadline))}.`:""}</p>
+      ${part.option?optionHTML(part.option):""}
+      ${part.routes.length>1?`<details class="other-routes" id="other-${esc(part.id)}"><summary>Other sources and stock (${part.routes.length-1})</summary>${part.routes.slice(1).map(route).join("")}</details>`:""}
+      ${part.adjustments.length?`<details class="evidence" id="stock-proof"><summary>Stock adjustments</summary><ul>${part.adjustments.map(adj=>`<li>${esc(adj.detail)}${adj.evidence.length?`<p>${adj.evidence.map(esc).join(", ")}</p>`:""}</li>`).join("")}</ul></details>`:""}`;
+  });
+  updatePremium();
+}
+function logs(){
+  replace("logs",JSON.stringify([state.activity,state.notes]),()=>`
+    ${state.activity.length?`<details class="activity" id="activity"><summary>Dockside activity</summary><ol>${state.activity.map(a=>`<li><time datetime="${esc(a.ts)}">${esc(at(a.ts,hhmm))}</time>${esc(a.text)}</li>`).join("")}</ol></details>`:""}
+    ${state.notes.length?`<details class="activity" id="planning"><summary>Planning notes</summary><ul>${state.notes.map(note=>`<li>${esc(note)}</li>`).join("")}</ul></details>`:""}`);
+}
+function loadStatus(){
+  const el=$("#status");
+  const checked=at(state?.checkedAt,hhmm);
+  el.dataset.error=Boolean(error);
+  el.textContent=error ? (state?"The latest check failed. Showing the last dispatch update. Retrying shortly.":"Dispatch data is unavailable. Retrying shortly.") : checked?`Dispatch checked at ${checked}.`:"";
+}
+async function load(){
+  try {
+    const response=await fetch("/api/dispatch",{cache:"no-store"});
+    if(!response.ok)throw new Error("Dispatch request failed");
+    state=await response.json();
+    error="";
+    $("#departure").innerHTML=`<time datetime="${esc(state.deadline)}">${esc(at(state.deadline))}</time>${state.cutoff?`<span>Receiving closes ${esc(at(state.cutoff,hhmm))}</span>`:""}`;
+    const exposure=risk();
+    $("#exposure").textContent=exposure>0?`${eur(exposure)} in refunds at risk`:"";
+    drawGraph(); buyer(); trace(); logs();
+  } catch(e){error=e.message;}
+  loadStatus();
+}
+function selectPart(id){
+  const previous=selected;
+  selected=id===selected ? undefined : id;
+  drawGraph();
+  trace();
+  const target=selected?$("#trace-title"):document.getElementById("part-"+previous);
+  target?.focus({preventScroll:true});
+  target?.scrollIntoView({block:selected?"start":"nearest"});
+}
+async function decide(button){
+  const {decision,id}=button.dataset;
+  if(busy)return;
+  const key=id+":"+decision;
+  if(armed!==key){
+    armed=key;outcome="";buyer();
+    return;
+  }
+  armed=undefined;busy=true;buyer();
+  try{
+    const response=await fetch(`/api/actions/${encodeURIComponent(id)}/decide`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision,by:"Radio buyer"})});
+    if(!response.ok)throw new Error("The server did not confirm the decision.");
+    outcome=decision==="reject"?"Decision recorded.":"Release recorded. Check activity for delivery.";
+  }catch(e){outcome=e.message+" Check the current action before trying again.";}
+  busy=false;
+  await load();
+  buyer();
+}
+
+const dark=matchMedia("(prefers-color-scheme: dark)");
+function isDark(){return(document.documentElement.dataset.theme||(dark.matches?"dark":"light"))==="dark";}
+function updateTheme(){
+  const el=$("#theme");
+  el.textContent=isDark()?"Light theme":"Dark theme";
+}
+$("#theme").addEventListener("click",()=>{
+  const theme=isDark()?"light":"dark";
+  document.documentElement.dataset.theme=theme;
+  try{localStorage.setItem("dockside.theme",theme);}catch{}
+  updateTheme();
+});
+dark.addEventListener("change",updateTheme);
+$("#graph").addEventListener("click",event=>{
+  const button=event.target.closest("[data-part]");
+  if(button)selectPart(button.dataset.part);
+});
+$("#component-detail").addEventListener("click",event=>{
+  if(event.target.closest("#close-trace"))selectPart(selected);
+});
+$("#component-detail").addEventListener("input",event=>{
+  if(event.target.id==="premium"){
+    premiums.set(selected,event.target.value);
+    updatePremium();
+  }
+});
+$("#buyer").addEventListener("click",event=>{
+  const button=event.target.closest("[data-decision]");
+  if(button)decide(button);
+});
+document.addEventListener("keydown",event=>{
+  if(event.key==="Escape"&&armed){armed=undefined;buyer();}
+});
+updateTheme();
+load();
+setInterval(load,15000);
+</script>
+</body>
+</html>
