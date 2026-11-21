@@ -191,7 +191,7 @@ function mapFigure(tracking, land, id) {
   }
 
   const estimated = primary?.source === "Schedule estimate";
-  const location = mapLocation(primary, stops, tracking.mode);
+  const location = primary?.label ? primary.label[0].toLowerCase() + primary.label.slice(1) : mapLocation(primary, stops, tracking.mode);
   const mode = {air: "air freight", sea: "sea freight", road: "road freight"}[tracking.mode] ?? "shipment";
   const label = details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1);
   const arrival = Number.isFinite(Date.parse(details.eta)) ? `, due ${trackDay.format(new Date(details.eta))}` : "";

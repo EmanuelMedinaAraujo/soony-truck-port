@@ -288,3 +288,17 @@ def test_ais_matches_only_the_requested_vessel(monkeypatch, mmsi, imo):
         assert subscriptions[0]["FiltersShipMMSI"] == [mmsi]
     else:
         assert "ShipStaticData" in subscriptions[0]["FilterMessageTypes"]
+
+
+def test_held_shipment_is_not_matched_to_a_flight():
+    import datetime as dt
+    from core import tracking
+    places = {"ORD": {"name": "Chicago O'Hare", "lat": 41.97, "lon": -87.9}, "FRA": {"name": "Frankfurt", "lat": 50.03, "lon": 8.56},
+              "DC-HAM": {"name": "DC Hamburg", "lat": 53.55, "lon": 9.99}}
+    shipment = {"shipment_id": "S", "mode": "air", "via": None, "route_via": None, "origin": "ORD", "destination": "FRA", "dest_site": "DC-HAM",
+                "etd": "2026-11-21", "eta": "2026-11-23", "status": "booked", "last_lat": 41.97, "last_lon": -87.9,
+                "updated_at": "2026-11-20T16:00:00+01:00", "held_reason": "terms not agreed", "carrier_id": "LSP-02", "reference": "020-1"}
+    out = tracking.shipment_tracking(shipment, places, dt.datetime(2026, 11, 21, 21, tzinfo=dt.timezone.utc), True)
+    assert out["flight_match"] is None and not out["needs_flight_number"]
+    assert out["current_position"]["label"].startswith("Held at the supplier")
+    assert out["verdict"].startswith("held at the supplier")

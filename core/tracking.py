@@ -517,6 +517,19 @@ def shipment_tracking(shipment: dict, places: dict, now: dt.datetime, include_pu
     site = places.get(shipment["dest_site"])
     transfer = [point_of(places[destination]), point_of(site)] if mode == "air" and site and line else []
     context = None
+    held = shipment.get("held_reason")
+    if held or shipment.get("status") == "arrived_port":
+        # Nothing is moving: don't estimate progress or match flights/vessels for a box that sits still.
+        at = stops[0] if held else (places.get(destination) or (stops[-1] if stops else None))
+        current = {"lat": at["lat"], "lon": at["lon"], "source": "Supplier notice" if held else "Carrier feed",
+                   "timestamp": shipment.get("updated_at"), "label": "Held at the supplier, not yet at " + at['name'] if held else f"Waiting at {at['name']}"} if at else None
+        return {
+            "route": line, "route_source": route_source, "stops": stops, "transfer": [], "transfer_destination": None,
+            "reported": reported, "expected": None, "divergence_km": None,
+            "verdict": f"held at the supplier: {held}" if held else "at the port, no truck booked",
+            "public_context": None, "eta": shipment["eta"], "current_position": current, "flight_match": None,
+            "needs_flight_number": False,
+        }
     flight_match = match_flights(shipment, now, line, background=background) if include_public and mode == "air" else None
     current = expected
     if flight_match and flight_match["status"] == "matched":
@@ -556,8 +569,17 @@ def snapshot(db_path: Path = rules.DB_PATH, *, include_public: bool = True) -> d
             "LEFT JOIN routes r USING (route_id) LEFT JOIN carriers c ON c.carrier_id = s.carrier_id"
         )]
         components = dict(conn.execute("SELECT component_id, description FROM components"))
+        holds = {}
+        try:  # supplier holds read from documents (e.g. "packed and on hold at our dock")
+            for payload, in conn.execute("SELECT payload FROM doc_facts WHERE fact_type='supplier_hold'"):
+                fact = json.loads(payload)
+                if fact.get("po_number"):
+                    holds[str(fact["po_number"])] = fact.get("reason") or "supplier hold"
+        except sqlite3.Error:
+            pass
     details = {}
     for shipment in shipments:
+        shipment["held_reason"] = next((reason for po, reason in holds.items() if po in (shipment["po_numbers"] or "")), None)
         materials = (shipment["material_ids"] or "").split("|")
         cargo = "Mixed" if len(materials) > 1 else rules.plain(components.get(materials[0]))
         cargo = " ".join(word if index == 0 or word.isupper() else word.lower()
