@@ -417,6 +417,17 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              step("Dock slot", "pending", "Dockside books the unload slot with Hamburg; the site lead can move or stop it."),
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
              step("Hamburg receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
+    done = {"sent", "done", "auto", "delivered"}
+    for action in sorted(related, key=lambda a: a.get("updated_at") or ""):  # what Dockside already did moves the matching step forward
+        if action["status"] not in done:
+            continue
+        when = rules.ts(action.get("updated_at"))
+        stamp = f" {when.astimezone(rules.TZ):%a %H:%M}" if when else ""
+        index = {"dock_slot": 2, "order": 3, "book_truck": 1}.get(action["kind"])
+        if index is not None:
+            text = {2: f"Unload slot booked with Hamburg{stamp}; the site lead can move it.",
+                    3: f"Order sent to {supplier}{stamp}.", 1: f"Truck booked{stamp}."}[index]
+            steps[index] = step(steps[index]["name"], "confirmed", text)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)

@@ -21,6 +21,30 @@ RISK_TYPES = {"supplier_hold": "Supply hold", "other_risk": "Supply risk", "capa
 RECEIVED = {"delivered", "arrived_dc", "received"}
 
 
+TERMS = [
+    (re.compile(r"\bDDP\s+([A-Z][\w-]+)"), r"delivery to \1 (DDP)"),
+    (re.compile(r"\bDAP\s+([A-Z][\w-]+)"), r"delivery to \1 (DAP)"),
+    (re.compile(r"\bEXW\s+([A-Z][\w-]+)"), r"pickup at \1 (EXW)"),
+    (re.compile(r"\bFCA\s+([A-Z][\w-]+)"), r"handover to our carrier in \1 (FCA)"),
+    (re.compile(r"\bBuyer order\b"), "Soony's order"),
+    (re.compile(r"\bBuyer\b"), "Soony"),
+    (re.compile(r"\bcompleted PPAP\b"), "a completed quality approval (PPAP)"),
+    (re.compile(r"\bbuyer\b"), "Soony"),
+    (re.compile(r"\bULDs?\b"), "air cargo containers"),
+    (re.compile(r"\bpcs\b"), "pieces"),
+]
+
+
+def plain(text: str | None) -> str | None:
+    """Supplier jargon in plain words: delivery terms, 'Buyer', ULDs; tidy doubled full stops."""
+    if not text:
+        return text
+    for pattern, replacement in TERMS:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"\.{2,}", ".", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def quantity_label(quantity):
     return f"needs {quantity:g} each" if quantity is not None else "uses"
 
@@ -53,8 +77,10 @@ def supplier_risks(conn, supplied_parts):
             summary for _, related, _, _ in relevant
             if (summary := related.get("summary")) and summary != detail
         )
+        if detail and summaries and not re.search(r"[.!?]$", detail.strip()):
+            detail = None  # a terse note like "carrier capacity; 2 ULDs offloaded" repeats the summary
         if condition := fact.get("unblock_condition"):
-            summaries[f"Release condition — {condition}"] = None
+            summaries[f"To release it: {condition}"] = None
         upstream = SUB_SUPPLIER.search(body)
         export_licence = re.search(r"export.{0,25}licen[cs]|licen[cs].{0,25}export", detail or "", re.I)
         text = " ".join(filter(None, [detail, *summaries])).lower()
@@ -64,11 +90,11 @@ def supplier_risks(conn, supplied_parts):
                  "Failed inspection" if re.search(r"inspection|aql|reject", text) else
                  "Short shipment" if re.search(r"offload|uld|short ship|not shipped|balance", text) else
                  "Terms dispute" if re.search(r"\bexw\b|\bddp\b|incoterm|terms of delivery", text) else RISK_TYPES[kind])
-        detail = " ".join(filter(None, [detail, *summaries]))
+        detail = plain(" ".join(f"{part.rstrip('.')}." for part in filter(None, [detail, *summaries])))
         windows = [(row[1].get("from_ts"), row[1].get("to_ts")) for row in relevant if row[1].get("from_ts") or row[1].get("to_ts")]
         yield {"supplier": supplier, "path": path, "title": title, "upstream": upstream[1].strip() if upstream else None,
                "detail": detail or None, "scoped": scoped_parts, "window": windows[0] if windows else None,
-               "quote": fact.get("quote"), "status": "blocked" if kind == "supplier_hold" else "at_risk"}
+               "quote": None if detail else fact.get("quote"), "status": "blocked" if kind == "supplier_hold" else "at_risk"}
 
 
 def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str]]:
@@ -77,7 +103,7 @@ def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str
     for flag in shipment["flags"]:
         if flag.startswith("supplier hold"):
             reason, _, condition = flag.removeprefix("supplier hold:").partition("->")
-            found.append((0, "Held by the supplier", f"Held by the supplier: {reason.strip()}." + (f" Released when: {condition.strip()}." if condition.strip() else "")))
+            found.append((0, "Held by the supplier", plain(f"Held by the supplier: {reason.strip()}." + (f" Released when: {condition.strip()}." if condition.strip() else ""))))
         elif "no truck booked" in flag:
             found.append((1, "Waiting at the port", "Waiting at the port. No truck is booked to Hamburg yet."))
         elif "passed but still 'booked'" in flag:
@@ -90,7 +116,7 @@ def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str
             hours = re.search(r"(\d+) h", flag)
             found.append((6, "No carrier update", f"No carrier update for {hours[1] if hours else 'many'} hours."))
         elif flag.startswith("short shipment"):
-            found.append((5, "Short shipment", "Short shipment: " + flag.split(":", 1)[1].strip() + "."))
+            found.append((5, "Short shipment", plain("Short shipment: " + flag.split(":", 1)[1].strip() + ".")))
         elif flag.startswith("ETA assumes"):
             days = re.search(r"standard is ([\d.]+) d", flag)
             found.append((7, "ETA too optimistic", f"The carrier's arrival date is too optimistic: this route usually takes {days[1] if days else 'longer'} days."))
@@ -324,3 +350,40 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
             add_edge(parent, nid, "after launch")
 
     return {"nodes": list(nodes.values()), "edges": edges, "verdict": verdict, "short": short}
+
+
+def annotate(graph: dict, component: dict | None) -> dict:
+    """Add what Dockside is doing about each risk and delivery, so no card leaves the reader guessing."""
+    if not component:
+        return graph
+    routes = component.get("routes", [])
+    plan = next((r for r in routes if r["id"] == component.get("default_route_id")), None)
+    plan_name = plan["name"][:1].lower() + plan["name"][1:] if plan else None
+    by_route = {r["id"]: r for r in routes}
+    suppliers = {n["id"]: n["label"] for n in graph["nodes"] if n["kind"] == "supplier"}
+    supplier_of = {e["target"]: e["source"] for e in graph["edges"] if e["source"] in suppliers}
+    step = component.get("next_step") or {}
+    idle = f"Not pursued: Dockside's plan uses {plan_name} instead." if plan_name else None
+
+    def route_doing(route: dict) -> str | None:
+        if route is plan:
+            return f"Dockside: {step['text']}" if step.get("text") else None
+        route_step = route.get("next_step") or {}
+        if route_step.get("state") == "After launch":
+            return None
+        return f"Dockside: {route_step['text']}" if route_step.get("action_id") else idle
+
+    for node in graph["nodes"]:
+        if node["kind"] not in {"risk", "shipment"} or node["id"].startswith("later:"):
+            continue
+        if not graph.get("short"):
+            node["doing"] = "Nothing to do: Hamburg already has enough of this part."
+        elif node["id"] in by_route:
+            node["doing"] = route_doing(by_route[node["id"]])
+        else:
+            name = suppliers.get(supplier_of.get(node["id"], ""))
+            own = [r for r in routes if name and r["name"].endswith(name)]
+            active = next((r for r in own if r is plan), None) or next(
+                (r for r in own if (r.get("next_step") or {}).get("action_id")), None)
+            node["doing"] = route_doing(active) if active else idle
+    return graph

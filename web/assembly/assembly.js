@@ -121,11 +121,29 @@ function process(currentStage) {
 const shipmentStates = {in_transit:"In transit", in_delivery:"Out for delivery", arrived_port:"At port", delayed:"Delayed",
   booked:"Booked", delivered:"Delivered", arrived_dc:"At the warehouse"};
 
+const stepStates = {confirmed: "Done", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
+
+/* The selected delivery's checkpoints on one vertical line: done, where Dockside is now (with what it does), still to come. */
+function renderProgress(route, line) {
+  const now = `<p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
+  if (!route?.steps?.length) return now;
+  let current = route.steps.findIndex(step => step.state !== "confirmed");
+  return `<p class="progress-caption">Progress of ${html(route.name.charAt(0).toLowerCase() + route.name.slice(1))}</p>
+    <ol class="progress">${route.steps.map((step, index) => {
+      const position = step.state === "confirmed" ? "done" : index === current ? "current" : "todo";
+      return `<li data-position="${position}" data-state="${html(step.state)}"${position === "current" ? ' aria-current="step"' : ""}>
+        <i class="progress-dot" aria-hidden="true"></i>
+        <div><b>${html(step.name)}</b> <span class="progress-state">${position === "current" ? "Now" : stepStates[step.state] ?? "Unclear"}</span>
+        <p>${html(step.detail)}</p>${position === "current" ? now : ""}</div></li>`;
+    }).join("")}</ol>${current === -1 ? now : ""}`;
+}
+
 function renderRouteDetails(route, showConfirmation) {
   if (!route) return "";
-  return `<details class="detail-block shipment-details" data-detail="route checks"><summary>Details</summary>
-    <ul class="handoffs">${route.steps.map(step => `<li><b>${html(step.name)}</b><span class="state">${html(states[step.state] ?? states.unknown)}</span><p>${html(step.detail)}</p></li>`).join("")}</ul>
-    ${sourceList(route.evidence)}
+  const sources = sourceList(route.evidence);
+  if (!sources && !showConfirmation) return "";
+  return `<details class="detail-block shipment-details" data-detail="route checks"><summary>Sources${showConfirmation ? " and scenario" : ""}</summary>
+    ${route.evidence?.length ? `<ul>${route.evidence.map(entry => `<li><strong>${html(entry.label)}</strong><br>${html(entry.detail)}</li>`).join("")}</ul>` : ""}
     ${showConfirmation ? `<div class="handoff"><label><input id="assume-confirmed" type="checkbox" ${assumeConfirmation ? "checked" : ""}> Assume supplier confirms the order</label>
       <a href="${negotiator}" target="_blank" rel="noreferrer">Order negotiator</a>
       <p>${assumeConfirmation ? "The scenario assumes supplier confirmation. Transport and receipt still need evidence." : "The scenario leaves supplier confirmation open."}</p></div>` : ""}
@@ -231,8 +249,8 @@ function renderInspector(force = false) {
       <div><h2 id="part-heading" tabindex="-1">${html(nameOf(part))}</h2>
       <p>${html(partNote)}</p></div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
-    <div class="shipment-head"><div class="shipment-summary"><h3>Dockside’s next step</h3>
-      <p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p></div>
+    <div class="shipment-head"><div class="shipment-summary"><h3>Where it stands</h3>
+      ${renderProgress(route, line)}</div>
       ${renderRouteDetails(route, showConfirmation)}</div>
     </div>
     ${chaser}
@@ -317,6 +335,7 @@ async function refresh() {
     if (activeRoute()?.tracking) loadMap();
     renderOperations(state);
     renderNextSteps(state);
+    window.PartDependencyGraph.prefetch(state.components.map(component => component.id));
   } catch {
     $("sync").textContent = state ? "Refresh failed" : "Disconnected";
     if (!state) $("initial").textContent = "Can’t load the assembly plan. Check the server or refresh this page.";

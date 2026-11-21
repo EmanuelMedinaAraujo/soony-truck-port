@@ -11,6 +11,24 @@ window.PartDependencyGraph = (() => {
   const cardHeight = 61;
   const detailLine = 17;
   let nextId = 0;
+  const cache = new Map();  // componentId -> Promise<graph>, warmed in the background on page load
+
+  function load(componentId, fresh = false) {
+    if (!fresh && cache.has(componentId)) return cache.get(componentId);
+    const request = fetch(`/api/parts/${encodeURIComponent(componentId)}/graph`, {cache: "no-store"}).then(response => {
+      if (!response.ok) throw new Error(`Graph request failed (${response.status})`);
+      return response.json();
+    });
+    const previous = cache.get(componentId);
+    // Keep showing the last good graph while a refresh is in flight or if it fails.
+    cache.set(componentId, previous ? request.catch(() => previous) : request);
+    request.catch(() => { if (!previous) cache.delete(componentId); });
+    return cache.get(componentId);
+  }
+
+  function prefetch(componentIds) {
+    for (const id of componentIds) load(id, true).catch(() => {});
+  }
 
   function svgElement(tag, attributes = {}, content) {
     const element = document.createElementNS(namespace, tag);
@@ -40,6 +58,7 @@ window.PartDependencyGraph = (() => {
     const meta = String(node.meta ?? node.subtitle ?? "").trim().replace(/\.$/, "");
     let detail = String(node.detail ?? "").trim();
     if (meta && detail.toLowerCase().startsWith(meta.toLowerCase() + ".")) detail = detail.slice(meta.length + 1).trim();
+    if (node.doing) lines.push(node.doing);
     if (detail) lines.push(detail);
     if (node.quote) lines.push(`“${node.quote}”`);
     const sources = node.sources ?? (node.evidence ? [node.evidence.split("/").at(-1)] : []);
@@ -155,7 +174,7 @@ window.PartDependencyGraph = (() => {
       if (!position) continue;
       context.font = detailFont;
       const lines = detailText(position.node).flatMap(text =>
-        wrap(text, position.width - 22, context, isSourceLine(text) ? 1 : 9));
+        wrap(text, position.width - 22, context, isSourceLine(text) ? 1 : 9).map(line => ({line, doing: text === position.node.doing})));
       if (!lines.length) continue;
       detailLines.set(id, lines);
       heights.set(id, cardHeight + 8 + lines.length * detailLine);
@@ -217,8 +236,8 @@ window.PartDependencyGraph = (() => {
         wrap(meta, cardWidth - 34, context, 1)[0]));
       if (isOpen) {
         card.append(svgElement("line", {class: "depgraph-rule", x1: 11, x2: cardWidth - 11, y1: cardHeight + 1, y2: cardHeight + 1}));
-        detailLines.get(node.id).forEach((line, i) => card.append(svgElement("text",
-          {x: 11, y: cardHeight + 18 + i * detailLine, class: isSourceLine(line) ? "depgraph-source" : "depgraph-detail"}, line)));
+        detailLines.get(node.id).forEach(({line, doing}, i) => card.append(svgElement("text",
+          {x: 11, y: cardHeight + 18 + i * detailLine, class: doing ? "depgraph-detail depgraph-doing" : isSourceLine(line) ? "depgraph-source" : "depgraph-detail"}, line)));
       } else if (detailText(node).length) {
         card.append(svgElement("text", {x: cardWidth - 12, y: 52, "text-anchor": "end", class: "depgraph-more", "aria-hidden": "true"}, "+"));
       }
@@ -255,9 +274,7 @@ window.PartDependencyGraph = (() => {
     inspector.querySelector(".inspector-head").after(section);
 
     try {
-      const response = await fetch(`/api/parts/${encodeURIComponent(componentId)}/graph`, {cache: "no-store"});
-      if (!response.ok) throw new Error(`Graph request failed (${response.status})`);
-      const graph = await response.json();
+      const graph = structuredClone(await load(componentId));
       if (!section.isConnected) return;
       for (const node of graph.nodes) {
         if (["assembly", "part", "subpart"].includes(node.kind)) node.label = nameOf(node.id) ?? node.label;
@@ -298,5 +315,5 @@ window.PartDependencyGraph = (() => {
     }
   }
 
-  return {mount};
+  return {mount, prefetch};
 })();
