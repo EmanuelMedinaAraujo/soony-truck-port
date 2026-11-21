@@ -17,7 +17,9 @@ from openai import OpenAI
 
 from core import actions, planner, rules
 
-MODEL = os.environ.get("AGENT_MODEL", "gpt-5.5")
+MODEL = os.environ.get("AGENT_MODEL", "gpt-5.5")          # chat: judgment matters
+PLAN_MODEL = os.environ.get("PLAN_MODEL", "gpt-5.4-mini")  # background re-plans: speed matters
+PLAN_EFFORT = os.environ.get("PLAN_EFFORT", "low")
 MAX_STEPS = 30
 
 
@@ -98,7 +100,8 @@ How you work:
   Name parts by what they are (art books, statues, game cards, game card cases, sleeves) and shipments by what they carry and where they are.
 - Work through findings in order of EUR at risk; a stuck container or truck that closes a gap needs a book_truck + dock_slot action.
 - Supplier contacts are in suppliers.contact_email. Write to suppliers in their preferred language (suppliers.language) and include body_en.
-- You never send anything yourself: propose_action creates a draft that a human approves."""
+- You work autonomously. propose_action executes free actions immediately; commitments within policy are executed after a
+  short stop window unless the responsible person stops them; only written releases (quality concessions) wait for a signature."""
 
 PLAN_PROMPT = """New data was processed. Review the situation and the findings that have no open action yet: {pending}.
 For each one worth acting on, call propose_action once (with drafted messages). Skip findings that are informational, already handled, or
@@ -172,17 +175,20 @@ class Tools:
             actions.set_status(a["id"], "auto", "done by Dockside on its own (free and reversible, no signature needed)",
                                approver_role="Dockside", approver_name="Dockside")
             return {"done_automatically": a["id"]}
+        if actions.policy_schedules(a):
+            a = actions.schedule(a)
+            return {"scheduled": a["id"], "executes_at": a["next_check_at"], "can_be_stopped_by": a["approver_name"]}
         return {"created": a["id"], "waiting_for": f"{a['approver_role']} ({a['approver_name']})"}
 
 SYSTEM = SYSTEM.replace("{cheap}", f"{rules.cfg('cheap_fix_eur'):,}")
 
 
-def run(user_msg: str, on_step=None) -> str:
+def run(user_msg: str, on_step=None, model: str | None = None, effort: str = "medium") -> str:
     client = OpenAI()
     t = Tools()
     items: list = [{"role": "user", "content": user_msg}]
     for _ in range(MAX_STEPS):
-        resp = client.responses.create(model=MODEL, instructions=SYSTEM, input=items, tools=TOOLS, reasoning={"effort": "medium"})
+        resp = client.responses.create(model=model or MODEL, instructions=SYSTEM, input=items, tools=TOOLS, reasoning={"effort": effort})
         items += resp.output
         calls = [o for o in resp.output if o.type == "function_call"]
         if not calls:
@@ -198,13 +204,14 @@ def run(user_msg: str, on_step=None) -> str:
     return "Stopped after too many steps."
 
 
-def plan(on_step=None) -> str:
+def plan(on_step=None, model: str | None = None) -> str:
     r = rules.evaluate()
     pending = [f["id"] for f in r["findings"] if f["severity"] in ("critical", "high") and not actions.open_action_for(f["id"])]
     if not pending:
         return "No new findings without an action."
     actions.log_event("agent_plan", None, f"reviewing {len(pending)} findings")
-    return run(PLAN_PROMPT.format(pending=", ".join(pending)), on_step)
+    return run(PLAN_PROMPT.format(pending=", ".join(pending)), on_step, model=model or PLAN_MODEL,
+               effort="medium" if model else PLAN_EFFORT)
 
 
 def chat(question: str, on_step=None) -> str:
@@ -213,5 +220,7 @@ def chat(question: str, on_step=None) -> str:
 
 if __name__ == "__main__":
     import sys
-    step = lambda n, a, o: print(f"  -> {n}({json.dumps(a, ensure_ascii=False)[:160]})")
+    import time
+    t0 = time.time()
+    step = lambda n, a, o: print(f"  {time.time() - t0:5.0f}s  {n}({json.dumps(a, ensure_ascii=False)[:140]})", flush=True)
     print(chat(" ".join(sys.argv[1:]), step) if len(sys.argv) > 1 else plan(step))

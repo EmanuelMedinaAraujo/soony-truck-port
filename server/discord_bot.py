@@ -42,9 +42,11 @@ def decision_embed(a: dict) -> discord.Embed:
 
 
 class DecisionView(discord.ui.View):
-    def __init__(self, aid: str, enabled: bool = True):
+    def __init__(self, aid: str, enabled: bool = True, scheduled: bool = False):
         super().__init__(timeout=None)
-        for label, style, verb in (("Approve and send", discord.ButtonStyle.success, "approve"), ("Decline", discord.ButtonStyle.secondary, "reject")):
+        labels = (("Do it now", discord.ButtonStyle.success, "approve"), ("Stop", discord.ButtonStyle.danger, "reject")) if scheduled else \
+                 (("Approve and send", discord.ButtonStyle.success, "approve"), ("Decline", discord.ButtonStyle.secondary, "reject"))
+        for label, style, verb in labels:
             self.add_item(discord.ui.Button(label=label, style=style, custom_id=f"dock:{verb}:{aid}", disabled=not enabled))
 
 
@@ -75,13 +77,13 @@ class Bot(discord.Client):
 
         @self.tree.command(name="decisions", description="Show every decision waiting for approval, with buttons")
         async def decisions(inter: discord.Interaction):
-            pending = actions.list_actions(("proposed", "escalated"))
+            pending = actions.list_actions(("proposed", "escalated", "scheduled"))
             if not pending:
                 await inter.response.send_message("No decisions waiting. Dockside will post here when something needs you.")
                 return
             await inter.response.send_message(f"{len(pending)} decision(s) waiting:")
             for a in pending:
-                await inter.followup.send(content=f"Decision for **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"]))
+                await inter.followup.send(content=f"For **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"], scheduled=a["status"] == "scheduled"))
 
     async def setup_hook(self):
         guild = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -101,7 +103,7 @@ class Bot(discord.Client):
         who = inter.user.display_name
         try:
             a = await asyncio.to_thread(self.decide_fn, aid, verb, f"{who} (Discord)")
-            done = "Approved and sent" if verb == "approve" else "Declined"
+            done = "Done" if verb == "approve" else "Stopped"
             recipients = ", ".join(sorted({m["to_name"] for m in a["messages"]})) if verb == "approve" else ""
             await inter.response.edit_message(embed=decision_embed(a), view=DecisionView(aid, enabled=False))
             await inter.followup.send(f"{done}{' to ' + recipients if recipients else ''}. Logged for {who}.", ephemeral=True)
@@ -110,8 +112,12 @@ class Bot(discord.Client):
 
     async def post_decision(self, a: dict):
         ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
+        if a["status"] == "scheduled":
+            await ch.send(content=f"Dockside will do this at {a['next_check_at'][11:16]} unless **{a['approver_name']}** stops it",
+                          embed=decision_embed(a), view=DecisionView(a["id"], scheduled=True))
+            return
         prefix = "Escalated to you: " if a["status"] == "escalated" else ""
-        await ch.send(content=f"{prefix}Decision for **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"]))
+        await ch.send(content=f"{prefix}Signature needed from **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"]))
 
     async def post_text(self, text: str):
         ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
@@ -136,8 +142,15 @@ def start(listeners: list, decide_fn) -> Bot | None:
     def on_event(ev: dict):
         if not bot.ready.is_set():
             return
-        if ev["kind"] in ("action_proposed", "action_escalated"):
+        if ev["kind"] in ("action_proposed", "action_escalated", "action_scheduled"):
             asyncio.run_coroutine_threadsafe(bot.post_decision(ev["action"]), loop)
+        elif ev["kind"] == "action_auto":
+            a = ev["action"]
+            to = ", ".join(sorted({m["to_name"] for m in a["messages"]})) or "logged"
+            asyncio.run_coroutine_threadsafe(bot.post_text(f"Done by Dockside: **{a['title']}** ({to}). {a['rationale']}"), loop)
+        elif ev["kind"] == "action_executed":
+            a = ev["action"]
+            asyncio.run_coroutine_threadsafe(bot.post_text(f"Executed: **{a['title']}**. Nobody stopped it, so Dockside sent it."), loop)
         elif ev["kind"] == "data_drop":
             names = ", ".join(p.split("/")[-1] for p in ev["paths"][:5])
             asyncio.run_coroutine_threadsafe(bot.post_text(f"New data on the portal: {names}. Re-planning now."), loop)

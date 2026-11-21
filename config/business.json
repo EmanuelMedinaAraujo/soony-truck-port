@@ -121,8 +121,22 @@
         "escalate",
         "reserve"
       ],
-      "auto_max_cost_eur": 0
+      "auto_max_cost_eur": 0,
+      "act_unless_stopped": {
+        "kinds": [
+          "order",
+          "book_truck",
+          "dock_slot",
+          "expedite"
+        ],
+        "max_cost_eur": 50000,
+        "min_value_ratio": 10,
+        "window_minutes": 15
+      },
+      "always_sign": [
+        "quality_release"
+      ]
     },
-    "source": "PP-07 + interview: every commitment of money needs a signature on the ladder; quality concessions need Supplier Quality + Category Lead (inspection report); dock slots are released by the site lead. Everything free and reversible (asking, confirming, reserving without commitment, flagging data, escalating) Dockside does on its own and reports."
+    "source": "Team decision 2026-11-21: Dockside works autonomously. Free actions go out immediately. Commitments within the Buyer limit (PP-07, < EUR 50k) that protect at least 10x their cost, and dock slots, are executed after a 15-minute stop window in which the responsible person can stop them. Quality concessions need a written release (PP-07, inspection report) and always wait for a signature."
   }
 }

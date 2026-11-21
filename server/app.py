@@ -39,7 +39,7 @@ def notify(kind: str, payload: dict) -> None:
             traceback.print_exc()
 
 
-def cycle(force_plan: bool = False) -> dict:
+def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
     """One pass of the whole pipeline. Safe to call from the loop or an API request."""
     with LOCK:
         out = {"changes": 0}
@@ -74,10 +74,29 @@ def cycle(force_plan: bool = False) -> dict:
             if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
                 STATE["busy"] = "agent planning"
                 before = {a["id"] for a in actions.list_actions()}
-                STATE["agent_summary"] = agent.plan()
-                for a in actions.list_actions():
-                    if a["id"] not in before:
-                        notify("action_proposed", {"action": a})
+                steps = {"n": 0}
+                labels = {"get_situation": "reading the launch picture", "get_shipment": "checking a shipment", "query_db": "querying the data",
+                          "search_documents": "reading documents", "plan_truck": "planning a truck", "what_if": "running a what-if",
+                          "propose_action": "writing an action"}
+
+                def progress(name, args, out):
+                    steps["n"] += 1
+                    STATE["busy"] = f"agent planning: step {steps['n']}, {labels.get(name, name)}"
+                    if name == "propose_action":
+                        a = actions.get(out.get("created") or out.get("done_automatically") or "")
+                        if a:  # stream each action to the UI/Discord as soon as it exists
+                            notify({"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed"), {"action": a})
+
+                STATE["agent_summary"] = agent.plan(progress, model=plan_model)
+                actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
+        STATE["busy"] = "executing scheduled actions"
+        for a in actions.due_scheduled():
+            for m in a["messages"]:
+                if m["status"] == "draft":
+                    from core import outbound
+                    outbound.send(m)
+            a = actions.set_status(a["id"], "sent", f"executed by Dockside: nobody stopped it within the window ({a['approver_name']} was informed)")
+            notify("action_executed", {"action": a})
         STATE["busy"] = "follow-ups"
         for a in actions.due_followups():
             if a["status"] in ("proposed", "escalated"):
@@ -112,6 +131,13 @@ def _compact_state() -> dict:
     head = next(f for f in r["findings"] if f["id"] == "ce-at-risk")
     relevant = [s for s in r["inbound"] if s["planned_for_launch"] or s["arrival_at_dc"] is None or s["makes_cutoff"]]
     later = len(r["inbound"]) - len(relevant)
+    import sqlite3 as _sq
+    _m = _sq.connect(rules.DB_PATH)
+    descs = dict(_m.execute("SELECT component_id, description FROM components").fetchall())
+    for s in relevant:
+        s["material_names"] = [rules.plain(descs.get(m), m) for m in s["materials"]]
+    bind_id = next((c["component"] for c in sorted(r["coverage"].values(), key=lambda c: c["alloc"].get(prio, 0) - c["need"].get(prio, 0))
+                    if prio in c["need"] and not c["suspect_master_data"] and c["need"][prio] > c["alloc"][prio]), None)
     with actions.con() as c:
         ev = [dict(x) for x in c.execute("SELECT * FROM events WHERE kind<>'row_change' ORDER BY ts DESC LIMIT 40")]
     import sqlite3
@@ -123,7 +149,8 @@ def _compact_state() -> dict:
         "now": r["now"], "deadline": rules.cfg("deadline"), "cutoff_hours": rules.cfg("receiving_buffer_hours"),
         "priority": prio, "picture": r["picture"],
         "headline": {"ce_copies": head["ce_copies"], "eur": head["eur_at_risk"], "detail": head["detail"],
-                     "refund_per_copy": rules.cfg("missed_copy_cost_eur")[prio]},
+                     "refund_per_copy": rules.cfg("missed_copy_cost_eur")[prio],
+                     "binding": {"component": bind_id, "name": rules.plain(descs.get(bind_id))} if bind_id else None},
         "coverage": [{k: c[k] for k in ("component", "description", "need", "need_total", "usable_now", "gap", "erp_stock", "suspect_master_data")} | {"adjustments": [{"kind": a["kind"], "cut": a["cut"], "detail": a["detail"]} for a in c["adjustments"] if a["kind"] != "revision_unverified"]}
                      for c in r["coverage"].values()],
         "inbound": relevant, "inbound_later": later,
@@ -187,10 +214,33 @@ def chat(a: Ask):
 
 
 @app.post("/api/cycle")
-def run_cycle(plan: bool = False):
-    return cycle(force_plan=plan)
+def run_cycle(plan: bool = False, model: str | None = None):
+    """Start a pipeline pass in the background; progress shows in /api/state system.busy."""
+    if LOCK.locked():
+        return {"started": False, "reason": f"already running: {STATE['busy']}"}
+    threading.Thread(target=cycle, kwargs={"force_plan": plan, "plan_model": model}, daemon=True).start()
+    return {"started": True}
 
 
 @app.get("/")
 def index():
     return FileResponse(ROOT / "web" / "index.html")
+
+
+@app.get("/v/{name}")
+def variant(name: str):
+    """UI prototypes: web/variants/<name>.html, same API. /v/ lists them."""
+    import re as _re
+    f = ROOT / "web" / "variants" / f"{name}.html"
+    if not _re.fullmatch(r"[a-z0-9-]+", name) or not f.exists():
+        raise HTTPException(404, "No such prototype. See /v/ for the list.")
+    return FileResponse(f)
+
+
+@app.get("/v/")
+def variants():
+    from fastapi.responses import HTMLResponse
+    names = sorted(p.stem for p in (ROOT / "web" / "variants").glob("*.html"))
+    links = "".join(f'<li><a href="/v/{n}">{n}</a></li>' for n in names)
+    return HTMLResponse(f'<!doctype html><meta charset=utf-8><title>Dockside prototypes</title><body style="font:16px system-ui;padding:24px;background:#fff">'
+                        f'<h1>Dockside prototypes</h1><ul><li><a href="/">current (main)</a></li>{links}</ul></body>')

@@ -106,7 +106,7 @@ def get(aid: str) -> dict | None:
     return d
 
 
-def list_actions(statuses: tuple = ("proposed", "approved", "sent", "escalated", "done", "rejected", "auto")) -> list[dict]:
+def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent", "escalated", "done", "rejected", "auto")) -> list[dict]:
     with con() as c:
         ids = [r[0] for r in c.execute(f"SELECT id FROM actions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY eur_protected DESC, created_at",
                                        statuses)]
@@ -121,7 +121,7 @@ def decide(aid: str, decision: str, by: str, note: str = "") -> dict:
         r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         if not r:
             raise KeyError(aid)
-        if r["status"] not in ("proposed", "escalated"):
+        if r["status"] not in ("proposed", "escalated", "scheduled"):
             raise ValueError(f"{aid} is already {r['status']}")
         c.execute("UPDATE actions SET status=?, updated_at=?, history=? WHERE id=?",
                   (status, now().isoformat(timespec="seconds"), _hist(r, f"{status} by {by}" + (f": {note}" if note else "")), aid))
@@ -137,6 +137,31 @@ def set_status(aid: str, status: str, entry: str, **fields) -> dict:
                   (status, now().isoformat(timespec="seconds"), _hist(r, entry), *fields.values(), aid))
     log_event(f"action_{status}", aid, entry)
     return get(aid)
+
+
+def policy_schedules(a: dict) -> bool:
+    """Act-unless-stopped: within the Buyer limit and clearly worth it, or a dock slot."""
+    pol = cfg("autonomy")["act_unless_stopped"]
+    if a["kind"] in cfg("autonomy")["always_sign"] or a["kind"] not in pol["kinds"]:
+        return False
+    cost = a["cost_eur"] or 0
+    if cost > pol["max_cost_eur"]:
+        return False
+    worth = cost <= cfg("cheap_fix_eur") or (a["eur_protected"] or 0) >= pol["min_value_ratio"] * cost
+    return a["kind"] == "dock_slot" or worth
+
+
+def schedule(a: dict) -> dict:
+    when = now() + dt.timedelta(minutes=cfg("autonomy")["act_unless_stopped"]["window_minutes"])
+    return set_status(a["id"], "scheduled", f"Dockside executes at {when:%H:%M} unless {a['approver_name']} stops it",
+                      next_check_at=when.isoformat(timespec="seconds"), due_at=when.isoformat(timespec="seconds"))
+
+
+def due_scheduled() -> list[dict]:
+    t = now().isoformat(timespec="seconds")
+    with con() as c:
+        ids = [r[0] for r in c.execute("SELECT id FROM actions WHERE status='scheduled' AND next_check_at <= ?", (t,))]
+    return [get(i) for i in ids]
 
 
 def due_followups() -> list[dict]:

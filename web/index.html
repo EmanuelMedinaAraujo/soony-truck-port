@@ -152,8 +152,14 @@ h2{font:600 25px/1.2 var(--sans);letter-spacing:-.005em;margin-bottom:14px}
 .dec:first-child{border-top:0;border-top-left-radius:var(--r-surface)}
 .dec:last-child{border-bottom-left-radius:var(--r-surface)}
 .dec[data-s="escalated"]{border-left-color:var(--red)}
+.dec[data-s="scheduled"]{border-left-color:var(--green);border-left-style:dashed}
 .dec[data-s="approved"],.dec[data-s="sent"],.dec[data-s="done"]{border-left-color:var(--green)}
 .dec[data-s="rejected"]{border-left-color:var(--hair)}
+.dec[data-s="auto"]{border-left-color:var(--steel);padding-block:14px}
+.dec[data-s="auto"] h3{font-size:16px}
+.dec[data-s="auto"] .who{color:var(--steel);margin-top:4px;font-weight:400}
+.auto-h{font:600 16px/1.3 var(--sans);margin:28px 0 10px}
+.details{margin-top:14px;color:var(--steel);max-width:72ch;white-space:pre-wrap}
 .dec h3{font:600 20px/1.3 var(--sans);max-width:60ch}
 .dec[data-s="rejected"] h3{color:var(--steel)}
 .ratio{margin-top:2px;font:600 16px/1.4 var(--sans);font-variant-numeric:tabular-nums}
@@ -290,6 +296,7 @@ h2{font:600 25px/1.2 var(--sans);letter-spacing:-.005em;margin-bottom:14px}
       <section class="s-dec" aria-labelledby="dec-h">
         <h2 id="dec-h">Decisions</h2>
         <div class="panel" id="decisions"></div>
+        <div id="autos"></div>
       </section>
       <section class="s-parts" aria-labelledby="parts-h">
         <h2 id="parts-h">Parts for the last pack-out</h2>
@@ -404,14 +411,14 @@ function lede(){
   const h = S.headline, ce = S.picture[S.priority], st = S.picture["FG-GH6-STD"];
   const pend = S.actions.filter(a => ["proposed","escalated"].includes(a.status));
   const fixes = pend.filter(a => a.ce_copies > 0).length;
-  const bind = /Binding constraint: ([A-Z0-9-]+)/.exec(h.detail || "")?.[1];
+  const bind = h.binding?.name;
   const slackH = ce.rate ? ce.slack_copies / ce.rate : 0;
   const slack = `The packing cell has ${slackH >= 1 ? `about ${plural(Math.round(slackH), "hour")}` : "less than an hour"} of slack (${plural(ce.slack_copies, "copy", "copies")}).`;
   let h1, p;
   if (h.ce_copies > 0) {
     h1 = fixes ? `${eur(h.eur)} in Collector's refunds depends on ${plural(fixes, "decision")}.`
                : `${eur(h.eur)} in Collector's refunds is at risk, and no fix is waiting for approval yet.`;
-    p = `${bind ? `${esc(partName(bind).replace(/\s*\(.*\)$/, ""))} (${esc(bind)}) runs out first: ` : ""}${n(h.ce_copies)} Collector's copies can't be packed without it. ${slack}`;
+    p = `${bind ? `${esc(cap1(bind.toLowerCase()))}s run out first: ` : ""}${n(h.ce_copies)} Collector's copies can't be packed without them. ${slack}`;
   } else {
     h1 = "Every Collector's copy is covered for the trucks on Sunday.";
     p = slack;
@@ -452,7 +459,7 @@ function yard(){
       const late = a && (r.makes_cutoff === false || a > dl);
       const cls = !a ? "wait" : late ? "late" : "ok";
       const x = a ? X(a) : 0;
-      const what = r.materials.map(partName).join(", ");
+      const what = (r.material_names || r.materials.map(partName)).join(", ");
       const contents = `${cap1(r.mode === "sea" ? "sea" : r.mode === "air" ? "air" : "road")}, ${r.quantity ? n(r.quantity) + " " : ""}${esc(what)}`;
       let st;
       if (!a) st = r.status === "arrived_port" ? "At the terminal, no truck booked" : "Held at the supplier";
@@ -479,7 +486,7 @@ function yard(){
 }
 
 /* ---------- decisions ---------- */
-const PENDING = ["proposed","escalated"];
+const PENDING = ["proposed","escalated","scheduled"];
 function recipients(a){ return [...new Set(a.messages.map(m => m.to_name).filter(Boolean))]; }
 function lastTs(a){ return a.history?.length ? a.history[a.history.length - 1].ts : a.updated_at; }
 function statusLine(a){
@@ -492,10 +499,15 @@ function statusLine(a){
       return `Needs ${who}.${when}`;
     }
     case "escalated": return `<span class="late">Not decided in time.</span> Now needs ${who}.`;
+    case "scheduled": return `Dockside does this at ${t24(a.next_check_at)} unless ${who} stops it.`;
     case "approved": return to ? `Approved at ${t24(lastTs(a))}. Sending to ${to}.` : `Approved at ${t24(lastTs(a))}.`;
     case "sent": return to ? `Approved and sent to ${to} at ${t24(lastTs(a))}.` : `Approved at ${t24(lastTs(a))}.`;
     case "done": return `Done at ${t24(lastTs(a))}.`;
     case "rejected": return `Declined at ${t24(lastTs(a))}.`;
+    case "auto": {
+      const queued = a.messages.some(m => m.status === "outbox");
+      return to ? `Done by Dockside at ${t24(lastTs(a))}. ${queued ? "Queued for" : "Sent to"} ${to}, no signature needed.` : `Done by Dockside at ${t24(lastTs(a))}, no signature needed.`;
+    }
     default: return esc(cap1(a.status));
   }
 }
@@ -509,7 +521,9 @@ function msgHTML(a, m){
   const prep = m.channel === "phone_script" ? "for" : "to";
   const en = english.has(m.id) && m.body_en;
   const state = m.status === "draft" ? (PENDING.includes(a.status) ? "Draft, goes out when approved." : "Draft, not sent.")
-              : m.status === "sent" ? `Sent${m.sent_at ? " at " + t24(m.sent_at) : ""}.` : cap1(m.status) + ".";
+              : m.status === "sent" ? `Sent${m.sent_at ? " at " + t24(m.sent_at) : ""}.`
+              : m.status === "outbox" ? "In the outbox. It goes out as soon as the supplier mail sender is connected."
+              : m.status === "delivered" ? `Delivered${m.sent_at ? " at " + t24(m.sent_at) : ""}.` : cap1(m.status) + ".";
   return `<article class="msg">
     <p class="msg-to">${kind} ${prep} ${esc(m.to_name)}${m.to_address ? ` <span>${esc(m.to_address)}</span>` : ""}</p>
     <p class="msg-meta">${m.language && m.language !== "en" ? `Written in ${lang(m.language)}. ` : ""}${state}</p>
@@ -524,8 +538,8 @@ function decHTML(a){
   const toggle = `<button type="button" class="link" data-act="toggle" data-id="${esc(a.id)}" data-fid="tg-${esc(a.id)}" aria-expanded="${isOpen}" aria-controls="more-${esc(a.id)}">${
       isOpen ? "Hide details" : k ? (k === 1 ? "Read the drafted message" : `Read the ${k} drafted messages`) : "Show details"}</button>`;
   const btns = pend ? `<button class="btn go" data-act="approve" data-id="${esc(a.id)}" data-fid="ap-${esc(a.id)}" ${b ? "disabled" : ""}>${
-      b === "approve" ? "Sending…" : k ? "Approve and send" : "Approve"}</button>
-      <button class="btn" data-act="reject" data-id="${esc(a.id)}" data-fid="rj-${esc(a.id)}" ${b ? "disabled" : ""}>${b === "reject" ? "Declining…" : "Decline"}</button>` : "";
+      b === "approve" ? "Sending…" : a.status === "scheduled" ? "Do it now" : k ? "Approve and send" : "Approve"}</button>
+      <button class="btn" data-act="reject" data-id="${esc(a.id)}" data-fid="rj-${esc(a.id)}" ${b ? "disabled" : ""}>${b === "reject" ? "Stopping…" : a.status === "scheduled" ? "Stop" : "Decline"}</button>` : "";
   return `<li class="dec${isOpen ? " open" : ""}" data-s="${esc(a.status)}" id="d-${esc(a.id)}">
     <h3>${esc(tidy(a.title))}</h3>
     <p class="ratio${a.eur_protected > 0 ? "" : " nil"}">${ratio(a)}</p>
@@ -533,19 +547,23 @@ function decHTML(a){
     <p class="who" tabindex="-1" data-fid="st-${esc(a.id)}">${statusLine(a)}</p>
     ${o && !o.ok ? `<p class="err" role="alert">${esc(o.text)}</p>` : ""}
     <div class="do">${btns}${toggle}</div>
-    ${isOpen ? `<div class="more" id="more-${esc(a.id)}">${a.messages.map(m => msgHTML(a, m)).join("")}
+    ${isOpen ? `<div class="more" id="more-${esc(a.id)}">${a.payload?.details ? `<p class="details">${esc(a.payload.details)}</p>` : ""}${a.messages.map(m => msgHTML(a, m)).join("")}
       ${a.history?.length ? `<ol class="hist">${a.history.map(h => `<li><time>${t24(h.ts)}</time><span>${esc(cap1(tidy(h.entry)))}</span></li>`).join("")}</ol>` : ""}</div>` : ""}
   </li>`;
 }
 function decisions(){
-  const acts = S.actions.filter(a => a.status !== "superseded")
+  const all = S.actions.filter(a => a.status !== "superseded");
+  const autos = all.filter(a => a.status === "auto");
+  const acts = all.filter(a => a.status !== "auto")
     .sort((a, b) => (b.eur_protected || 0) - (a.eur_protected || 0) || (PENDING.includes(b.status) - PENDING.includes(a.status)) || String(a.due_at).localeCompare(String(b.due_at)));
   const pend = acts.filter(a => PENDING.includes(a.status)).length;
   $("#dec-h").textContent = pend ? `${plural(pend, "decision")} waiting for you` : "Decisions";
-  const key = JSON.stringify([acts, [...open], [...english], busy, outcome, Math.floor(nowMs() / 6e4)]);
-  paint("decisions", key, () => acts.length
+  const key = JSON.stringify([all, [...open], [...english], busy, outcome, Math.floor(nowMs() / 6e4)]);
+  paint("decisions", key, () => (acts.length
     ? `<ol>${acts.map(decHTML).join("")}</ol>`
-    : `<p class="empty">Nothing needs your approval. When a shipment or part puts copies at risk, Dockside drafts a fix and it lands here. Ask Dockside below what could still go wrong.</p>`);
+    : `<p class="empty">Nothing needs your approval. When a shipment or part puts copies at risk, Dockside drafts a fix and it lands here. Ask Dockside below what could still go wrong.</p>`));
+  paint("autos", key, () => autos.length
+    ? `<h3 class="auto-h">Done by Dockside without asking</h3><div class="panel"><ol>${autos.map(decHTML).join("")}</ol></div>` : "");
 }
 async function decide(id, decision){
   busy[id] = decision; delete outcome[id]; decisions();
