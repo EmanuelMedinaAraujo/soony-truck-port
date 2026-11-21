@@ -91,7 +91,7 @@ function decisionItem(decision) {
 
 function renderOperations(snapshot) {
   const decisions = snapshot.decisions;
-  $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "open action" : "open actions"}` : "No decisions needed right now.";
+  $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "open action" : "open actions"}` : "Nothing waiting for your approval.";
   const next = JSON.stringify(decisions);
   if (next !== queueKey && pendingDecisions.size === 0) {
     queueKey = next;

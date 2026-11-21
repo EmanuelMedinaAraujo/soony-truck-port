@@ -36,12 +36,20 @@ window.PartDependencyGraph = (() => {
 
   function detailText(node) {
     const lines = [];
-    if (node.detail) lines.push(node.detail);
+    // The status line already shows the meta text; don't repeat it as the first sentence.
+    const meta = String(node.meta ?? node.subtitle ?? "").trim().replace(/\.$/, "");
+    let detail = String(node.detail ?? "").trim();
+    if (meta && detail.toLowerCase().startsWith(meta.toLowerCase() + ".")) detail = detail.slice(meta.length + 1).trim();
+    if (detail) lines.push(detail);
     if (node.quote) lines.push(`“${node.quote}”`);
     const sources = node.sources ?? (node.evidence ? [node.evidence.split("/").at(-1)] : []);
     if (sources.length) lines.push(`Source: ${sources.join(", ")}`);
     if (node.reference) lines.push(`Reference ${node.reference}`);
     return lines;
+  }
+
+  function isSourceLine(text) {
+    return text.startsWith("Source:") || text.startsWith("Reference");
   }
 
   function columnOf(node) {
@@ -146,7 +154,8 @@ window.PartDependencyGraph = (() => {
       const position = provisional.positions.get(id);
       if (!position) continue;
       context.font = detailFont;
-      const lines = detailText(position.node).flatMap(text => wrap(text, position.width - 22, context, 9));
+      const lines = detailText(position.node).flatMap(text =>
+        wrap(text, position.width - 22, context, isSourceLine(text) ? 1 : 9));
       if (!lines.length) continue;
       detailLines.set(id, lines);
       heights.set(id, cardHeight + 8 + lines.length * detailLine);
@@ -209,7 +218,7 @@ window.PartDependencyGraph = (() => {
       if (isOpen) {
         card.append(svgElement("line", {class: "depgraph-rule", x1: 11, x2: cardWidth - 11, y1: cardHeight + 1, y2: cardHeight + 1}));
         detailLines.get(node.id).forEach((line, i) => card.append(svgElement("text",
-          {x: 11, y: cardHeight + 18 + i * detailLine, class: line.startsWith("Source:") || line.startsWith("Reference") ? "depgraph-source" : "depgraph-detail"}, line)));
+          {x: 11, y: cardHeight + 18 + i * detailLine, class: isSourceLine(line) ? "depgraph-source" : "depgraph-detail"}, line)));
       } else if (detailText(node).length) {
         card.append(svgElement("text", {x: cardWidth - 12, y: 52, "text-anchor": "end", class: "depgraph-more", "aria-hidden": "true"}, "+"));
       }

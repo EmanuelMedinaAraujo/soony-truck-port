@@ -28,6 +28,15 @@ from core import actions, agent, chase, dispatch, ingest, outbound, rules  # noq
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
 app = FastAPI(title="Dockside")
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Browsers must re-check page files on every load, so UI updates show up without a hard refresh."""
+    response = await call_next(request)
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 STATE = {"last_sync": None, "last_change": None, "sync_error": None, "last_inbox": None, "inbox_error": None,
          "busy": None, "agent_summary": None}
 LOCK = threading.Lock()
