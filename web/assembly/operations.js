@@ -43,7 +43,8 @@ function renderNextSteps(snapshot) {
     return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}" aria-controls="inspector">${html(nameOf(part))}</button>
       <p class="next-step-line">${nextStepLine(item.next_step)}</p></li>`;
   }).join("");
-  $("handling-note").hidden = !upcoming.length;
+  $("handling-note").textContent = `Dockside is working on ${upcoming.length === 1 ? "1 thing" : `${number(upcoming.length)} things`}`;
+  $("handling").hidden = !upcoming.length;
   if (focusedPart) $("next-list").querySelector(`[data-next-part="${CSS.escape(focusedPart)}"]`)?.focus({preventScroll: true});
   $("next-strip").hidden = false;
 }

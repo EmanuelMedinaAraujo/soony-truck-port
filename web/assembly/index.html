@@ -43,8 +43,10 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
     <header><h2 id="next-title">Checking</h2><p class="strip-status"><span id="busy-progress" role="status"></span> <span id="sync" role="status">Connecting</span></p></header>
     <p id="llm-banner" class="llm-banner" role="alert" hidden></p>
     <ul id="needs-you" class="needs-you" hidden></ul>
-    <p id="handling-note" class="side-note">Dockside is handling these:</p>
-    <ul id="next-list"></ul>
+    <details id="handling" class="handling" hidden>
+      <summary id="handling-note"></summary>
+      <ul id="next-list"></ul>
+    </details>
     <p id="chaser-count" class="side-note"></p>
   </section>
 

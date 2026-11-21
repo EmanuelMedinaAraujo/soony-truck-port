@@ -82,7 +82,9 @@ img { display: block; max-width: 100%; }
 .next-strip .needs-you { display: block; margin: 6px 0 10px; }
 .next-strip .needs-you li { border: 0; padding: 3px 0; }
 .next-strip .needs-you a { font-weight: 700; margin-right: 6px; }
-#handling-note { margin-top: 4px; font-size: .84rem; }
+.handling { margin-top: 4px; }
+#handling-note { cursor: pointer; width: fit-content; color: var(--muted); font-size: .84rem; }
+#handling-note:hover { color: var(--active); }
 .next-strip ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 7px; list-style: none; }
 .next-strip li + li { border-left: 1px solid var(--line); padding-left: 12px; }
 .next-part { display: inline-block; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; font-weight: 700; }
