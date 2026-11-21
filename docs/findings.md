@@ -15,7 +15,7 @@ Note: launch_status.xlsx stores numbers as German-formatted text ("640.000").
 |---|---|---|
 | CMP-GAM-001 game card | −34.8k | SHP-04311 air ICN→FRA (48k). Still "booked" at ICN, ETD passed, ETA 1 d vs route 2 d → at risk |
 | CMP-GAM-003 case | −32k | SHP-04276 container NHSU4471921, **discharged at CTA Hamburg since 19/20 Nov, nobody picked it up** |
-| CMP-GAM-004 sleeve | −128k (all stock is rev B, ECN-2026-118 forbids it) | SHP-04313 truck Poznań (20k, rev unknown) + Karton Nowak rush (digital line only, 15k/36 h; offset cut-off was Sat 09:00) |
+| CMP-GAM-004 sleeve | **corrected:** stock 186k = 122k Karton Nowak rev C (usable, OA26837842) + 64k PackRight rev B (blocked by ECN-2026-118). Need 128k → −6k | SHP-04313 truck Poznań (20k rev C) due Sat evening → +14k. Not critical if the truck gets a dock slot |
 | CMP-GAM-008 art book | −5.9k (GR 5000413065 booked 80,000 instead of 8,000) | **Karton Nowak has 8,000 in stock, loaded in 4 h, ~9 h drive** (Oferta_tryb_ekspresowy, valid 24 h) |
 | CMP-GAM-010 statue | −3.4k (lot 5000413063 failed inspection) | nothing in time; concession needs vacant Category Lead |
 | CMP-MAG-005 magnet | −100.8k on paper | probably BOM error (magnets integrated in CE box) — ask Nils/Maren |
