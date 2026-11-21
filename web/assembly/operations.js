@@ -1,6 +1,51 @@
 let queueKey = "";
 let activityKey = "";
+let nextStepsKey = "";
+let busyRequestOpen = false;
 const pendingDecisions = new Set();
+
+const nextStepTones = {
+  "Needs you": "alert", "Stuck": "alert", "Waiting for reply": "waiting",
+  "Confirmed": "ready", "Booked": "ready", "Unloaded": "ready"
+};
+
+function nextStepLine(next) {
+  if (!next) return "";
+  return `<span class="state-chip" data-tone="${nextStepTones[next.state] ?? "active"}">${html(next.state)}</span>
+    <span>${html(next.text)}</span>`;
+}
+
+function renderNextSteps(snapshot) {
+  const upcoming = snapshot.now_next ?? [];
+  const key = JSON.stringify(upcoming);
+  if (key === nextStepsKey) return;
+  nextStepsKey = key;
+  const focusedPart = document.activeElement?.dataset.nextPart;
+  $("next-list").innerHTML = upcoming.map(item => {
+    const part = snapshot.components.find(component => component.id === item.component_id);
+    return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}" aria-controls="inspector">${html(nameOf(part))}</button>
+      <p class="next-step-line">${nextStepLine(item.next_step)}</p></li>`;
+  }).join("");
+  if (focusedPart) $("next-list").querySelector(`[data-next-part="${CSS.escape(focusedPart)}"]`)?.focus({preventScroll: true});
+  $("next-strip").hidden = !upcoming.length;
+}
+
+async function refreshBusy() {
+  if (busyRequestOpen) return;
+  busyRequestOpen = true;
+  const progress = $("busy-progress");
+  try {
+    const response = await fetch("/api/state", {cache: "no-store"});
+    if (!response.ok) throw new Error(response.status);
+    const busy = (await response.json()).system?.busy;
+    const label = busy ? busy[0].toUpperCase() + busy.slice(1) : "";
+    if (progress.textContent !== label) progress.textContent = label;
+  } catch {
+    progress.textContent = "";
+  } finally {
+    busyRequestOpen = false;
+  }
+}
 
 function decisionItem(decision) {
   const scheduled = decision.status === "scheduled";

@@ -1,7 +1,10 @@
+import datetime as dt
 import sqlite3
 import unittest
 
-from core.dispatch import embedded_components, forecast, shipment_tracking
+from core import actions
+from core.dispatch import action_next_step, embedded_components, forecast, linked_actions, shipment_progress, shipment_tracking
+from core.inbox import REPLY_SCHEMA
 
 
 class DispatchForecastTest(unittest.TestCase):
@@ -67,3 +70,61 @@ class SupplyTraceTest(unittest.TestCase):
         shipment["status"] = "arrived_port"
         self.assertEqual(shipment_tracking(shipment, places, None)["position"], {"lat": 53, "lon": 10})
         self.assertIsNone(shipment_tracking(shipment, places, "Escalated supplier hold")["position"])
+
+
+class NextStepTest(unittest.TestCase):
+    def setUp(self):
+        self.log = sqlite3.connect(":memory:")
+        self.addCleanup(self.log.close)
+        self.log.row_factory = sqlite3.Row
+        self.log.executescript(actions.SCHEMA + REPLY_SCHEMA)
+        self.log.executescript("""
+            INSERT INTO actions (id, finding_id, title, kind, status, updated_at) VALUES
+                ('initial', 'offer-supplier-book', 'Reserve the stock', 'reserve', 'auto', '2026-11-21T18:00:00+01:00'),
+                ('followup', 'reply-original', 'Confirm vans', 'ask', 'auto', '2026-11-21T18:15:00+01:00');
+            INSERT INTO messages (id, action_id, channel, to_name, status, sent_at) VALUES
+                ('reservation', 'initial', 'email', 'Supplier', 'sent', '2026-11-21T18:01:00+01:00'),
+                ('vans', 'followup', 'email', 'Supplier', 'sent', '2026-11-21T18:16:00+01:00');
+            INSERT INTO replies (id, msg_id, action_id, received_at, handled) VALUES
+                ('original', 'reservation', 'initial', '2026-11-21T18:10:00+01:00', 1);
+        """)
+
+    def current(self):
+        return action_next_step(linked_actions(self.log)["offer-supplier-book"], "Supplier")
+
+    def test_follow_up_tracks_the_message_and_stops_waiting_when_reply_arrives(self):
+        self.assertEqual(self.current(), {
+            "state": "Waiting for reply", "text": "Sent the van request to Supplier at 18:16.",
+            "since": "2026-11-21T18:16:00+01:00", "action_id": "followup",
+        })
+        self.log.execute("""INSERT INTO replies (id, msg_id, action_id, received_at, handled)
+                          VALUES ('answer', 'vans', 'followup', '2026-11-21T17:22:00+00:00', 0)""")
+        self.assertEqual(self.current()["text"], "Review the reply from Supplier.")
+        self.log.execute("UPDATE replies SET handled=1 WHERE id='answer'")
+        self.assertIsNone(self.current())
+
+    def test_distinguishes_queued_mail_unknown_delivery_and_approval(self):
+        self.log.execute("UPDATE messages SET status='outbox', sent_at=NULL WHERE id='vans'")
+        self.assertEqual(self.current()["state"], "Asking")
+        self.log.execute("UPDATE messages SET status='delivery_unknown' WHERE id='vans'")
+        self.assertEqual(self.current()["state"], "Stuck")
+        self.log.execute("UPDATE actions SET status='proposed', kind='dock_slot' WHERE id='followup'")
+        self.assertEqual(self.current()["state"], "Needs you")
+        self.assertEqual(self.current()["text"], "Approve the unload slot.")
+
+    def test_tracker_moves_independently_of_a_pending_request(self):
+        now = dt.datetime.fromisoformat("2026-11-21T18:00:00+01:00")
+        shipment = {"status": "booked", "updated_at": "2026-11-21T17:00:00+01:00", "flags": [],
+                    "arrival_at_dc": "2026-11-22T12:00:00+01:00", "makes_cutoff": True}
+        for status, hold, stage, expected_state in (
+            ("booked", "supplier hold", "confirm", "Stuck"),
+            ("booked", None, "ship", "Booked"),
+            ("arrived_port", None, "track", "Stuck"),
+            ("in_transit", None, "track", "On the way"),
+            ("arrived_dc", None, "receive", "Confirmed"),
+            ("delivered", None, "receive", "Unloaded"),
+        ):
+            with self.subTest(status=status, hold=hold):
+                current, action = shipment_progress(shipment | {"status": status}, [], "Supplier", hold, now)
+                self.assertEqual(current, stage)
+                self.assertEqual(action["state"], expected_state)

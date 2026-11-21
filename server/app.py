@@ -204,6 +204,16 @@ def dispatch_view():
     return dispatch.snapshot(STATE["last_sync"])
 
 
+@app.get("/api/parts/{component_id}/graph")
+def component_graph(component_id: str):
+    from core.depgraph import part_graph
+
+    graph = part_graph(component_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return graph
+
+
 class Decision(BaseModel):
     decision: str
     by: str = "web"
@@ -309,3 +319,10 @@ def variants():
                         '<meta name="viewport" content="width=device-width, initial-scale=1">'
                         '<title>Dockside layouts</title><body style="color-scheme:light dark;font:16px/2 system-ui;padding:24px">'
                         f'<main><h1>Compare Dockside layouts</h1><ul>{layout_links()}</ul></main></body></html>')
+
+
+@app.get("/api/tracking")
+def tracking_view():
+    from core import tracking
+
+    return tracking.snapshot()

@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Dockside | Sunday dispatch</title>
+  <link rel="icon" href="/assembly/art/dispatch.png" type="image/png">
   <link rel="stylesheet" href="/assembly/assembly.css">
+  <link rel="stylesheet" href="/assembly/depgraph.css">
   <script defer src="/assembly/transport-map.js"></script>
   <script defer src="/assembly/operations.js"></script>
+  <script defer src="/assembly/depgraph.js"></script>
   <script defer src="/assembly/assembly.js"></script>
 </head>
 <body>
@@ -42,6 +45,11 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
     <div><h1>Sunday dispatch</h1><p>Select a part to trace it to the box.</p></div>
     <div class="deadline"><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
   </header>
+
+  <section id="next-strip" class="next-strip" aria-labelledby="next-title" hidden>
+    <header><h2 id="next-title">Dockside now and next</h2><p id="busy-progress" role="status"></p></header>
+    <ul id="next-list"></ul>
+  </section>
 
   <section id="overview" aria-label="Shared supply and the two editions">
     <p class="loading" id="initial">Loading the assembly plan.</p>

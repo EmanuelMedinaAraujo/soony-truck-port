@@ -26,6 +26,7 @@ const editionName = id => state.editions.find(edition => edition.id === id)?.nam
 
 let state;
 let selection = null;
+let openedFromNextSteps = false;
 let routeSelection = null;
 let assumeConfirmation = true;
 let overviewKey = "";
@@ -41,13 +42,11 @@ function partArt(component) {
 
 function partButton(component) {
   const status = states[component.status] ?? "Check status";
-  const fittedParts = state.components.filter(part => part.includedIn?.componentId === component.id);
-  const tile = `<button type="button" class="part" data-part="${html(component.id)}" data-state="${html(component.status)}"
-    aria-expanded="${component.id === selection}" aria-controls="inspector">
+  const selectedTile = activePart()?.includedIn?.componentId ?? selection;
+  return `<button type="button" class="part" data-part="${html(component.id)}" data-state="${html(component.status)}"
+    aria-expanded="${component.id === selectedTile}" aria-controls="inspector">
     ${partArt(component)}<span class="part-title"><i class="status-dot ${html(component.status)}" aria-hidden="true"></i>${html(nameOf(component))}
     <span class="sr-only">, ${html(status)}</span></span></button>`;
-  return fittedParts.length ? `<div class="part-assembly">${tile}<div class="fitted-parts" aria-label="Fitted in ${html(nameOf(component))}">${fittedParts.map(part =>
-    `<button type="button" class="fitted-part" data-part="${html(part.id)}" aria-expanded="${part.id === selection}" aria-controls="inspector">${partArt(part)}${html(nameOf(part))}</button>`).join("")}</div></div>` : tile;
 }
 
 function lane(edition, parts) {
@@ -106,58 +105,42 @@ function sourceList(entries, label = "Source evidence") {
     `<li><strong>${html(entry.label)}</strong><br>${html(entry.detail)}</li>`).join("")}</ul></details>`;
 }
 
-function process(part, route, offer) {
-  const find = pattern => route?.steps.find(step => pattern.test(step.name));
-  const hasOrder = route && !route.id.startsWith("stock-");
-  const assumed = (offer || route?.tracking?.status === "booked") && assumeConfirmation;
-  const recordedOrder = offer ? "pending" : hasOrder ? "confirmed" : "unknown";
-  const transport = find(/truck pickup|^transport$/i) ?? find(/port arrival|supplier release/i);
-  const receiving = find(/receiving/i) ?? find(/warehouse stock/i);
-  const deadline = Date.parse(state.deadline) > Date.parse(state.now) ? at(state.deadline) : "Deadline passed";
-  const stage = (icon, label, status, detail) => `<li data-state="${status}">${art(icon, "process-icon", "png")}<strong>${label}</strong><span>${html(detail ?? states[status])}</span></li>`;
-  return [
-    stage("order", "Order", assumed && offer ? "assumed" : recordedOrder, assumed && offer ? "In scenario" : offer ? "Order pending" : recordedOrder === "confirmed" ? "Shipment record" : "Stock record"),
-    stage("confirm", "Confirm", assumed ? "assumed" : offer ? "pending" : "unknown", assumed ? "Assumed confirmed" : offer ? "Confirmation open" : "See supplier evidence"),
-    stage("ship", "Ship", transport?.state ?? "unknown", transport ? states[transport.state] : "See route"),
-    stage("track", "Track", "pending", offer ? "Awaiting carrier ETA" : "See route evidence"),
-    stage("receive", "Receive", receiving?.state ?? "unknown", receiving ? states[receiving.state] : "Receipt unconfirmed"),
-    stage("pack", "Pack", part.status === "covered" ? "confirmed" : "pending", part.status === "covered" ? "Part covered" : "Supply gap open"),
-    stage("dispatch", "Dispatch", "pending", deadline),
-  ].join("");
+const stages = [["order", "Order"], ["confirm", "Confirm"], ["ship", "Ship"], ["track", "Track"],
+  ["receive", "Receive"], ["pack", "Pack"], ["dispatch", "Dispatch"]];
+
+function process(currentStage) {
+  const current = stages.findIndex(([id]) => id === currentStage);
+  return stages.map(([id, label], index) => {
+    const position = index < current ? "past" : index === current ? "current" : "future";
+    return `<li data-position="${position}"${index === current ? ' aria-current="step"' : ""}>
+      <i class="stage-marker" aria-hidden="true"></i>${art(id, "process-icon", "png")}<strong>${label}</strong></li>`;
+  }).join("");
 }
 
 const shipmentStates = {in_transit:"In transit", in_delivery:"Out for delivery", arrived_port:"At port", delayed:"Delayed",
   booked:"Booked", delivered:"Delivered", arrived_dc:"At the warehouse"};
 
-function routeSummary(part, route) {
-  const tracking = route?.tracking;
-  if (tracking) {
-    if (tracking.hold) return ["Waiting for supplier release", tracking.hold.split(" -> ")[1] ?? "Dockside is checking what the supplier needs before dispatch."];
-    if (tracking.status === "arrived_port") return [`At the port in ${tracking.terminal}`, "Confirm a truck pickup for the warehouse."];
-    if (tracking.status === "booked") return ["Booked, departure unconfirmed", "Get a departure update from the carrier."];
-    if (["delivered", "arrived_dc"].includes(tracking.status)) return ["At the warehouse", "Check the receipt and inspection records for usable stock."];
-    if (tracking.arrival && Date.parse(tracking.arrival) < Date.parse(state.now)) return ["Receipt unconfirmed", `The shipment was due ${at(tracking.arrival)}. Check with the carrier.`];
-    return [shipmentStates[tracking.status] ?? "Shipment on file", tracking.arrival ?
-      `Estimated warehouse arrival ${at(tracking.arrival)}.` : "A warehouse arrival time is still open."];
-  }
-  if (part.option && route?.id.startsWith("offer-")) {
-    const option = part.option;
-    if (option.timingState === "expired") return ["The rush order window has passed", `${option.supplier} offered ${number(option.quantity)} units. This route misses the modeled receiving cutoff.`];
-    return ["Waiting for a truck and dock slot", `${option.supplier} has offered ${number(option.quantity)} units. Verify a legal vehicle and agree on a Hamburg unload time.`];
-  }
-  if (part.status === "verify") return ["Checking the part record", "The records do not establish whether Hamburg stocks this part separately."];
-  return part.status === "short" ? ["Short on site", "Dockside needs an inbound shipment or a replacement offer for this part."] :
-    ["Covered by warehouse stock", "The usable stock in Hamburg covers the current requirement."];
+function renderRouteDetails(route, showConfirmation) {
+  if (!route) return "";
+  return `<details class="detail-block shipment-details" data-detail="route checks"><summary>Details</summary>
+    <ul class="handoffs">${route.steps.map(step => `<li><b>${html(step.name)}</b><span class="state">${html(states[step.state] ?? states.unknown)}</span><p>${html(step.detail)}</p></li>`).join("")}</ul>
+    ${sourceList(route.evidence)}
+    ${showConfirmation ? `<div class="handoff"><label><input id="assume-confirmed" type="checkbox" ${assumeConfirmation ? "checked" : ""}> Assume supplier confirms the order</label>
+      <a href="${negotiator}" target="_blank" rel="noreferrer">Order negotiator</a>
+      <p>${assumeConfirmation ? "The scenario assumes supplier confirmation. Transport and receipt still need evidence." : "The scenario leaves supplier confirmation open."}</p></div>` : ""}
+    </details>`;
 }
 
-function renderRoute(route) {
-  const evidence = sourceList(route.evidence);
-  const checks = route.steps.length ? `<details class="detail-block" data-detail="route checks"><summary>Shipment records and checks</summary>
-    <ul class="handoffs">${route.steps.map(step => `<li><b>${html(step.name)}</b><span class="state">${html(states[step.state] ?? states.unknown)}</span><p>${html(step.detail)}</p></li>`).join("")}</ul>${evidence}</details>` : evidence;
-  return checks;
+function renderTransportMap() {
+  const route = activeRoute();
+  const target = $("transport-map");
+  if (target && route?.tracking && mapLand !== undefined) {
+    target.innerHTML = mapFigure(route.tracking, mapLand, route.id);
+  }
 }
 
 async function loadMap() {
+  loadTrackingDetails(renderTransportMap);
   if (mapLand !== undefined || loadingMap) return;
   loadingMap = true;
   try {
@@ -168,9 +151,7 @@ async function loadMap() {
     mapLand = [];
   } finally {
     loadingMap = false;
-    const tracking = activeRoute()?.tracking;
-    const target = $("transport-map");
-    if (target && tracking) target.innerHTML = mapFigure(tracking, mapLand);
+    renderTransportMap();
   }
 }
 
@@ -195,13 +176,14 @@ function updatePremium() {
   const input = $("premium");
   const result = $("break-even");
   if (!input || !result) return;
-  const part = state.components.find(c => c.id === selection);
+  const part = activePart();
+  const parent = state.components.find(component => component.id === part.includedIn?.componentId);
   const value = input.valueAsNumber;
   if (!Number.isFinite(value) || value < 0) {
     result.textContent = "Enter a non-negative premium to compare.";
     return;
   }
-  const points = value / part.option.refundsAvoided * 100;
+  const points = value / (parent ?? part).option.refundsAvoided * 100;
   const requirement = points > 100 ? "This premium exceeds the refunds the recovery could avoid." :
     `Standby breaks even if it increases the chance of on-time receipt by ${number(points)} percentage ${points === 1 ? "point" : "points"}.`;
   result.textContent = `${requirement} Both routes still need a usable receipt and a dock slot.`;
@@ -220,15 +202,15 @@ function activeRoute() {
   const part = activePart();
   if (!part) return null;
   const routes = routesFor(part);
-  return routes.find(route => route.id === routeSelection) ?? routes.find(route => route.id.startsWith("offer-")) ??
-    routes.find(route => route.tracking && !route.tracking.hold && ["arrived_port", "in_transit", "in_delivery", "delayed"].includes(route.tracking.status)) ?? routes[0];
+  return routes.find(route => route.id === (routeSelection ?? part.default_route_id)) ??
+    routes.find(route => route.id === part.default_route_id) ?? routes[0];
 }
 
 function routePicker(routes, active) {
   if (routes.length < 2) return "";
   return `<label class="route-picker" for="route-picker">Shipment or source<select id="route-picker">${routes.map(route => {
     const tracking = route.tracking;
-    const label = tracking ? `${tracking.reference} · ${shipmentStates[tracking.status] ?? "Shipment"}` : route.name;
+    const label = tracking ? `${shipmentStates[tracking.status] ?? "Shipment"} (${tracking.reference})` : route.name;
     return `<option value="${html(route.id)}"${route.id === active?.id ? " selected" : ""}>${html(label)}</option>`;
   }).join("")}</select></label>`;
 }
@@ -240,54 +222,79 @@ function renderInspector(force = false) {
   if (!part) return;
   const route = activeRoute();
   const routes = routesFor(part);
-  const key = JSON.stringify([part, routes, route?.id, state.deadline, assumeConfirmation]);
-  if (!force && (key === inspectorKey || inspector.contains(document.activeElement))) return;
+  const key = JSON.stringify([part, routes, route?.id, assumeConfirmation]);
+  if (!force && key === inspectorKey) return;
+  const line = nextStepLine(routeSelection ? route?.next_step ?? part.next_step : part.next_step);
+  const currentStage = route?.current_stage ?? part.current_stage;
+  const focused = document.activeElement;
+  const headingFocused = focused === $("part-heading");
+  if (!force && !headingFocused && inspector.contains(focused)) {
+    const summary = $("shipment-step");
+    const flow = $("process");
+    if (summary.dataset.step !== line) {
+      summary.dataset.step = line;
+      summary.innerHTML = line;
+    }
+    if (flow.dataset.stage !== currentStage) {
+      flow.dataset.stage = currentStage;
+      flow.innerHTML = process(currentStage);
+    }
+    return;
+  }
   inspectorKey = key;
-  const offer = Boolean(part.option && route?.id.startsWith("offer-"));
-  const showConfirmation = offer || route?.tracking?.status === "booked";
   const parent = state.components.find(component => component.id === part.includedIn?.componentId);
-  const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in Hamburg · ${number(part.required)} needed`;
+  const offer = Boolean((parent ?? part).option && route?.id.startsWith("offer-"));
+  const showConfirmation = offer || route?.tracking?.status === "booked";
+  const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in Hamburg, ${number(part.required)} needed`;
   const partNote = parent ? `Fitted into the ${nameOf(parent)} by ${part.includedIn.supplier}.` : stockText;
-  const [headline, next] = routeSummary(parent ?? part, route);
   const wasOpen = new Set([...inspector.querySelectorAll("details[open]")].map(node => node.dataset.detail));
-  inspector.innerHTML = `<div class="inspector-head">${partArt(part)}
+  inspector.innerHTML = `<div class="inspector-head"><div class="inspector-banner">${partArt(part)}
       <div><h2 id="part-heading" tabindex="-1">${html(nameOf(part))}</h2>
       <p>${html(partNote)}</p></div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
-    <div class="shipment-head"><div class="shipment-summary"><h3>${html(headline)}</h3><p>${html(next)}</p></div>${routePicker(routes, route)}</div>
-    ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
+    <div class="shipment-head"><div class="shipment-summary"><h3>Dockside’s next step</h3>
+      <p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p></div>${routePicker(routes, route)}
+      ${renderRouteDetails(route, showConfirmation)}</div>
+    <ol class="process" id="process" aria-label="Seven steps to dispatch" data-stage="${html(currentStage)}">${process(currentStage)}</ol></div>
+    ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
-    ${showConfirmation ? `<div class="handoff"><label><input id="assume-confirmed" type="checkbox" ${assumeConfirmation ? "checked" : ""}> Assume supplier confirms the order</label>
-      <a href="${negotiator}" target="_blank" rel="noreferrer">Order negotiator</a>
-      ${assumeConfirmation ? "<p>Scenario assumption. Transport capacity, the dock slot and receipt use live evidence.</p>" : offer ? "<p>Live order confirmation is pending.</p>" : ""}</div>` : ""}
-    <ol class="process" id="process" aria-label="Seven steps to dispatch">${process(parent ?? part, route, offer)}</ol>
-    <div class="info-grid"><div>${route ? renderRoute(route) : "<p>There is no shipment record for this part yet.</p>"}
+    <div class="info-grid"><div>
     ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
       `<li>${html(adjustment.detail)}${adjustment.evidence.length ? `<br><small>${adjustment.evidence.map(html).join(", ")}</small>` : ""}</li>`).join("")}</ul></details>` : ""}</div>
-    <div>${offer ? optionView(part) : ""}${parent ? `<p class="side-note">Hamburg receives and counts this magnet as part of the ${html(nameOf(parent))}.</p>` :
+    <div>${offer ? optionView(parent ?? part) : ""}${parent ? `<p class="side-note">Hamburg receives and counts this magnet as part of the ${html(nameOf(parent))}.</p>` :
     `<details class="detail-block" data-detail="allocation"><summary>Edition allocations</summary><ul>${part.allocations.map(allocation =>
-      `<li>${html(editionName(allocation.editionId))} · ${number(allocation.allocated)} of ${number(allocation.required)} allocated</li>`).join("")}</ul></details>`}</div></div>`;
+      `<li>${html(editionName(allocation.editionId))} has ${number(allocation.allocated)} of ${number(allocation.required)} allocated</li>`).join("")}</ul></details>`}</div></div>`;
   for (const node of inspector.querySelectorAll("details")) if (wasOpen.has(node.dataset.detail)) node.open = true;
+  window.PartDependencyGraph.mount(inspector, part.id, id => {
+    const component = state.components.find(item => item.id === id);
+    return component && nameOf(component);
+  }, selectPart);
+  if (headingFocused) $("part-heading").focus({preventScroll: true});
   updatePremium();
   if (route?.tracking) loadMap();
 }
 
 function partControl(id) {
-  return document.querySelector(`[data-part="${CSS.escape(id)}"]`);
+  const tileId = state.components.find(part => part.id === id)?.includedIn?.componentId ?? id;
+  return document.querySelector(`[data-part="${CSS.escape(tileId)}"]`);
 }
 
-function selectPart(id) {
+function selectPart(id, fromNextSteps = false) {
   const previous = selection;
+  const nextStepsButton = openedFromNextSteps && previous &&
+    $("next-list").querySelector(`[data-next-part="${CSS.escape(previous)}"]`);
+  openedFromNextSteps = fromNextSteps;
   selection = id;
   routeSelection = null;
-  for (const node of document.querySelectorAll("[data-part]")) node.setAttribute("aria-expanded", String(node.dataset.part === selection));
+  const control = selection && partControl(selection);
+  for (const node of document.querySelectorAll("[data-part]")) node.setAttribute("aria-expanded", String(node === control));
   drawLinks();
   renderInspector(true);
   if (selection) {
     $("inspector").scrollIntoView({block: "start"});
     $("part-heading").focus({preventScroll: true});
   }
-  else if (previous) partControl(previous)?.focus();
+  else if (previous) (nextStepsButton || partControl(previous))?.focus();
 }
 
 async function refresh() {
@@ -300,7 +307,9 @@ async function refresh() {
     $("sync").textContent = state.checkedAt ? `Checked ${time.format(new Date(state.checkedAt))}` : "Loading portal data";
     updateOverview();
     renderInspector();
+    if (activeRoute()?.tracking) loadMap();
     renderOperations(state);
+    renderNextSteps(state);
   } catch {
     $("sync").textContent = state ? "Refresh failed" : "Disconnected";
     if (!state) $("initial").textContent = "Can’t load the assembly plan. Check the server or refresh this page.";
@@ -309,6 +318,10 @@ async function refresh() {
   }
 }
 
+$("next-list").addEventListener("click", event => {
+  const part = event.target.closest("[data-next-part]");
+  if (part) selectPart(part.dataset.nextPart, true);
+});
 $("overview").addEventListener("click", event => {
   const part = event.target.closest("[data-part]");
   if (part) selectPart(selection === part.dataset.part ? null : part.dataset.part);
@@ -326,7 +339,8 @@ $("inspector").addEventListener("change", event => {
 });
 $("inspector").addEventListener("input", event => {
   if (event.target.id !== "premium") return;
-  premiums.set(selection, event.target.value);
+  const part = activePart();
+  premiums.set(part.includedIn?.componentId ?? part.id, event.target.value);
   updatePremium();
 });
 document.addEventListener("keydown", event => {
@@ -335,4 +349,6 @@ document.addEventListener("keydown", event => {
 new ResizeObserver(drawLinks).observe($("assembly"));
 initOperations(refresh);
 refresh();
+refreshBusy();
 setInterval(refresh, 15000);
+setInterval(refreshBusy, 5000);

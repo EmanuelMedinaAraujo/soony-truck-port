@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+openai
+openpyxl
+pandas
+python-docx
+discord.py
+searoute
+pytest

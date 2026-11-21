@@ -1,0 +1,125 @@
+.depgraph {
+  --depgraph-risk: #8b5414;
+  --depgraph-wire: #747fa4;
+  --depgraph-surface: var(--paper);
+  margin-block: 20px;
+  padding: 15px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--depgraph-surface);
+}
+
+.depgraph h3 {
+  margin: 0 4px 3px;
+  color: var(--ink);
+  font: 700 1.35rem/1.15 var(--head);
+}
+
+.depgraph-viewport {
+  min-width: 0;
+}
+
+.depgraph-viewport svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.depgraph-wires > path {
+  fill: none;
+  stroke: var(--depgraph-wire);
+  stroke-width: 1.35px;
+  stroke-linejoin: round;
+}
+
+.depgraph marker path {
+  fill: var(--depgraph-wire);
+}
+
+.depgraph-edge-labels text {
+  fill: var(--muted);
+  stroke: var(--depgraph-surface);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+  paint-order: stroke;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.depgraph-node {
+  --depgraph-status: var(--covered);
+  cursor: pointer;
+  outline: none;
+}
+
+.depgraph-node[data-status="at_risk"] {
+  --depgraph-status: var(--depgraph-risk);
+}
+
+.depgraph-node[data-status="blocked"] {
+  --depgraph-status: var(--short);
+}
+
+.depgraph-card {
+  fill: var(--sheet);
+  stroke: var(--line);
+  stroke-width: 1.25px;
+}
+
+.depgraph-node[data-kind="part"] .depgraph-card {
+  fill: var(--wash);
+  stroke: var(--active);
+  stroke-width: 1.75px;
+}
+
+.depgraph-node:hover .depgraph-card,
+.depgraph-node:focus-visible .depgraph-card {
+  stroke: var(--focus);
+  stroke-width: 2.5px;
+}
+
+.depgraph-name {
+  fill: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.depgraph-meta, .depgraph-node circle {
+  fill: var(--depgraph-status);
+}
+
+.depgraph-meta {
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.depgraph-feedback {
+  margin: 0 4px;
+  color: var(--muted);
+  font-size: .875rem;
+  overflow-wrap: anywhere;
+}
+
+.depgraph-feedback:not(:empty) {
+  padding-block: 7px 3px;
+}
+
+@media (max-width: 520px) {
+  .depgraph {
+    padding-inline: 7px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .depgraph {
+    --depgraph-risk: #f3c37e;
+    --depgraph-wire: #98a4ce;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .depgraph-card {
+    transition: stroke 120ms ease;
+  }
+}
