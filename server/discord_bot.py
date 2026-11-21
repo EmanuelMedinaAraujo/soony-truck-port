@@ -151,6 +151,9 @@ def start(listeners: list, decide_fn) -> Bot | None:
         elif ev["kind"] == "action_executed":
             a = ev["action"]
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Executed: **{a['title']}**. Nobody stopped it, so Dockside sent it."), loop)
+        elif ev["kind"] == "reply":
+            r = ev["reply"]
+            asyncio.run_coroutine_threadsafe(bot.post_text(f"Reply from **{r['from_name']}**: {r['subject']}. Dockside is reading it."), loop)
         elif ev["kind"] == "data_drop":
             names = ", ".join(p.split("/")[-1] for p in ev["paths"][:5])
             asyncio.run_coroutine_threadsafe(bot.post_text(f"New data on the portal: {names}. Re-planning now."), loop)

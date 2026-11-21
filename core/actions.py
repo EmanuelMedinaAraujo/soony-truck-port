@@ -34,6 +34,8 @@ def con() -> sqlite3.Connection:
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
     c.executescript(SCHEMA)
+    if "provider_id" not in {r[1] for r in c.execute("PRAGMA table_info(messages)")}:
+        c.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")  # e-mail Message-ID, to thread replies
     return c
 
 

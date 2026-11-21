@@ -89,6 +89,27 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
 
                 STATE["agent_summary"] = agent.plan(progress, model=plan_model)
                 actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
+        if os.environ.get("IMAP_HOST") and os.environ.get("OPENAI_API_KEY"):
+            try:
+                STATE["busy"] = "reading supplier replies"
+                from core import inbox
+                for r in inbox.fetch():
+                    notify("reply", {"reply": r})
+                if inbox.unhandled():
+                    STATE["busy"] = "agent handling replies"
+                    n = {"k": 0}
+
+                    def rprog(name, args, out):
+                        n["k"] += 1
+                        STATE["busy"] = f"agent handling replies: step {n['k']}"
+                        if name == "propose_action":
+                            a = actions.get(out.get("created") or out.get("done_automatically") or out.get("scheduled") or "")
+                            if a:
+                                notify({"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed"), {"action": a})
+                    STATE["reply_summary"] = agent.handle_replies(rprog)
+                    actions.log_event("agent_replies_done", None, (STATE["reply_summary"] or "")[:300])
+            except Exception as e:
+                actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
         STATE["busy"] = "executing scheduled actions"
         for a in actions.due_scheduled():
             for m in a["messages"]:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import smtplib
 from email.message import EmailMessage
+from email.utils import make_msgid
 
 from core import actions
 from core.rules import now
@@ -25,6 +26,7 @@ def send(m: dict) -> str:
         if host and sender:
             msg = EmailMessage()
             msg["From"], msg["To"], msg["Subject"] = sender, m["to_address"], m["subject"]
+            msg["Message-ID"] = make_msgid(domain=sender.split("@")[-1])
             msg.set_content(m["body"] + ("\n\n---\nEN: " + m["body_en"] if m.get("body_en") else ""))
             with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT", "587"))) as s:
                 s.starttls()
@@ -32,6 +34,8 @@ def send(m: dict) -> str:
                     s.login(user, pw or "")
                 s.send_message(msg)
             _mark(m["id"], "sent")
+            with actions.con() as c:
+                c.execute("UPDATE messages SET provider_id=? WHERE id=?", (msg["Message-ID"], m["id"]))
             actions.log_event("email_sent", m["action_id"], f"to {m['to_address']}: {m['subject']}")
             return "sent"
         _mark(m["id"], "outbox")

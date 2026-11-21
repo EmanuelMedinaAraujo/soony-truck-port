@@ -57,6 +57,9 @@ TOOLS = [
           "load_hours": {"type": "number"}, "origin": {"type": "string"}}),
     tool("what_if", "Re-run the risk model with one shipment delayed / reduced / dropped. Returns CE copies and EUR at risk before vs after.",
          {"shipment_id": {"type": "string"}, "delay_hours": {"type": "number"}, "qty": NULLNUM, "drop": {"type": "boolean"}}),
+    tool("get_replies", "Supplier e-mail replies to Dockside's messages that nobody has acted on yet, with the action they belong to.", {}),
+    tool("note_reply", "Mark a supplier reply as handled and record in one plain English sentence what it means for the action.",
+         {"reply_id": {"type": "string"}, "summary_en": {"type": "string"}}),
     tool("propose_action", "Record an action. Free, reversible kinds (ask, confirm_terms, reserve, data_fix, escalate) are SENT AUTOMATICALLY by Dockside "
          "and reported; anything that commits money, a quality concession or a dock slot waits for one tap from the approver (derived from the "
          "signature ladder). Attach every message to send (supplier e-mails in the supplier's language with an English translation).",
@@ -158,6 +161,21 @@ class Tools:
     def what_if(self, shipment_id, delay_hours, qty, drop):
         return planner.what_if(shipment_id, delay_hours, qty, drop)
 
+    def get_replies(self):
+        from core import inbox
+        out = []
+        for r in inbox.unhandled():
+            a = actions.get(r["action_id"]) if r["action_id"] else None
+            out.append({"reply_id": r["id"], "from": r["from_name"], "subject": r["subject"], "received_at": r["received_at"], "body": r["body"],
+                        "action": {k: a[k] for k in ("id", "finding_id", "title", "kind", "status", "cost_eur")} if a else None,
+                        "our_message": next(({"subject": m["subject"], "body": m["body"][:1500]} for m in (a or {}).get("messages", []) if m["id"] == r["msg_id"]), None)})
+        return out
+
+    def note_reply(self, reply_id, summary_en):
+        from core import inbox
+        r = inbox.mark_handled(reply_id, summary_en)
+        return {"ok": bool(r)}
+
     def propose_action(self, finding_id, what, why, details, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes, messages):
         existing = actions.open_action_for(finding_id, kind)
         if existing:
@@ -212,6 +230,21 @@ def plan(on_step=None, model: str | None = None) -> str:
     actions.log_event("agent_plan", None, f"reviewing {len(pending)} findings")
     return run(PLAN_PROMPT.format(pending=", ".join(pending)), on_step, model=model or PLAN_MODEL,
                effort="medium" if model else PLAN_EFFORT)
+
+
+REPLY_PROMPT = """Suppliers replied to Dockside's e-mails. Call get_replies. For each reply: note_reply with one plain sentence of what it means,
+then take the next step if one is needed. Typical next steps: the supplier needs a formal order or written authorization that an approved
+action already covers (send it now as a follow-up action of kind 'confirm_terms' to the same supplier, in their language, clearly stating it IS
+the formal order/authorization, referencing the approval); the supplier offers a fact that changes an arrival (re-check with plan_truck);
+the supplier is still checking (no action, Dockside will follow up). Use a new finding_id like 'reply-<reply_id>' for follow-ups.
+Finish with one line per reply: who, what it means, what you did."""
+
+
+def handle_replies(on_step=None, model: str | None = None) -> str:
+    from core import inbox
+    if not inbox.unhandled():
+        return "No new replies."
+    return run(REPLY_PROMPT, on_step, model=model or MODEL, effort="medium")
 
 
 def chat(question: str, on_step=None) -> str:
