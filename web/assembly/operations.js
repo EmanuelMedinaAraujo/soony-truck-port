@@ -101,7 +101,9 @@ function renderOperations(snapshot) {
   const activity = JSON.stringify(snapshot.activity);
   if (activity !== activityKey) {
     activityKey = activity;
-    $("activity-list").innerHTML = snapshot.activity.length ? snapshot.activity.map(event =>
+    const {summary, items} = snapshot.activity;
+    $("activity-summary").textContent = `Recent activity · ${summary}`;
+    $("activity-list").innerHTML = items.length ? items.map(event =>
       `<li><time datetime="${html(event.ts)}">${html(at(event.ts))}</time> ${html(event.text)}</li>`).join("") : "<li>No activity recorded yet.</li>";
   }
 }

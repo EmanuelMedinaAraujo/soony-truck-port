@@ -36,7 +36,6 @@ let chaserCases = [];
 let chaserRequestOpen = false;
 let mapLand;
 let loadingMap = false;
-const premiums = new Map();
 
 function partArt(component) {
   return art(artwork[component.id]?.[0]) || (component.includedIn ? '<i class="magnet-icon" aria-hidden="true"></i>' : "");
@@ -157,40 +156,6 @@ async function loadMap() {
   }
 }
 
-function optionView(part) {
-  const option = part.option;
-  if (!option) return "";
-  const valid = option.latestUsefulAt && option.timingState === "open";
-  const timing = option.timingState === "expired" ? "Estimated order window has passed." :
-    valid ? `Estimated latest order release ${at(option.latestUsefulAt)}.` : "A feasible release time still needs confirmation.";
-  return `<h3>Recovery if received in time</h3>
-    <dl class="kpi"><dt>Rush order</dt><dd>${money(option.cost)}</dd>
-    <dt>Extra ${html(editionName(option.editionId))} copies</dt><dd>${number(option.copiesAdded)}</dd>
-    <dt>Refunds avoided</dt><dd>${money(option.refundsAvoided)}</dd></dl>
-    <p class="side-note">${html(timing)}${option.nextConstraint ? ` The next constraint is ${html(option.nextConstraint.toLowerCase())}.` : ""}</p>
-    ${option.assurance && option.refundsAvoided > 0 ? `<details class="detail-block" data-detail="standby"><summary>Compare standby transport</summary>
-      <label class="premium" for="premium">Example premium in euros <input id="premium" type="number" min="0" step="any" inputmode="decimal"
-        value="${html(premiums.get(part.id) ?? option.assurance.examplePremium)}"></label>
-      <p id="break-even" class="side-note" aria-live="polite"></p></details>` : ""}`;
-}
-
-function updatePremium() {
-  const input = $("premium");
-  const result = $("break-even");
-  if (!input || !result) return;
-  const part = activePart();
-  const parent = state.components.find(component => component.id === part.includedIn?.componentId);
-  const value = input.valueAsNumber;
-  if (!Number.isFinite(value) || value < 0) {
-    result.textContent = "Enter a non-negative premium to compare.";
-    return;
-  }
-  const points = value / (parent ?? part).option.refundsAvoided * 100;
-  const requirement = points > 100 ? "This premium exceeds the refunds the recovery could avoid." :
-    `Standby breaks even if it increases the chance of on-time receipt by ${number(points)} percentage ${points === 1 ? "point" : "points"}.`;
-  result.textContent = `${requirement} Both routes still need a usable receipt and a dock slot.`;
-}
-
 function activePart() {
   return state?.components.find(component => component.id === selection);
 }
@@ -276,7 +241,7 @@ function renderInspector(force = false) {
     <div class="info-grid"><div>
     ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
       `<li>${html(adjustment.detail)}${adjustment.evidence.length ? `<br><small>${adjustment.evidence.map(html).join(", ")}</small>` : ""}</li>`).join("")}</ul></details>` : ""}</div>
-    <div>${offer ? optionView(parent ?? part) : ""}${parent ? `<p class="side-note">Hamburg receives and counts this magnet as part of the ${html(nameOf(parent))}.</p>` :
+    <div>${parent ? `<p class="side-note">Hamburg receives and counts this magnet as part of the ${html(nameOf(parent))}.</p>` :
     `<details class="detail-block" data-detail="allocation"><summary>Edition allocations</summary><ul>${part.allocations.map(allocation =>
       `<li>${html(editionName(allocation.editionId))} has ${number(allocation.allocated)} of ${number(allocation.required)} allocated</li>`).join("")}</ul></details>`}</div></div>`;
   for (const node of inspector.querySelectorAll("details")) if (wasOpen.has(node.dataset.detail)) node.open = true;
@@ -291,7 +256,6 @@ function renderInspector(force = false) {
     return true;
   });
   if (headingFocused) $("part-heading").focus({preventScroll: true});
-  updatePremium();
   if (route?.tracking) loadMap();
 }
 
@@ -379,12 +343,6 @@ $("inspector").addEventListener("change", event => {
   const control = event.target.id;
   renderInspector(true);
   $(control).focus({preventScroll: true});
-});
-$("inspector").addEventListener("input", event => {
-  if (event.target.id !== "premium") return;
-  const part = activePart();
-  premiums.set(part.includedIn?.componentId ?? part.id, event.target.value);
-  updatePremium();
 });
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && selection && $("inspector").contains(document.activeElement)) selectPart(null);

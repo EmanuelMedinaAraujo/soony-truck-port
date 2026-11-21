@@ -91,6 +91,59 @@ def message_answered(message: dict, replies: list[dict]) -> bool:
     return False
 
 
+def _first_sentence(text: str | None, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    return sentence if len(sentence) <= limit else sentence[:limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def readable_activity(log, limit: int = 10) -> dict:
+    """Recent work in plain English: who was asked what, what they answered, what changed.
+    The raw event log has e-mail addresses and foreign-language subjects; those stay out."""
+    rows = log.execute("""SELECT e.ts, e.kind, e.ref, e.text, a.title FROM events e LEFT JOIN actions a ON a.id = e.ref
+                          WHERE e.kind IN ('email_sent','reply','action_auto','action_approved','action_done','data_drop','docs_read')
+                          ORDER BY e.ts DESC, e.rowid DESC LIMIT 60""").fetchall()
+    replies = log.execute("SELECT action_id, from_name, received_at, summary_en FROM replies ORDER BY received_at").fetchall()
+    sent_to = {r[0]: r[1] for r in log.execute("SELECT action_id, to_name FROM messages WHERE channel='email' ORDER BY created_at")}
+    items, counts = [], defaultdict(int)
+    emailed = {ref for _, kind, ref, _, _ in rows if kind == "email_sent"}
+    since = rules.now() - dt.timedelta(hours=24)
+    for ts, kind, ref, text, title in rows:
+        title = (title or "").strip().rstrip(".")
+        what = title[:1].lower() + title[1:] if title else ""
+        if kind == "email_sent":
+            who = sent_to.get(ref) or "a supplier"
+            line = f"Emailed {who}" + (f" to {what}" if what else "") + "."
+        elif kind == "reply":
+            reply = next((r for r in reversed(replies) if r[0] == ref and r[2] <= ts), None) if ref else None
+            who = (reply[1] if reply else text.split(" replied", 1)[0]) or "Supplier"
+            line = f"{who} replied: {_first_sentence(reply[3])}" if reply and reply[3] else f"{who} replied" + (f" about: {what}" if what else "") + "."
+        elif kind == "action_auto":
+            line = f"Dockside started: {what}." if what and ref not in emailed else None
+        elif kind == "action_approved":
+            who = text.split(" (", 1)[0].strip() or "Someone"
+            line = f"{who} approved: {what}." if what else None
+        elif kind == "action_done":
+            line = f"Done: {_first_sentence(text)}"
+        elif kind == "data_drop":
+            n = re.match(r"(\d+)", text or "")
+            line = f"{n.group(1) if n else 'Some'} data files updated."
+        else:  # docs_read
+            n = re.search(r"(\d+)", text or "")
+            line = f"Read {n.group(1)} new documents." if n else None
+        if not line:
+            continue
+        stamp = rules.ts(ts)
+        if stamp and stamp >= since:
+            counts[kind] += 1
+        if len(items) < limit and (not items or items[-1]["text"] != line):
+            items.append({"ts": ts, "text": line})
+    parts = [(counts["email_sent"], "email sent", "emails sent"), (counts["reply"], "reply received", "replies received"),
+             (counts["action_done"] + counts["action_auto"] + counts["action_approved"], "step taken", "steps taken")]
+    summary = ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in parts if n)
+    return {"summary": f"Last 24 hours: {summary}" if summary else "Nothing in the last 24 hours", "items": items}
+
+
 def action_next_step(related: list[dict], supplier: str | None = None) -> dict | None:
     """Choose outstanding work from the log. Sending and replying are separate events."""
     candidates = []
@@ -360,7 +413,10 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     elif logged:
         next_action = logged
     else:
-        next_action = next_step("Confirmed", f"{supplier} offered stock. Confirm vans and unloading.",
+        # The supplier has answered but transport and the unload slot are still open: say who we wait for.
+        heard = rules.ts(active["received_at"]) if active else None
+        last = f" Last reply {heard.astimezone(rules.TZ):%a %H:%M}." if heard else ""
+        next_action = next_step("Waiting for reply", f"Waiting for {supplier} to confirm vans.{last} Hamburg still has to agree the unload time.",
                                 active["received_at"] if active else None, active["action_id"] if active else None)
     stage = "confirm" if any(action["kind"] == "order" and action["status"] == "done" for action in related) else "order"
     return ({"id": f"offer-{offer['supplier_id']}-{component}", "name": f"Rush supply from {supplier}", "quantity": quantity,
@@ -384,8 +440,7 @@ def snapshot(checked_at: str | None) -> dict:
         action_log = linked_actions(log)
         decisions = [dict(row) for row in log.execute("""SELECT id,title,rationale,status,approver_name,next_check_at,due_at
                      FROM actions WHERE status IN ('proposed','escalated','scheduled') ORDER BY due_at, eur_protected DESC""")]
-        activity = [dict(row) for row in log.execute("""SELECT ts,text FROM events WHERE kind IN
-                    ('email_sent','reply','action_auto','action_scheduled','action_approved','data_drop') ORDER BY ts DESC, rowid DESC LIMIT 8""")]
+        activity = readable_activity(log)
     for decision in decisions:
         action = actions.get(decision["id"])
         decision["cost"] = action["cost_eur"]

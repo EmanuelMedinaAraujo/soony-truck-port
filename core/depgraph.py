@@ -271,7 +271,8 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
                 start, stop = when(window[0]), when(window[1])
                 label = f"{title} {start} to {stop}" if start and stop else f"{title} until {stop}" if stop else f"{title} from {start}"
             meta = (title if risk["upstream"] else
-                    "Stops supply until solved" if risk["status"] == "blocked" else "Can slow new supply")
+                    "Stops supply until solved" if risk["status"] == "blocked" else
+                    "Pauses production; ready stock can still ship" if window else "May delay new supply")
             if not short:
                 meta = "No effect: enough stock"
             add_node(rid, label, "risk", calm(risk["status"]), risk["detail"], subtitle=title if risk["upstream"] else None,
