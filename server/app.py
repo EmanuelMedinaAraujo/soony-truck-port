@@ -208,19 +208,21 @@ def _compact_state() -> dict:
     relevant = [s for s in r["inbound"] if s["planned_for_launch"] or s["arrival_at_dc"] is None or s["makes_cutoff"]]
     later = len(r["inbound"]) - len(relevant)
     import sqlite3 as _sq
-    _m = _sq.connect(rules.DB_PATH)
-    descs = dict(_m.execute("SELECT component_id, description FROM components").fetchall())
+    from contextlib import closing
+    with closing(_sq.connect(rules.DB_PATH)) as _m:
+        descs = dict(_m.execute("SELECT component_id, description FROM components").fetchall())
     for s in relevant:
         s["material_names"] = [rules.plain(descs.get(m), m) for m in s["materials"]]
     bind_id = next((c["component"] for c in sorted(r["coverage"].values(), key=lambda c: c["alloc"].get(prio, 0) - c["need"].get(prio, 0))
                     if prio in c["need"] and not c["suspect_master_data"] and c["need"][prio] > c["alloc"][prio]), None)
-    with actions.con() as c:
+    with actions.tx() as c:
         ev = [dict(x) for x in c.execute("SELECT * FROM events WHERE kind<>'row_change' ORDER BY ts DESC LIMIT 40")]
     import sqlite3
-    m = sqlite3.connect(rules.DB_PATH)
-    n_conf = m.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
-    n_files = m.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-    n_docs = m.execute("SELECT COUNT(DISTINCT path) FROM doc_facts").fetchone()[0]
+    from contextlib import closing
+    with closing(sqlite3.connect(rules.DB_PATH)) as m:
+        n_conf = m.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
+        n_files = m.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+        n_docs = m.execute("SELECT COUNT(DISTINCT path) FROM doc_facts").fetchone()[0]
     return {
         "now": r["now"], "deadline": rules.cfg("deadline"), "cutoff_hours": rules.cfg("receiving_buffer_hours"),
         "priority": prio, "picture": r["picture"],

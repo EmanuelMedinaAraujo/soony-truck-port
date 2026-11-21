@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 
 from openai import OpenAI
 
@@ -31,15 +32,19 @@ def tool(name, desc, props: dict, required=None):
 
 def _schema_doc() -> str:
     try:
-        c = sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)
-        rows = c.execute("SELECT name, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'raw_%' ORDER BY name").fetchall()
-        out = []
-        for name, _ in rows:
-            cols = [r[1] for r in c.execute(f'PRAGMA table_info("{name}")')]
-            out.append(f"{name}({', '.join(cols)})")
-        return "\n".join(out) + "\nraw_* tables hold every CSV/XLSX verbatim. doc_facts.payload is JSON (json_extract)."
+        with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as c:
+            return _schema_lines(c)
     except sqlite3.Error:
         return "(database not built yet)"
+
+
+def _schema_lines(c) -> str:
+    rows = c.execute("SELECT name, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'raw_%' ORDER BY name").fetchall()
+    out = []
+    for name, _ in rows:
+        cols = [r[1] for r in c.execute(f'PRAGMA table_info("{name}")')]
+        out.append(f"{name}({', '.join(cols)})")
+    return "\n".join(out) + "\nraw_* tables hold every CSV/XLSX verbatim. doc_facts.payload is JSON (json_extract)."
 
 
 SCHEMA_DOC = _schema_doc()
@@ -142,8 +147,8 @@ class Tools:
         s = next((x for x in r["inbound"] if x["shipment_id"] == shipment_id), None)
         if not s:
             return {"error": f"unknown shipment {shipment_id}"}
-        c = sqlite3.connect(rules.DB_PATH)
-        s["conflicts"] = [dict(zip(("field", "claims"), (f, json.loads(cl)))) for f, cl in
+        with closing(sqlite3.connect(rules.DB_PATH)) as c:
+            s["conflicts"] = [dict(zip(("field", "claims"), (f, json.loads(cl)))) for f, cl in
                           c.execute("SELECT field, claims FROM conflicts WHERE entity='shipment' AND entity_id=?", (shipment_id,))]
         return s
 
@@ -165,15 +170,17 @@ class Tools:
             return {"columns": cols, "rows": [[str(v)[:400] if isinstance(v, str) else v for v in r] for r in rows]}
         except sqlite3.Error as e:
             return {"error": str(e)}
+        finally:
+            c.close()
 
     def search_documents(self, query):
-        c = sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)
         q = f"%{query}%"
-        hits = [{"path": p, "fact": json.loads(f)} for p, f in c.execute("SELECT path, payload FROM doc_facts WHERE payload LIKE ? LIMIT 15", (q,))]
-        docs = []
-        for p, t in c.execute("SELECT path, text FROM documents WHERE text LIKE ? LIMIT 8", (q,)):
-            i = t.lower().find(query.lower())
-            docs.append({"path": p, "snippet": t[max(0, i - 300): i + 500]})
+        with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as c:
+            hits = [{"path": p, "fact": json.loads(f)} for p, f in c.execute("SELECT path, payload FROM doc_facts WHERE payload LIKE ? LIMIT 15", (q,))]
+            docs = []
+            for p, t in c.execute("SELECT path, text FROM documents WHERE text LIKE ? LIMIT 8", (q,)):
+                i = t.lower().find(query.lower())
+                docs.append({"path": p, "snippet": t[max(0, i - 300): i + 500]})
         return {"facts": hits, "documents": docs}
 
     def plan_truck(self, ready_at, drive_hours, from_port, vehicle_t, load_hours, origin):
@@ -203,7 +210,7 @@ class Tools:
         if existing:
             return {"error": f"{existing['id']} already open for {finding_id} ({kind})", "action": existing["title"]}
         if any(m["channel"] == "email" for m in messages):
-            with sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True) as c:
+            with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as c:
                 recipients = {}
                 for supplier, address in c.execute("SELECT supplier_id,contact_email FROM suppliers"):
                     if address:

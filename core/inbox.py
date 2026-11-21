@@ -52,7 +52,7 @@ def fetch() -> list[dict]:
     host = os.environ.get("IMAP_HOST")
     if not host:
         return []
-    with actions.con() as c:
+    with actions.tx() as c:
         c.executescript(REPLY_SCHEMA)
         ours = c.execute("""SELECT m.id,m.action_id,m.subject,m.provider_id,m.to_address,a.kind
             FROM messages m LEFT JOIN actions a ON a.id=m.action_id WHERE m.channel='email'
@@ -98,7 +98,7 @@ def fetch() -> list[dict]:
             rid = "RPL-" + hashlib.sha1(mid.encode()).hexdigest()[:6].upper()
             row = dict(id=rid, message_id=mid, msg_id=ours_msg["id"], action_id=ours_msg["action_id"], from_addr=addr, from_name=name or addr,
                        subject=_h(full["Subject"]), received_at=when, body=_strip_quote(_body(full)))
-            with actions.con() as c:
+            with actions.tx() as c:
                 inserted = c.execute("INSERT OR IGNORE INTO replies(id,message_id,msg_id,action_id,from_addr,from_name,subject,received_at,body) VALUES (?,?,?,?,?,?,?,?,?)",
                                      tuple(row.values())).rowcount
             if not inserted:
@@ -111,7 +111,7 @@ def fetch() -> list[dict]:
 
 
 def unhandled() -> list[dict]:
-    with actions.con() as c:
+    with actions.tx() as c:
         c.executescript(REPLY_SCHEMA)
         return [dict(r) for r in c.execute("""SELECT r.* FROM replies r LEFT JOIN actions a ON a.id=r.action_id
             WHERE r.handled=0 AND (a.kind IS NULL OR a.kind<>'chase_supplier')
@@ -119,14 +119,14 @@ def unhandled() -> list[dict]:
 
 
 def get_reply(rid: str) -> dict | None:
-    with actions.con() as c:
+    with actions.tx() as c:
         c.executescript(REPLY_SCHEMA)
         row = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
     return dict(row) if row else None
 
 
 def mark_handled(rid: str, summary_en: str) -> dict | None:
-    with actions.con() as c:
+    with actions.tx() as c:
         c.executescript(REPLY_SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()

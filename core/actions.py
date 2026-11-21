@@ -9,7 +9,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from core.rules import approver_for, cfg, now
@@ -58,6 +58,18 @@ def con() -> sqlite3.Connection:
     return c
 
 
+@contextmanager
+def tx():
+    """One connection per unit of work: commit on success, roll back on error, and always close.
+    (`with sqlite3.connect() as c` only commits; it never closes, which leaked file handles until the server ran out.)"""
+    c = con()
+    try:
+        with c:
+            yield c
+    finally:
+        c.close()
+
+
 def init_schema(c: sqlite3.Connection) -> None:
     c.executescript(SCHEMA)
     fields = {"provider_id", "po_numbers"}
@@ -69,7 +81,7 @@ def init_schema(c: sqlite3.Connection) -> None:
 
 
 def log_event(kind: str, ref: str | None, text: str) -> None:
-    with con() as c:
+    with tx() as c:
         c.execute("INSERT INTO events VALUES (?,?,?,?)", (now().isoformat(timespec="seconds"), kind, ref, text))
 
 
@@ -80,7 +92,7 @@ def _hist(row, entry: str) -> str:
 
 
 def open_action_for(finding_id: str, kind: str | None = None) -> dict | None:
-    with con() as c:
+    with tx() as c:
         q = "SELECT * FROM actions WHERE finding_id=? AND status IN ('proposed','scheduled','approved','sent','escalated','auto')"
         args = [finding_id]
         if kind:
@@ -120,7 +132,7 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
         entry = f"Dockside executes at {check:%H:%M} unless {ap['name']} stops it"
     aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     stamp = t.isoformat(timespec="seconds")
-    with (con() if connection is None else nullcontext(connection)) as c:
+    with (tx() if connection is None else nullcontext(connection)) as c:
         c.execute("INSERT INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             aid, finding_id, title, rationale, kind, cost_eur, eur_protected, ce_copies, category, ap.get("role"), ap.get("name"), owner,
             status, stamp, stamp, due.isoformat(timespec="seconds"), check.isoformat(timespec="seconds"), 0,
@@ -146,7 +158,7 @@ def add_message(c: sqlite3.Connection, action_id: str, channel: str, to_name: st
 
 
 def get(aid: str) -> dict | None:
-    with con() as c:
+    with tx() as c:
         return _get(c, aid)
 
 
@@ -162,7 +174,7 @@ def _get(c: sqlite3.Connection, aid: str) -> dict | None:
 
 
 def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent", "escalated", "done", "rejected", "auto", "superseded")) -> list[dict]:
-    with con() as c:
+    with tx() as c:
         ids = [r[0] for r in c.execute(f"SELECT id FROM actions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY eur_protected DESC, created_at",
                                        statuses)]
     return [get(i) for i in ids]
@@ -173,7 +185,7 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: 
     if decision not in ("approve", "reject"):
         raise ValueError(f"Unknown decision: {decision}")
     status = "approved" if decision == "approve" else "rejected"
-    with con() as c:
+    with tx() as c:
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         if not r:
@@ -188,7 +200,7 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: 
 
 
 def set_status(aid: str, status: str, entry: str, *, expected: str | None = None, **fields) -> dict | None:
-    with con() as c:
+    with tx() as c:
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         if r is None or (expected is not None and r["status"] != expected):
@@ -219,7 +231,7 @@ def policy_schedules(a: dict) -> bool:
 
 def due_scheduled() -> list[dict]:
     t = now().isoformat(timespec="seconds")
-    with con() as c:
+    with tx() as c:
         ids = [r[0] for r in c.execute("SELECT id FROM actions WHERE status='scheduled' AND next_check_at <= ?", (t,))]
     return [get(i) for i in ids]
 
@@ -227,13 +239,13 @@ def due_scheduled() -> list[dict]:
 def due_followups() -> list[dict]:
     """Proposed actions nobody decided on in time -> escalate one tier up the ladder."""
     t = now().isoformat(timespec="seconds")
-    with con() as c:
+    with tx() as c:
         ids = [r[0] for r in c.execute("SELECT id FROM actions WHERE status IN ('proposed','escalated') AND next_check_at <= ?", (t,))]
     return [get(i) for i in ids]
 
 
 def pending_dispatch() -> list[str]:
-    with con() as c:
+    with tx() as c:
         return [r[0] for r in c.execute("""SELECT a.id FROM actions a WHERE a.status IN ('approved','auto','sent')
             AND a.kind NOT IN ('chase_supplier','chase_escalation') AND (
             EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.status IN ('draft','outbox')) OR

@@ -19,7 +19,7 @@ UNCONFIRMED = {"sending", "delivery_unknown"}
 
 
 def _mark(mid: str, status: str, provider_id: str | None = None, *, expected: tuple[str, ...] = ()) -> int:
-    with actions.con() as c:
+    with actions.tx() as c:
         sent_at = now().isoformat(timespec="seconds") if status in ("sent", "delivered") else None
         condition = " AND status IN (" + ",".join("?" for _ in expected) + ")" if expected else ""
         return c.execute("UPDATE messages SET status=?, sent_at=?, provider_id=COALESCE(?,provider_id) WHERE id=?" + condition,
@@ -88,7 +88,7 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
                 if ref.startswith("<") and ref.endswith(">"):
                     parent = ref
             elif action["kind"] == "chase_supplier" and (parent_id := action["payload"].get("parent_message_id")):
-                with actions.con() as c:
+                with actions.tx() as c:
                     original = c.execute("SELECT provider_id,to_address FROM messages WHERE id=? AND status='sent'",
                                          (parent_id,)).fetchone()
                 if not original or not original["provider_id"] or original["to_address"].casefold() != m["to_address"].casefold():

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -263,7 +264,11 @@ def ce_copies_short(coverage: dict, picture: dict) -> tuple[int, str | None]:
 
 
 def evaluate(db_path: Path = DB_PATH) -> dict:
-    con = sqlite3.connect(db_path)
+    with closing(sqlite3.connect(db_path)) as con:
+        return _evaluate(con)
+
+
+def _evaluate(con: sqlite3.Connection) -> dict:
     pic = launch_picture(con)
     cov = component_coverage(con, pic)
     inb = inbound(con, cov)
@@ -348,7 +353,6 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
 
     order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
     findings.sort(key=lambda f: (order[f.severity], -f.eur_at_risk))
-    con.close()
     return dict(now=now().isoformat(), picture=pic, coverage=cov, inbound=inb, findings=[asdict(f) for f in findings])
 
 
