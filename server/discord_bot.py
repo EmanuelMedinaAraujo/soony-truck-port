@@ -19,7 +19,8 @@ from discord import app_commands
 from core import actions, agent, rules
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
-CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID") or 0)
+CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID") or 0)                       # decisions with buttons, /ask, /status
+UPDATES_ID = int(os.environ.get("DISCORD_UPDATES_CHANNEL_ID") or 0) or CHANNEL_ID   # automatic updates only (never read)
 GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID") or 0)
 UI_URL = os.environ.get("PUBLIC_URL", "")
 
@@ -119,8 +120,9 @@ class Bot(discord.Client):
         prefix = "Escalated to you: " if a["status"] == "escalated" else ""
         await ch.send(content=f"{prefix}Signature needed from **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"]))
 
-    async def post_text(self, text: str):
-        ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
+    async def post_text(self, text: str, main: bool = False):
+        cid = CHANNEL_ID if main else UPDATES_ID
+        ch = self.get_channel(cid) or await self.fetch_channel(cid)
         await ch.send(text[:1990])
 
 
@@ -155,7 +157,7 @@ def start(listeners: list, decide_fn) -> Bot | None:
             r = ev["reply"]
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Reply from **{r['from_name']}**: {r['subject']}. Dockside is reading it."), loop)
         elif ev["kind"] == "llm_down":
-            asyncio.run_coroutine_threadsafe(bot.post_text(f"Agent paused: {ev['message']}"), loop)
+            asyncio.run_coroutine_threadsafe(bot.post_text(f"Agent paused: {ev['message']}", main=True), loop)
         elif ev["kind"] == "data_drop":
             names = ", ".join(p.split("/")[-1] for p in ev["paths"][:5])
             asyncio.run_coroutine_threadsafe(bot.post_text(f"New data on the portal: {names}. Re-planning now."), loop)

@@ -1,0 +1,4 @@
+[submodule "integrations/supplier-chaser"]
+	path = integrations/supplier-chaser
+	url = https://github.com/ManuelLerchner/HACKLeague2026-lio
+	branch = main

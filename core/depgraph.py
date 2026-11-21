@@ -61,7 +61,9 @@ def supplier_risks(conn, supplied_parts):
         title = ("Export licence" if export_licence else
                  "Release pending" if re.search(r"ppap|written release|qualif", text) else
                  "Downtime" if re.search(r"downtime|maintenance|przest", text) else
-                 "Failed inspection" if re.search(r"inspection|aql|reject", text) else RISK_TYPES[kind])
+                 "Failed inspection" if re.search(r"inspection|aql|reject", text) else
+                 "Short shipment" if re.search(r"offload|uld|short ship|not shipped|balance", text) else
+                 "Terms dispute" if re.search(r"\bexw\b|\bddp\b|incoterm|terms of delivery", text) else RISK_TYPES[kind])
         detail = " ".join(filter(None, [detail, *summaries]))
         yield supplier, path, title, upstream[1].strip() if upstream else title, detail or None, scoped_parts, (
             "blocked" if kind == "supplier_hold" else "at_risk"
@@ -176,7 +178,7 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
 
         for supplier, path, title, name, detail, scoped_parts, status in supplier_risks(conn, supplied_parts):
             risk = f"risk:{supplier}:{path}"
-            generic = (name or "").strip().lower() in {"", "supply risk", "risk"}
+            generic = (name or "").strip().lower() in {"", "supply risk", "supply hold", "risk"} or name == title
             add_node(risk, (title if generic and title else name) or "Supply risk", "risk", status, detail,
                      subtitle=None if generic else title, evidence=path)
             add_edge(supplier, risk, "supply risk")
