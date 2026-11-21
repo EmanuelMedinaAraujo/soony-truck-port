@@ -12,7 +12,7 @@ from contextlib import closing
 from dataclasses import asdict
 from email.utils import parseaddr
 
-from core import actions, chase_mail, inbox, llm_health, outbound, rules
+from core import actions, chase_mail, chase_scope, inbox, outbound, rules
 from core.chase_evidence import Evidence, Issue, detect
 
 
@@ -109,6 +109,9 @@ def _record(c, snapshot, report):
         if po and po["status"] in {"delivered", "cancelled"}:
             _move(c, row["case_id"], "cancelled", f"The PO is {po['status']}.",
                   (Evidence(po["source"] or "purchase_orders", f"{po['po_number']} line {po['po_line']}: {po['status']}"),))
+        elif key in snapshot.out_of_scope:
+            _move(c, row["case_id"], "cancelled", "Supplier confirmation is no longer needed for launch.",
+                  (snapshot.out_of_scope[key],))
         elif line and line.adequate and row["issue_kind"] != "reply_follow_up":
             _move(c, row["case_id"], "resolved", "Current supplier evidence satisfies the PO line.",
                   line.confirmation_evidence)
@@ -125,27 +128,26 @@ def _existing_message(c, line, snapshot):
     address = line.supplier.get("contact_email")
     if not _address(address):
         return None
+    recent = (rules.now() - dt.timedelta(hours=rules.cfg("chase")["reminder_after_hours"])).isoformat()
     rows = c.execute("""SELECT a.finding_id,a.payload,a.id AS action_id,m.id AS message_id,m.subject,m.body,m.body_en,m.po_numbers
       FROM actions a JOIN messages m ON m.action_id=a.id
-      WHERE a.status IN ('proposed','scheduled','approved','sent','escalated','auto')
+      WHERE a.status IN ('proposed','scheduled','approved','sent','escalated','auto','done')
         AND a.kind NOT IN ('chase_supplier','chase_escalation')
         AND m.channel='email' AND lower(m.to_address)=lower(?) AND m.status IN ('draft','outbox','sending','sent','delivery_unknown')
-      ORDER BY a.created_at DESC, m.created_at DESC, m.id""", (address,))
-    token = re.compile(r"(?<!\w)" + re.escape(po_number) + r"(?!\w)")
+        AND (m.status<>'sent' OR julianday(m.sent_at)>=julianday(?) OR EXISTS (
+          SELECT 1 FROM replies r WHERE r.msg_id=m.id AND julianday(r.received_at)>=julianday(?)))
+      ORDER BY COALESCE(m.sent_at,m.created_at) DESC, m.rowid DESC""",
+                     (address, recent, recent))
     for row in rows:
         if "[sc:" in (row["subject"] or "").casefold():
             continue
-        if po_number in json.loads(row["po_numbers"] or "[]"):
-            return row
-        if any(token.search(value or "") for value in (row["subject"], row["body"], row["body_en"])):
-            return row
-        if po_number in snapshot.shipment_orders.get(row["finding_id"], ()):
-            return row
         # Older actions did not store PO scope. Details are safe to use for one supplier only.
-        payload = json.loads(row["payload"] or "{}")
-        if row["po_numbers"] is None and token.search(payload.get("details") or "") and c.execute(
+        details = None
+        if row["po_numbers"] is None and c.execute(
             "SELECT COUNT(*) FROM messages WHERE action_id=? AND channel='email'",
             (row["action_id"],)).fetchone()[0] == 1:
+            details = json.loads(row["payload"] or "{}").get("details")
+        if chase_scope.covers_po(row, po_number, row["finding_id"], snapshot.shipment_orders, legacy_details=details):
             return row
     return None
 
@@ -196,7 +198,7 @@ def _prepare(c, snapshot, report):
     return lines
 
 
-def _reconcile_replies(c, lines, report, *, dry_run):
+def _reconcile_replies(c, lines, report):
     replies = c.execute("""SELECT r.* FROM replies r WHERE EXISTS(
         SELECT 1 FROM chase_case_messages m JOIN chase_cases cc USING(case_id)
         WHERE m.message_id=r.msg_id AND m.direction='outbound')
@@ -226,26 +228,22 @@ def _reconcile_replies(c, lines, report, *, dry_run):
                     pending.append(row)
         if not pending:
             continue
-        if dry_run:
-            report["replies_pending"] += 1
-            continue
+        linked_keys = {_key(row) for row in cases}
+        orders = {key[:2] for key in linked_keys}
         applicable = {row["po_line"]: lines[_key(row)] for row in pending}
-        try:
-            result = chase_mail.interpret(dict(reply), list(applicable.values()))
-        except llm_health.LLMUnavailable:
-            report["replies_pending"] += 1
-            continue
-        except Exception:
-            result = {"lines": [], "summary": "The supplier reply needs review."}
+        if len(orders) > 1:
+            result = {"lines": [], "summary": "A buyer must attribute the reply to the correct purchase order."}
+        else:
+            result = chase_mail.interpret(reply, list(applicable.values()))
         claims = defaultdict(list)
         for claim in result.get("lines") or []:
             if isinstance(claim, dict) and isinstance(claim.get("line"), int):
                 claims[claim["line"]].append(claim)
         summary = " ".join(str(result.get("summary") or "Supplier reply received.").split())[:300]
-        multiple = len({_key(r) for r in _linked_cases(c, reply["msg_id"])}) > 1
+        multiple = len(linked_keys) > 1
         with c:
             c.execute("BEGIN IMMEDIATE")
-            follow_ups = []
+            follow_ups = defaultdict(list)
             for row in pending:
                 cid = row["case_id"]
                 applied = c.execute("""UPDATE chase_case_messages SET purpose='reconciled'
@@ -275,12 +273,13 @@ def _reconcile_replies(c, lines, report, *, dry_run):
                     _event(c, followup, "follow_up", f"Follow-up for {cid}.", evidence)
                     if opened:
                         report["opened"].append(_opening(line, followup, issue))
-                        follow_ups.append(c.execute("SELECT * FROM chase_cases WHERE case_id=?", (followup,)).fetchone())
+                        follow_ups[_key(row)[:2]].append(c.execute("SELECT * FROM chase_cases WHERE case_id=?", (followup,)).fetchone())
                 report["replies_processed"] += 1
-            if follow_ups:
-                _escalate(c, _key(follow_ups[0])[:2], follow_ups, lines, "The supplier's reply needs a buyer decision.", report)
-            if message["kind"] == SUPPLIER_KIND:
-                c.execute("UPDATE replies SET handled=1,summary_en=? WHERE id=?", (summary, reply["id"]))
+            for key, rows in follow_ups.items():
+                reason = "Decide how to recover the outstanding quantity, timing or revision."
+                reason += f"\n\nPrevious Dockside note\n{reply['summary_en']}" if reply["summary_en"] else f" {summary}"
+                _escalate(c, key, rows, lines, reason, report)
+            c.execute("UPDATE replies SET handled=1,summary_en=COALESCE(summary_en,?) WHERE id=?", (summary, reply["id"]))
 
 
 def _factual_lines(cases, lines):
@@ -296,7 +295,7 @@ def _factual_lines(cases, lines):
 
 def _queue(c, kind, key, cases, owner, messages, parent=None):
     titles = {"initial": "Confirm purchase order delivery", "reminder": "Follow up on purchase order delivery",
-              "escalation": "Review unanswered purchase order questions"}
+              "escalation": "Review outstanding purchase order confirmation"}
     code = ESCALATION_KIND if kind == "escalation" else SUPPLIER_KIND
     if not actions.policy_automatic(code, 0):
         raise ValueError(f"Autonomy policy must enable {code}")
@@ -306,10 +305,7 @@ def _queue(c, kind, key, cases, owner, messages, parent=None):
                                            "supplier_id": key[0], "parent_message_id": parent}, messages=messages, connection=c,
     )
     for row in cases:
-        if action["messages"]:
-            _attach(c, [row], action["messages"][0]["id"], kind + "_queued")
-        else:
-            _event(c, row["case_id"], "no_internal_address", f"{owner} has no configured internal email address.")
+        _attach(c, [row], action["messages"][0]["id"], kind + "_queued")
     return action
 
 
@@ -329,23 +325,26 @@ def _escalate(c, key, cases, lines, reason, report):
             buyers["Procurement"].append(row)
     for owner, owned_cases in buyers.items():
         address = settings.get("internal_emails", {}).get(owner)
-        message = {"channel": "email", "to_name": owner, "to_address": address, "language": "en",
+        has_email = _address(address)
+        message = {"channel": "email" if has_email else "discord", "to_name": owner,
+                   "to_address": address if has_email else None, "language": "en",
                    "subject": f"Dockside escalation for purchase order {key[1]}",
                    "body": f"{reason}\n\nPlease review "
-                           + ", ".join(f"{lines[_key(r)].name} ({r['case_id']})" for r in owned_cases) + "."}
-        action = _queue(c, "escalation", key, owned_cases, owner, [message] if _address(address) else [])
+                           + ", ".join(f"{lines[_key(r)].name}, PO line {r['po_line']} ({r['case_id']})" for r in owned_cases)
+                           + "."}
+        action = _queue(c, "escalation", key, owned_cases, owner, [message])
         for row in owned_cases:
             _move(c, row["case_id"], "escalated", reason)
             _event(c, row["case_id"], "internal_escalation", f"Escalated to {owner} via {action['id']}.")
         report["actions"].append(action["id"])
-        report["escalations"].append({"po_number": key[1], "owner": owner, "email": bool(action["messages"])})
+        report["escalations"].append({"po_number": key[1], "owner": owner, "email": has_email})
 
 
 def _message(c, mid):
     return c.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
 
 
-def _follow_ups(c, key, thread, cases, lines, snapshot, report, *, dry_run):
+def _follow_ups(c, key, thread, cases, lines, snapshot, report):
     initial = _message(c, thread["initial_message_id"])
     if not initial:
         return
@@ -357,8 +356,8 @@ def _follow_ups(c, key, thread, cases, lines, snapshot, report, *, dry_run):
         return
     with c:
         c.execute("BEGIN IMMEDIATE")
-        if latest["status"] in {"sending", "delivery_unknown"} and rules.now() >= dt.datetime.fromisoformat(latest["created_at"]) + wait:
-            _escalate(c, key, waiting, lines, "Email delivery status is uncertain. Check the thread before contacting the supplier.", report)
+        if latest["status"] in {"outbox", "sending", "delivery_unknown"} and rules.now() >= rules.ts(latest["created_at"]) + wait:
+            _escalate(c, key, waiting, lines, "Email delivery is unconfirmed. Check the thread before contacting the supplier.", report)
             return
         if latest["status"] == "cancelled":
             _escalate(c, key, waiting, lines, "The queued inquiry was cancelled after the PO evidence changed.", report)
@@ -366,7 +365,7 @@ def _follow_ups(c, key, thread, cases, lines, snapshot, report, *, dry_run):
         if initial["status"] == "sent":
             for row in waiting:
                 _move(c, row["case_id"], "waiting", "A supplier email was sent.")
-        if latest["status"] != "sent" or not latest["sent_at"] or rules.now() < dt.datetime.fromisoformat(latest["sent_at"]) + wait:
+        if latest["status"] != "sent" or not latest["sent_at"] or rules.now() < rules.ts(latest["sent_at"]) + wait:
             return
         if thread["reminder_message_id"] or thread["attached"] or _existing_message(c, lines[_key(waiting[0])], snapshot):
             _escalate(c, key, waiting, lines, "The supplier has not answered the PO inquiry.", report)
@@ -381,8 +380,7 @@ def _follow_ups(c, key, thread, cases, lines, snapshot, report, *, dry_run):
         with c:
             _escalate(c, key, covered, lines, "The supplier contact changed. Review the existing thread.", report)
         return
-    message = chase_mail.draft(line_items, reminder=True, use_model=not dry_run,
-                               address=initial["to_address"], subject=initial["subject"])
+    message = chase_mail.draft(line_items, reminder=True, address=initial["to_address"], subject=initial["subject"])
     with c:
         c.execute("BEGIN IMMEDIATE")
         current = _threads(c).get(key)
@@ -392,10 +390,9 @@ def _follow_ups(c, key, thread, cases, lines, snapshot, report, *, dry_run):
         c.execute("UPDATE chase_threads SET reminder_action_id=?,reminder_message_id=? WHERE supplier_id=? AND po_number=?",
                   (action["id"], action["messages"][0]["id"], *key))
     report["actions"].append(action["id"])
-    report["mail"].append({"supplier": line_items[0][0].supplier.get("name") or key[0], "po_number": key[1], "kind": "reminder"})
 
 
-def _start_threads(c, groups, lines, snapshot, report, *, dry_run):
+def _start_threads(c, groups, lines, snapshot, report):
     settings = rules.cfg("chase")
     if settings["only_launch_relevant"] and rules.now() >= rules.ts(rules.cfg("deadline")):
         return
@@ -409,7 +406,7 @@ def _start_threads(c, groups, lines, snapshot, report, *, dry_run):
         covered, line_items = _factual_lines(cases, lines)
         if not line_items:
             continue
-        message = chase_mail.draft(line_items, use_model=not dry_run)
+        message = chase_mail.draft(line_items)
         with c:
             c.execute("BEGIN IMMEDIATE")
             if key in _threads(c) or _attachment(c, key, cases, lines, snapshot, report):
@@ -419,11 +416,10 @@ def _start_threads(c, groups, lines, snapshot, report, *, dry_run):
                       (*key, action["id"], action["messages"][0]["id"]))
         remaining -= 1
         report["actions"].append(action["id"])
-        report["mail"].append({"supplier": line_items[0][0].supplier.get("name") or key[0], "po_number": key[1], "kind": "initial"})
 
 
 def _dispatch_pending(c, lines, snapshot, report, *, dry_run):
-    pending = c.execute("""SELECT m.id,m.action_id,m.to_address,m.subject,a.kind,a.payload FROM messages m
+    pending = c.execute("""SELECT m.*,a.kind,a.payload FROM messages m
         JOIN actions a ON a.id=m.action_id WHERE a.status='auto' AND a.kind IN ('chase_supplier','chase_escalation')
         AND m.status IN ('draft','outbox') ORDER BY m.created_at,m.rowid""").fetchall()
     for row in pending:
@@ -451,12 +447,30 @@ def _dispatch_pending(c, lines, snapshot, report, *, dry_run):
                                      WHERE supplier_id=? AND po_number=?""",
                                   (existing["action_id"], existing["message_id"], *_key(cases[0])[:2]))
                 continue
+        if row["kind"] == SUPPLIER_KIND:
+            payload = json.loads(row["payload"])
+            summary = {"supplier": cases[0]["supplier_name"], "po_number": payload["po_number"],
+                       "kind": "reminder" if payload["parent_message_id"] else "initial"}
+        else:
+            summary = {"kind": "escalation"}
         if dry_run:
+            summary.update({k: row[k] for k in ("channel", "to_name", "to_address", "language", "subject", "body")})
             if row["action_id"] not in report["actions"]:
-                report["queued_mail"].append({"action_id": row["action_id"], "subject": row["subject"]})
+                report["queued_mail"].append(dict(summary, action_id=row["action_id"]))
+            elif row["kind"] == SUPPLIER_KIND:
+                report["mail"].append(summary)
+            else:
+                report["escalation_messages"].append(summary)
+            continue
+        if row["channel"] == "discord":
+            # The server's Discord listener marks delivery after the post succeeds.
+            if row["action_id"] not in report["actions"]:
+                report["actions"].append(row["action_id"])
             continue
         sent = outbound.dispatch(row["action_id"])
-        if row["kind"] == SUPPLIER_KIND and sent and any(m["status"] == "sent" for m in sent["messages"]):
+        if row["kind"] == SUPPLIER_KIND:
+            report["mail"].append(summary)
+        if row["kind"] == SUPPLIER_KIND and sent and any(m["id"] == row["id"] and m["status"] == "sent" for m in sent["messages"]):
             with c:
                 for case in _linked_cases(c, row["id"]):
                     _move(c, case["case_id"], "waiting", "A supplier email was sent.")
@@ -477,18 +491,25 @@ def _connection(dry_run):
 
 def run(*, dry_run=False):
     report = {"enabled": rules.cfg("chase")["enabled"], "opened": [], "attached": [], "mail": [], "escalations": [],
-              "queued_mail": [], "replies_pending": 0, "replies_processed": 0, "actions": []}
+              "escalation_messages": [], "queued_mail": [], "replies_pending": 0, "replies_processed": 0, "actions": []}
     if not dry_run and not report["enabled"]:
         return report
     snapshot = detect()
     with closing(_connection(dry_run)) as c:
         c.execute(inbox.REPLY_SCHEMA)
         lines = _prepare(c, snapshot, report)
-        _reconcile_replies(c, lines, report, dry_run=dry_run)
+        _reconcile_replies(c, lines, report)
         groups = _groups(c, lines)
+        for key, cases in groups.items():
+            review = [row for row in cases if row["status"] == "open" and
+                      (row["needs_review"] or not _address(lines[_key(row)].supplier.get("contact_email")))]
+            if review:
+                with c:
+                    c.execute("BEGIN IMMEDIATE")
+                    _escalate(c, key, review, lines, "Check the PO evidence or supplier contact before sending an inquiry.", report)
         for key, thread in _threads(c).items():
-            _follow_ups(c, key, thread, groups.get(key, []), lines, snapshot, report, dry_run=dry_run)
-        _start_threads(c, groups, lines, snapshot, report, dry_run=dry_run)
+            _follow_ups(c, key, thread, groups.get(key, []), lines, snapshot, report)
+        _start_threads(c, groups, lines, snapshot, report)
         _dispatch_pending(c, lines, snapshot, report, dry_run=dry_run)
     report["count_by_kind"] = dict(sorted(Counter(row["kind"] for row in report["opened"]).items()))
     return report

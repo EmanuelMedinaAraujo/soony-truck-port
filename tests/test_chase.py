@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import actions, chase, chase_mail, chaser, inbox, ingest, outbound, rules
+from core import actions, chase, chaser, inbox, ingest, outbound, rules
 
 
 @pytest.fixture
@@ -17,11 +17,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(rules, "DB_PATH", master)
     monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
     monkeypatch.setattr(rules, "CONFIG", copy.deepcopy(rules.CONFIG))
-    monkeypatch.setattr(chase_mail.llm_health, "STATUS", tmp_path / "llm.json")
     settings = rules.cfg("chase")
     settings.update(enabled=True, internal_emails={"Mei Lin": "buyer@example.test"})
     monkeypatch.setenv("SOONY_NOW", "2026-11-21T12:00:00+01:00")
-    monkeypatch.setenv("OPENAI_API_KEY", "fixture")
     with sqlite3.connect(master) as db:
         db.executescript(ingest.SCHEMA)
         db.executemany("INSERT INTO products(product_id,name,launch_date) VALUES (?,?,?)",
@@ -33,7 +31,7 @@ def world(tmp_path, monkeypatch):
         db.executemany("INSERT INTO bom(parent_id,child_id,qty_per) VALUES (?,?,1)",
                        [(rules.cfg("priority_product"), "M1"), ("STANDARD", "M2"), ("LEGACY", "M3")])
 
-    sent, calls, answers = [], [], {}
+    sent = []
 
     def send(message, parent=None):
         mid = f"<{message['id']}@ours.example.test>"
@@ -41,18 +39,7 @@ def world(tmp_path, monkeypatch):
         outbound._mark(message["id"], "sent", mid)
         return "sent"
 
-    def response(**kw):
-        name = kw["text"]["format"]["name"]
-        calls.append(name)
-        if name == "chase_draft":
-            model_reply = {"opening": "Could you help us check the following Hamburg delivery details?",
-                           "closing": "Thanks for your help."}
-        else:
-            model_reply = answers
-        return SimpleNamespace(output_text=json.dumps(model_reply))
-
     monkeypatch.setattr(outbound, "send", send)
-    monkeypatch.setattr(chase_mail, "OpenAI", lambda **kw: SimpleNamespace(responses=SimpleNamespace(create=response)))
 
     def order(po, *, supplier="S1", line=1, material="M1", requested="2026-11-21", promised=None, qty=1200):
         with sqlite3.connect(master) as db:
@@ -76,8 +63,7 @@ def world(tmp_path, monkeypatch):
     def advance(hours):
         monkeypatch.setenv("SOONY_NOW", (rules.now() + dt.timedelta(hours=hours)).isoformat())
 
-    return SimpleNamespace(order=order, doc=doc, fact=fact, advance=advance, master=master,
-                           sent=sent, calls=calls, answers=answers, settings=settings)
+    return SimpleNamespace(order=order, doc=doc, fact=fact, advance=advance, master=master, sent=sent, settings=settings)
 
 
 def row(num="00010", material="M1", description="Art Book", qty="1,200", date="2026-11-21"):
@@ -116,7 +102,7 @@ def test_detection_uses_line_evidence_and_launch_scope(world):
         "0108": {"needs_review"},
     }
     assert {m["po_number"] for m in report["mail"]} == {"0101", "0102", "0104"}
-    assert not actions.DB.exists() and not world.sent and not world.calls
+    assert not actions.DB.exists() and not world.sent
 
 
 def test_line_alias_requires_supplier_catalog_and_matching_line(world):
@@ -143,7 +129,10 @@ def test_stable_keys_group_cases_and_cap_new_threads_with_priority(world):
     assert len(world.sent) == 2
     first, _, _ = world.sent[0]
     assert "Art Book" in first["body"] and "Cover Sleeve" in first["body"]
-    assert "M1" not in first["body"] and "Could you help us check" in first["body"]
+    assert "M1" not in first["body"] and "Could you confirm" in first["body"]
+    assert {field: first[field] for field in ("to_address", "language", "subject", "body")} == {
+        field: simulation["mail"][0][field] for field in ("to_address", "language", "subject", "body")
+    }
     assert chase.run()["opened"] == []
     assert len(world.sent) == 3
     assert not chase.run()["mail"]
@@ -202,8 +191,6 @@ def test_correlated_reply_resolves_and_deduplicates(world, monkeypatch):
     world.order("0101")
     cid = chase.run()["opened"][0]["case_id"]
     text = "We confirm 1,200 art books will arrive in Hamburg by 2026-11-21."
-    world.answers.update(lines=[{"line": 1, "intent": "confirmed", "qty": 1200, "arrival_date": "2026-11-21",
-                                 "revision": None, "quote": text}], summary="1,200 art books confirmed for Hamburg.")
     monkeypatch.setenv("IMAP_HOST", "fixture")
     monkeypatch.setenv("IMAP_USER", "test")
     monkeypatch.setenv("IMAP_PASSWORD", "fixture")
@@ -220,28 +207,33 @@ def test_correlated_reply_resolves_and_deduplicates(world, monkeypatch):
     assert chase.run()["replies_processed"] == 1
     case = chaser.detail(cid)
     assert case["status"] == "resolved"
-    assert case["last_reply_summary"] == world.answers["summary"]
+    assert case["last_reply_summary"] == "Supplier made an explicit delivery confirmation."
     assert {m["direction"] for m in case["messages"]} == {"inbound", "outbound"}
     assert case["events"][-1]["evidence"][0]["quote"] == text
     assert not chase.run()["replies_processed"]
-    assert world.calls.count("chase_reply") == 1
 
 
-def test_unsettled_reply_opens_internal_follow_up(world, monkeypatch):
+@pytest.mark.parametrize("reply", [
+    "We can deliver 900 art books on 2026-11-23.",
+    "We do not confirm 1,200 art books will arrive in Hamburg by 2026-11-21.",
+    "We confirm on 2026-11-21 that 1,200 art books will arrive in Hamburg.",
+    "We confirm 1,200 art books will arrive in Hamburg by 2026-11-21 if the carrier accepts the booking.",
+    "Please confirm that we can deliver 1,200 art books to Hamburg by 2026-11-21.",
+])
+def test_unsettled_reply_opens_internal_follow_up(world, monkeypatch, reply):
     world.order("0101")
     case = chase.run()["opened"][0]
-    reply = "We can deliver 900 art books on 2026-11-23."
-    world.answers.update(lines=[{"line": 1, "intent": "confirmed", "qty": 900, "arrival_date": "2026-11-23",
-                                "revision": None, "quote": reply}], summary="900 books will arrive late.")
     monkeypatch.setenv("IMAP_HOST", "fixture")
     monkeypatch.setenv("IMAP_USER", "test")
     monkeypatch.setenv("IMAP_PASSWORD", "fixture")
     monkeypatch.setattr(inbox.imaplib, "IMAP4_SSL", lambda *args, **kw: inbound(world, reply))
     inbox.fetch()
+    preview = chase.run(dry_run=True)
     chase.run()
     assert chaser.detail(case["case_id"])["status"] == "escalated"
     follow_up = next(c for c in chaser.list_native() if c["issue_kind"] == "reply_follow_up")
     assert follow_up["needs_review"]
+    assert world.sent[1][0]["body"] == preview["escalation_messages"][0]["body"]
     world.advance(4)
     assert not chase.run()["mail"]
     assert Counter(m[0]["to_address"] for m in world.sent) == {"s1@example.test": 1, "buyer@example.test": 1}
@@ -262,6 +254,75 @@ def test_attaches_to_existing_agent_action(world):
     world.advance(4)
     assert not chase.run()["mail"]
     assert Counter(m[0]["to_address"] for m in world.sent) == {"s1@example.test": 2, "buyer@example.test": 1}
+
+
+def test_recent_legacy_followup_is_reused_but_old_mail_is_not(world):
+    for po in ("0101", "0102"):
+        world.order(po)
+    with sqlite3.connect(world.master) as db:
+        db.execute("INSERT INTO shipments(shipment_id,po_numbers) VALUES ('SHIPPING-1','0101')")
+    mail = {"channel": "email", "to_name": "Supplier", "to_address": "s1@example.test",
+            "language": "en", "subject": "Delivery", "body": "Please confirm arrival."}
+    old = actions.propose("old", "Confirm old order", "Verify arrival.", "ask", 0, 0, 0, None, "Dockside",
+                          messages=[dict(mail, po_numbers=["0102"])])
+    outbound.dispatch(old["id"])
+    world.advance(3)
+    followup = actions.propose("followup-ship-SHIPPING-1-202611211500", "Check delivery", "Verify arrival.", "ask",
+                               0, 0, 0, None, "Dockside", messages=[mail])
+    outbound.dispatch(followup["id"])
+
+    report = chase.run()
+    assert [a["action_id"] for a in report["attached"]] == [followup["id"]]
+    assert [m["po_number"] for m in report["mail"]] == ["0102"]
+
+
+def test_outbound_blocks_duplicate_followups_with_explicit_and_legacy_po_scope(world):
+    world.order("0101")
+    with sqlite3.connect(world.master) as db:
+        db.execute("INSERT INTO shipments(shipment_id,po_numbers) VALUES ('SHIPPING-1','0101')")
+    chase.run()
+    mail = {"channel": "email", "to_name": "Supplier", "to_address": "s1@example.test",
+            "language": "en", "subject": "Delivery", "body": "Please confirm arrival."}
+    duplicate = actions.propose("followup-ship-SHIPPING-1-202611211200", "Check delivery", "Verify arrival.",
+                                 "ask", 0, 0, 0, None, "Dockside",
+                                 messages=[dict(mail, po_numbers=["0101"]), mail, dict(mail, po_numbers=["0102"])])
+    released = outbound.dispatch(duplicate["id"])
+    assert Counter(m["status"] for m in released["messages"]) == {"cancelled": 2, "sent": 1}
+    assert len(world.sent) == 2
+
+
+def test_confirmation_chase_skips_covered_and_already_shipped_lines(world):
+    for po in ("0101", "0102", "0103", "0104"):
+        world.order(po, promised="2026-11-23" if po in {"0101", "0102"} else "2026-11-21")
+    world.doc("0101", rows=[row(date="2026-11-23")])
+    world.doc("0102", rows=[row(date="2026-11-23", qty="900")])
+    with sqlite3.connect(world.master) as db:
+        db.executemany("""INSERT INTO shipments(shipment_id,supplier_id,po_numbers,material_ids,status,eta,quantity)
+                           VALUES (?,'S1',?,'M1','in_transit','2026-11-24',1200)""",
+                       [("SHIPPING-1", "0101"), ("SHIPPING-2", "0102")])
+        db.execute("""INSERT INTO goods_receipts(gr_number,po_number,po_line,supplier_id,material_id,qty_ordered,qty_received)
+                       VALUES ('GR1','0103',1,'S1','M1',1200,1200)""")
+    report = chase.run(dry_run=True)
+    assert {r["po_number"] for r in report["opened"]} == {"0102", "0104"}
+    assert {m["po_number"] for m in report["mail"]} == {"0102", "0104"}
+
+
+def test_missing_internal_email_queues_discord_escalation(world):
+    world.settings["internal_emails"] = {}
+    world.order("0101")
+    chase.run()
+    world.advance(2)
+    chase.run()
+    world.advance(2)
+    preview = chase.run(dry_run=True)
+    assert preview["escalation_messages"][0]["channel"] == "discord"
+    assert preview["escalation_messages"][0]["to_name"] == "Mei Lin"
+    report = chase.run()
+    assert report["escalations"] == [{"po_number": "0101", "owner": "Mei Lin", "email": False}]
+    assert len(world.sent) == 2
+    aid = report["actions"][0]
+    assert outbound.dispatch(aid)["messages"][0]["status"] == "draft"
+    assert chase.run()["actions"] == [aid]
 
 
 def test_disabled_cycle_never_dispatches_queued_mail(world, monkeypatch):
@@ -306,11 +367,10 @@ def test_uncertain_delivery_is_never_sent_again(world, monkeypatch):
     assert [m[0]["to_address"] for m in world.sent] == ["buyer@example.test"]
 
 
-def test_draft_fallback_when_llm_unavailable(world, monkeypatch):
+def test_draft_works_without_openai(world, monkeypatch):
     world.order("0101")
-    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     chase.run()
-    assert not world.calls
     assert len(world.sent) == 1
     assert world.sent[0][0]["body"].startswith("Could you confirm the following")
 

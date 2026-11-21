@@ -155,12 +155,12 @@
   },
   "chase": {
     "value": {
-      "enabled": false,
+      "enabled": true,
       "max_new_threads_per_cycle": 3,
       "reminder_after_hours": 2,
       "only_launch_relevant": true,
       "internal_emails": {}
     },
-    "source": "Dockside Supplier Chaser settings. Internal email uses explicitly configured addresses keyed by name from people."
+    "source": "Supplier Chaser runs in the Dockside service. Procurement escalations use Discord unless an internal email is configured by name."
   }
 }

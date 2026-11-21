@@ -146,7 +146,25 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                 for r in inbox.fetch():
                     notify("reply", {"reply": r})
                 STATE["last_inbox"], STATE["inbox_error"] = rules.now().isoformat(timespec="seconds"), None
-                if AUTO_AGENT and os.environ.get("OPENAI_API_KEY") and inbox.unhandled():
+            except llm_health.LLMUnavailable as e:
+                llm_paused(e)
+            except Exception as e:
+                STATE["inbox_error"] = type(e).__name__
+                actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
+        STATE["busy"] = "chasing supplier confirmations"
+        try:
+            chase_result = chase.run()
+            for action_id in chase_result.pop("actions"):
+                notify_action({"done_automatically": action_id})
+            out["chase"] = chase_result
+            STATE["chase_error"] = None
+        except Exception as e:
+            STATE["chase_error"] = type(e).__name__
+            actions.log_event("chase_error", None, type(e).__name__)
+        if os.environ.get("IMAP_HOST") and AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
+            try:
+                from core import inbox
+                if inbox.unhandled():
                     STATE["busy"] = "agent handling replies"
                     n = {"k": 0}
 
@@ -160,8 +178,7 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
             except llm_health.LLMUnavailable as e:
                 llm_paused(e)
             except Exception as e:
-                STATE["inbox_error"] = type(e).__name__
-                actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
+                actions.log_event("reply_handling_error", None, type(e).__name__)
         if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
             try:  # nothing waits silently: remind, book the unload slot or escalate when an item has gone quiet
                 from core import dispatch, followup
@@ -182,16 +199,6 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                 llm_paused(e)
             except Exception as e:
                 actions.log_event("followup_error", None, f"{type(e).__name__}: {e}")
-        STATE["busy"] = "chasing supplier confirmations"
-        try:
-            chase_result = chase.run()
-            for action_id in chase_result.pop("actions"):
-                notify_action({"done_automatically": action_id})
-            out["chase"] = chase_result
-            STATE["chase_error"] = None
-        except Exception as e:
-            STATE["chase_error"] = type(e).__name__
-            actions.log_event("chase_error", None, type(e).__name__)
         STATE["busy"] = "follow-ups"
         for a in actions.due_followups():
             if a["status"] in ("proposed", "escalated"):

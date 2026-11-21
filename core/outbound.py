@@ -82,6 +82,16 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
         for m in action["messages"]:
             if m["status"] not in ("draft", "outbox"):
                 continue
+            if action["kind"] == "chase_escalation" and m["channel"] == "discord":
+                continue
+            if m["channel"] == "email" and action["kind"] not in {"chase_supplier", "chase_escalation"} and cfg("chase")["enabled"]:
+                from core.chase_scope import duplicate_case
+                with actions.tx() as c:
+                    case_id = duplicate_case(c, action, m)
+                if case_id:
+                    if _mark(m["id"], "cancelled", expected=("draft", "outbox")):
+                        actions.log_event("email_deduplicated", action_id, f"Supplier inquiry already covered by {case_id}.")
+                    continue
             parent = None
             if reply and (m["to_address"] or "").casefold() == reply["from_addr"].casefold():
                 ref = reply["message_id"]

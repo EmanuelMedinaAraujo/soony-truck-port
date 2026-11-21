@@ -141,6 +141,27 @@ def start(listeners: list, decide_fn) -> Bot | None:
 
     threading.Thread(target=run, daemon=True, name="discord").start()
 
+    posting_escalations = set()
+
+    async def post_chase_escalation(m):
+        if m["id"] in posting_escalations:
+            return
+        posting_escalations.add(m["id"])
+        try:
+            with actions.tx() as c:
+                pending = c.execute("SELECT status FROM messages WHERE id=?", (m["id"],)).fetchone()
+            if pending and pending["status"] == "draft":
+                text = f"**{m['subject']}**\nFor **{m['to_name']}**\n{m['body']}"
+                await bot.post_text(discord.utils.escape_mentions(text), main=True)
+                with actions.tx() as c:
+                    c.execute("UPDATE messages SET status='delivered',sent_at=? WHERE id=?",
+                              (rules.now().isoformat(timespec="seconds"), m["id"]))
+                actions.log_event("ping", m["action_id"], f"Discord escalation to {m['to_name']}: {m['subject']}")
+        except discord.DiscordException as exc:
+            actions.log_event("dispatch_error", m["action_id"], f"Discord escalation: {type(exc).__name__}")
+        finally:
+            posting_escalations.remove(m["id"])
+
     def on_event(ev: dict):
         if not bot.ready.is_set():
             return
@@ -148,6 +169,10 @@ def start(listeners: list, decide_fn) -> Bot | None:
             asyncio.run_coroutine_threadsafe(bot.post_decision(ev["action"]), loop)
         elif ev["kind"] == "action_auto":
             a = ev["action"]
+            if a["kind"] == "chase_escalation":
+                if m := next((m for m in a["messages"] if m["channel"] == "discord" and m["status"] == "draft"), None):
+                    asyncio.run_coroutine_threadsafe(post_chase_escalation(m), loop)
+                    return
             to = ", ".join(sorted({m["to_name"] for m in a["messages"]})) or "logged"
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Done by Dockside: **{a['title']}** ({to}). {a['rationale']}"), loop)
         elif ev["kind"] == "action_executed":

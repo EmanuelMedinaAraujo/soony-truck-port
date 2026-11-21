@@ -14,6 +14,8 @@ Customer data is never committed (`data/` is ignored).
 
 ## Supplier Chaser
 
-Dockside's background loop reads confirmation evidence and tracks supplier inquiries in its action log. Preview cases and mail with `.venv/bin/python -m core.chase --dry-run`. Live chasing is disabled by default. Enable it in `config/business.json` and configure `chase.value.internal_emails` using the names in `people` to route escalation emails.
+Dockside's background loop checks launch-relevant purchase orders for missing, partial, late or conflicting confirmations. It shares the agent's outbound action log, reuses recent supplier inquiries for the same PO and sends at most one reminder on a thread it starts. Dockside reads the shared mailbox with read-only IMAP and checks replies locally. Escalations go to procurement through Discord unless an address is configured in `chase.value.internal_emails` using the names in `people`.
 
-The chase loop is ported from `integrations/supplier-chaser` (commit `cc0ecad761f5c02f40be0afa46360d270c57038b`). To pull teammate changes, update the submodule and port the diff.
+Preview the cases and exact outgoing messages with `.venv/bin/python -m core.chase --dry-run`. The preview uses the local snapshots and stored replies. The live loop runs in the Dockside service. Manage it with `chase.value.enabled` in `config/business.json`.
+
+The native port is based on `integrations/supplier-chaser` at `cc0ecad`. The reference update to `0954ca4` adds Linux ARM64 packaging support.

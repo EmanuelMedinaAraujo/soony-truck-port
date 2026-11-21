@@ -11,6 +11,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 
 from core import ingest, rules
+from core.chase_scope import shipment_orders
 
 
 @dataclass(frozen=True)
@@ -223,11 +224,35 @@ class Snapshot:
     lines: list[Line]
     orders: dict[tuple, dict]
     shipment_orders: dict[str, list[str]]
+    out_of_scope: dict[tuple, Evidence]
+
+
+def _launch_relevance(line, cutoff, coverage, shipments, receipts):
+    """Identify positive evidence that a supplier confirmation would no longer help."""
+    key = line.key
+    component = coverage.get(key[3])
+    if component and component["gap"] >= 0 and not component["suspect_master_data"]:
+        return Evidence(component["source"], f"{line.name}: {component['usable_now']} usable, {component['need_total']} needed for launch.")
+    if line.qty is not None and (received := receipts.get(key, 0)) >= line.qty:
+        if not line.issues.keys() & {"contradicting_qty", "needs_review"}:
+            return Evidence("goods_receipts", f"PO {key[1]} line {key[2]}: {received:g} of {line.qty:g} units received.")
+    if set(line.issues) != {"late_date"}:
+        return None
+    # A full consignment with a supplier quantity and date already on file is now
+    # carrier work if it is at the port or physically underway past the cutoff.
+    for shipment in shipments.get((key[0], key[1], key[3]), ()):
+        qty = quantity(shipment["quantity"])
+        eta = rules.ts(shipment["eta"])
+        if qty == line.qty and (shipment["status"] in {"arrived_port", "in_delivery", "delivered"}
+                                or (shipment["status"] == "in_transit" and eta and eta > cutoff)):
+            return Evidence("shipments", f"{shipment['shipment_id']}: all {qty:g} units {shipment['status']}, ETA {shipment['eta']}.")
+    return None
 
 
 def detect() -> Snapshot:
     """Read the current master snapshot. Supplier text and extracted facts are evidence, never instructions."""
-    deadline = rules.ts(rules.cfg("deadline")).date()
+    cutoff = rules.ts(rules.cfg("deadline"))
+    deadline = cutoff.date()
     only_launch = rules.cfg("chase")["only_launch_relevant"]
     with closing(sqlite3.connect(rules.DB_PATH.as_uri() + "?mode=ro", uri=True)) as c:
         c.row_factory = sqlite3.Row
@@ -250,12 +275,28 @@ def detect() -> Snapshot:
             if row["parent_id"] in products and (not row["rev_effective_from"] or (day(row["rev_effective_from"]) or dt.date.max) <= deadline):
                 launch_bom[row["child_id"]].append(dict(row))
         suppliers = {row["supplier_id"]: dict(row) for row in c.execute("SELECT * FROM suppliers")}
-        shipment_orders = {f"ship-{sid}": (pos or "").split("|")
-                           for sid, pos in c.execute("SELECT shipment_id,po_numbers FROM shipments")}
+        shipment_scope = shipment_orders(c)
+        shipments = defaultdict(list)
+        for row in c.execute("SELECT shipment_id,supplier_id,po_numbers,material_ids,quantity,status,eta FROM shipments"):
+            if (row["po_numbers"] and "|" not in row["po_numbers"]
+                    and row["material_ids"] and "|" not in row["material_ids"]
+                    and sum(key[0] == row["supplier_id"] and key[3] == row["material_ids"]
+                            and orders[key]["status"] == "open" and quantity(orders[key]["quantity"]) == quantity(row["quantity"])
+                            for key in by_po[row["po_numbers"]]) == 1):
+                shipments[row["supplier_id"], row["po_numbers"], row["material_ids"]].append(row)
+        coverage = rules.component_coverage(c, rules.launch_picture(c)) if only_launch else {}
+        for component in coverage.values():
+            component["source"] = "stock and launch_status"
         receipts = defaultdict(set)
-        for po, line_no, supplier, material, note in c.execute(
-                "SELECT po_number,po_line,supplier_id,material_id,delivery_note FROM goods_receipts WHERE delivery_note IS NOT NULL"):
-            receipts[po, note].add((supplier, po, line_no, material))
+        received = defaultdict(float)
+        receipt_rows = c.execute("SELECT po_number,po_line,supplier_id,material_id,delivery_note,qty_received,qty_ordered FROM goods_receipts")
+        for po, line_no, supplier, material, note, qty_received, qty_ordered in receipt_rows:
+            key = supplier, po, line_no, material
+            if note:
+                receipts[po, note].add(key)
+            qty, ordered = quantity(qty_received), quantity(qty_ordered)
+            if qty is not None and (ordered is None or qty <= ordered):
+                received[key] += qty
         aliases = defaultdict(lambda: defaultdict(set))
         for row in c.execute("SELECT supplier_id,component_id,description FROM supplier_components"):
             aliases[row["supplier_id"]][name_key(row["description"] or "")].add(row["component_id"])
@@ -290,7 +331,7 @@ def detect() -> Snapshot:
                 for key in matching or candidates:
                     uncertain_facts[key].append(Evidence(path, quote))
 
-    lines = []
+    lines, out_of_scope = [], {}
     for key, po in orders.items():
         supplier, _, line_no, material = key
         need = day(po["requested_date"])
@@ -322,5 +363,9 @@ def detect() -> Snapshot:
             line.add("needs_review", "Identify the PO line to which the supplier evidence applies.", *uncertain_facts[key], review=True)
         _assess(line, docs[supplier, key[1]], facts[key], aliases[supplier],
                 master_rev.strip().upper() if master_rev else None)
-        lines.append(line)
-    return Snapshot(sorted(lines, key=lambda line: (not line.priority, line.need or dt.date.max, line.key)), orders, shipment_orders)
+        if only_launch and (evidence := _launch_relevance(line, cutoff, coverage, shipments, received)):
+            out_of_scope[key] = evidence
+        else:
+            lines.append(line)
+    return Snapshot(sorted(lines, key=lambda line: (not line.priority, line.need or dt.date.max, line.key)),
+                    orders, shipment_scope, out_of_scope)

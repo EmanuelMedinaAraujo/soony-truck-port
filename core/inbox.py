@@ -13,7 +13,7 @@ import re
 from email.header import decode_header, make_header
 from email.utils import parseaddr, parsedate_to_datetime
 
-from core import actions
+from core import actions, rules
 
 REPLY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS replies(
@@ -115,7 +115,10 @@ def unhandled() -> list[dict]:
         c.executescript(REPLY_SCHEMA)
         return [dict(r) for r in c.execute("""SELECT r.* FROM replies r LEFT JOIN actions a ON a.id=r.action_id
             WHERE r.handled=0 AND (a.kind IS NULL OR a.kind<>'chase_supplier')
-            AND instr(lower(r.subject),'[sc:')=0 ORDER BY r.received_at""")]
+            AND instr(lower(r.subject),'[sc:')=0
+            AND NOT (? AND EXISTS (SELECT 1 FROM chase_case_messages m JOIN chase_cases cc USING(case_id)
+                WHERE m.message_id=r.id AND m.direction='inbound' AND m.purpose='received' AND cc.status='answered'))
+            ORDER BY r.received_at""", (rules.cfg("chase")["enabled"],))]
 
 
 def get_reply(rid: str) -> dict | None:
