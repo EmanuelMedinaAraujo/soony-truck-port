@@ -72,6 +72,20 @@ window.PartDependencyGraph = (() => {
     const top = 18 + crossing * 24;
     const rowStep = cardHeight + 15;
     const rows = Math.max(...layers.map(layer => layer.length));
+    const rowOf = new Map();
+    layers.forEach((layer, column) => {
+      if (column > 0) {
+        const score = node => {
+          const near = connections.filter(c => (c.to.node === node && c.from.column < column) || (c.from.node === node && c.to.column < column))
+            .map(c => rowOf.get((c.to.node === node ? c.from : c.to).node.id)).filter(v => v != null);
+          return near.length ? near.reduce((a, b) => a + b, 0) / near.length : Infinity;
+        };
+        const scored = layer.map((node, i) => ({node, i, s: score(node)}));
+        scored.sort((a, b) => a.s - b.s || a.i - b.i);
+        layer.splice(0, layer.length, ...scored.map(x => x.node));
+      }
+      layer.forEach((node, index) => rowOf.set(node.id, index + (rows - layer.length) / 2));
+    });
     for (const [column, layer] of layers.entries()) {
       layer.forEach((node, index) => {
         const x = layers.length === 1 ? (width - cardWidth) / 2 : margin + column * step;
@@ -126,6 +140,7 @@ window.PartDependencyGraph = (() => {
     const lines = svgElement("g", {class: "depgraph-wires", "aria-hidden": "true"});
     const labels = svgElement("g", {class: "depgraph-edge-labels", "aria-hidden": "true"});
     const relations = new Map();
+    const shown = new Set();
     for (const connection of connections) {
       const {edge, reversed} = connection;
       const source = positions.get(edge.source).node;
@@ -137,7 +152,9 @@ window.PartDependencyGraph = (() => {
       }
       const {path, x, y, anchor = "middle"} = wire(connection, cardHeight, vertical);
       const line = svgElement("path", {d: path, [reversed ? "marker-start" : "marker-end"]: `url(#${markerId})`});
-      const label = svgElement("text", {x, y, "text-anchor": anchor}, edge.label);
+      const labelKey = `${edge.source}|${edge.label}`;
+      const label = svgElement("text", {x, y, "text-anchor": anchor}, shown.has(labelKey) ? "" : edge.label);
+      shown.add(labelKey);
       label.append(svgElement("title", {}, [edge.label, edge.detail].filter(Boolean).join(". ")));
       lines.append(line);
       labels.append(label);
@@ -148,7 +165,7 @@ window.PartDependencyGraph = (() => {
       const type = node.subtitle ?? kinds[node.kind];
       const status = statuses[node.status];
       const card = svgElement("g", {class: "depgraph-node", "data-node": node.id, "data-kind": node.kind,
-        "data-status": node.status, transform: `translate(${x},${y})`, tabindex: "0", role: "button",
+        "data-status": node.status, "data-selected": node.selected ? "true" : "false", transform: `translate(${x},${y})`, tabindex: "0", role: "button",
         "aria-label": `${node.label}, ${type}, ${status}`, "aria-description": relations.get(node.id)?.join(". ") ?? ""});
       card.append(svgElement("title", {}, [node.label, node.code, node.reference, node.detail].filter(Boolean).join("\n")));
       card.append(svgElement("rect", {class: "depgraph-card", width: cardWidth, height: cardHeight, rx: 9}));
@@ -170,7 +187,7 @@ window.PartDependencyGraph = (() => {
     }
   }
 
-  async function mount(inspector, componentId, nameOf, selectPart) {
+  async function mount(inspector, componentId, nameOf, selectPart, selectedShipment = null, selectShipment = null) {
     observers.get(inspector)?.disconnect();
     const section = document.createElement("section");
     section.className = "depgraph";
@@ -195,6 +212,7 @@ window.PartDependencyGraph = (() => {
       if (!section.isConnected) return;
       for (const node of graph.nodes) {
         if (["assembly", "part", "subpart"].includes(node.kind)) node.label = nameOf(node.id) ?? node.label;
+        if (node.id === selectedShipment) node.selected = true;
       }
 
       const svg = svgElement("svg", {role: "group", "aria-labelledby": heading.id});
@@ -203,6 +221,7 @@ window.PartDependencyGraph = (() => {
           selectPart(node.id);
           return;
         }
+        if (node.kind === "shipment" && selectShipment && selectShipment(node.id)) return;
         const supply = graph.edges.filter(edge => edge.target === node.id && edge.label === "made by" && edge.detail);
         const details = [node.label, node.subtitle, statuses[node.status], node.detail, ...supply.map(edge => edge.detail)];
         feedback.textContent = [...new Set(details.filter(Boolean))].join(". ");

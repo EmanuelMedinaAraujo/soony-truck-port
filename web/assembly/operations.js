@@ -37,9 +37,18 @@ async function refreshBusy() {
   try {
     const response = await fetch("/api/state", {cache: "no-store"});
     if (!response.ok) throw new Error(response.status);
-    const busy = (await response.json()).system?.busy;
+    const system = (await response.json()).system ?? {};
+    const busy = system.busy;
     const label = busy ? busy[0].toUpperCase() + busy.slice(1) : "";
     if (progress.textContent !== label) progress.textContent = label;
+    const llm = system.llm ?? {ok: true};
+    const banner = $("llm-banner");
+    banner.hidden = llm.ok !== false;
+    if (llm.ok === false) {
+      const text = `Agent paused. ${llm.message}`;
+      if (banner.textContent !== text) banner.textContent = text;
+      banner.dataset.kind = llm.kind;
+    }
   } catch {
     progress.textContent = "";
   } finally {

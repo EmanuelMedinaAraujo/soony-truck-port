@@ -123,3 +123,7 @@
     transition: stroke 120ms ease;
   }
 }
+
+/* the shipment shown on the map */
+.depgraph-node[data-selected="true"] .depgraph-card{stroke-width:2.5;stroke:currentColor}
+.depgraph-node[data-kind="shipment"]{cursor:pointer}

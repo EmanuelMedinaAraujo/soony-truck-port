@@ -235,7 +235,7 @@ function renderInspector(force = false) {
       summary.dataset.step = line;
       summary.innerHTML = line;
     }
-    if (flow.dataset.stage !== currentStage) {
+    if (flow && flow.dataset.stage !== currentStage) {
       flow.dataset.stage = currentStage;
       flow.innerHTML = process(currentStage);
     }
@@ -253,9 +253,9 @@ function renderInspector(force = false) {
       <p>${html(partNote)}</p></div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
     <div class="shipment-head"><div class="shipment-summary"><h3>Dockside’s next step</h3>
-      <p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p></div>${routePicker(routes, route)}
+      <p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p></div>
       ${renderRouteDetails(route, showConfirmation)}</div>
-    <ol class="process" id="process" aria-label="Seven steps to dispatch" data-stage="${html(currentStage)}">${process(currentStage)}</ol></div>
+    </div>
     ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
     <div class="info-grid"><div>
@@ -268,7 +268,13 @@ function renderInspector(force = false) {
   window.PartDependencyGraph.mount(inspector, part.id, id => {
     const component = state.components.find(item => item.id === id);
     return component && nameOf(component);
-  }, selectPart);
+  }, selectPart, route?.id, shipmentId => {
+    if (!routes.some(item => item.id === shipmentId)) return false;
+    routeSelection = shipmentId;
+    renderInspector(true);
+    document.querySelector("#transport-map")?.scrollIntoView({block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+    return true;
+  });
   if (headingFocused) $("part-heading").focus({preventScroll: true});
   updatePremium();
   if (route?.tracking) loadMap();

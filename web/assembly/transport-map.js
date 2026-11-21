@@ -2,25 +2,38 @@
 const trackDate = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/Berlin", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
 });
+const trackDay = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Berlin", day: "numeric", month: "short"});
 const trackDistance = new Intl.NumberFormat("en-GB", {maximumFractionDigits: 0});
 const trackWidth = 600;
 const trackHeight = 315;
+const seaLandmarks = [
+  {name: "Port Said", lon: 32.31, lat: 31.27}, {name: "Gibraltar", lon: -5.35, lat: 36.14},
+  {name: "Dover", lon: 1.31, lat: 51.13}, {name: "Singapore", lon: 103.86, lat: 1.17},
+];
 let trackDetails;
 let trackRequestOpen = false;
 let trackRefreshAfter = 0;
 
-async function loadTrackingDetails(onUpdate) {
+async function loadTrackingDetails(onUpdate, retryUntil = Date.now() + 10000) {
   if (trackRequestOpen || Date.now() < trackRefreshAfter) return;
   trackRequestOpen = true;
   try {
-    const response = await fetch("/api/tracking", {cache: "no-store", signal: AbortSignal.timeout(12000)});
+    const response = await fetch("/api/tracking", {cache: "no-store", signal: AbortSignal.timeout(3000)});
     if (!response.ok) throw new Error(response.status);
     trackDetails = (await response.json()).shipments;
   } catch {
     trackDetails ??= {};
   } finally {
     trackRequestOpen = false;
-    trackRefreshAfter = Date.now() + 60000;
+    const pending = Object.values(trackDetails ?? {}).some(({flight_match, public_context}) =>
+      flight_match?.status === "pending" || flight_match?.position_status === "pending" ||
+      public_context?.status === "pending");
+    if (pending && Date.now() < retryUntil) {
+      trackRefreshAfter = Date.now() + 900;
+      setTimeout(() => loadTrackingDetails(onUpdate, retryUntil), 900);
+    } else {
+      trackRefreshAfter = Date.now() + 60000;
+    }
     onUpdate();
   }
 }
@@ -30,24 +43,53 @@ function mapTime(timestamp) {
   return `<time datetime="${html(timestamp)}">${html(trackDate.format(new Date(timestamp)))}</time>`;
 }
 
-function mapPublicCaption(context) {
-  if (!context) return "";
-  const {source, status, items, timestamp} = context;
-  if (items.length) {
-    const scope = items[0].kind === "aircraft" ? "Aircraft near Frankfurt for context" : "Matched vessel";
-    const label = status === "live" ? "Live public data" : "Last public data";
-    return `<p><span class="map-key public-key" aria-hidden="true"></span><strong>${label}</strong> from ${html(source)}.
-      ${scope}. ${mapTime(timestamp)}</p>`;
+function mapDistance(a, b) {
+  const radians = Math.PI / 180;
+  const haversine = Math.sin((a.lat - b.lat) * radians / 2) ** 2 +
+    Math.cos(a.lat * radians) * Math.cos(b.lat * radians) * Math.sin((a.lon - b.lon) * radians / 2) ** 2;
+  return 12742 * Math.asin(Math.min(1, Math.sqrt(haversine)));
+}
+
+function mapLocation(position, stops, mode) {
+  if (!position) return "";
+  const landmarks = mode === "sea" ? [...stops, ...seaLandmarks] : stops;
+  const [nearest] = landmarks.map(place => [mapDistance(position, place), place.name]).sort(([a], [b]) => a - b);
+  if (nearest && nearest[0] <= 180) return `${nearest[0] < 5 ? "at" : "near"} ${nearest[1]}`;
+  const {lat, lon} = position;
+  if (mode === "air" && lat > 38 && lat < 62 && lon > -50 && lon < -14) return "over the North Atlantic";
+  if (mode === "sea" && lat > 35 && lat < 42 && lon > -5.5 && lon < 11) return "in the western Mediterranean";
+  return `at ${Math.abs(lat).toFixed(1)}° ${lat < 0 ? "S" : "N"}, ${Math.abs(lon).toFixed(1)}° ${lon < 0 ? "W" : "E"}`;
+}
+
+function mapObservation(position) {
+  const name = position.callsign ?? position.name;
+  const source = position.simulated && name ? position.source.toLowerCase() :
+    position.simulated ? "Simulated carrier report" : position.source;
+  const time = mapTime(position.timestamp);
+  return `${name ? `${html(name)} from ` : ""}${html(source)}${time ? `, ${time}` : ""}`;
+}
+
+function mapFlightCaption(flight, primary) {
+  if (!flight) return "";
+  const fallback = primary ? ", showing schedule estimate" : "";
+  if (flight.status === "pending" || flight.position_status === "pending") {
+    return "<p>Checking live flight data.</p>";
   }
-  const messages = {
-    not_connected: "AIS vessel tracking is not connected.",
-    missing_identity: "AIS vessel tracking needs a vessel identifier.",
-    no_position: "AIS Stream has no recent position for this vessel in the area.",
-    unavailable: `${source} is temporarily unavailable.`,
-    live: "OpenSky Network found no recent aircraft positions near Frankfurt.",
-    stale: "OpenSky Network found no recent aircraft positions near Frankfurt.",
-  };
-  return `<p>${html(messages[status] ?? "")} ${mapTime(timestamp)}</p>`;
+  if (flight.status === "ambiguous") {
+    const list = flight.candidates.map(candidate => candidate.position ? mapObservation(candidate.position) :
+      `${html(candidate.callsign)}, departed ${mapTime(candidate.departed_at)}`).join(". ");
+    const unavailable = flight.position_status === "unavailable" ?
+      `<p>Live flight positions unavailable${fallback}.</p>` : "";
+    return `<p>${flight.candidate_count} possible flights, asking the carrier for the flight number${flight.simulated ? " (simulated)" : ""}.</p>
+      ${list ? `<p>${list}.</p>` : ""}${unavailable}`;
+  }
+  if (flight.status === "matched" && flight.candidates[0].position) {
+    return `<p>${mapObservation(flight.candidates[0].position)}.</p>`;
+  }
+  if (flight.source_status === "unavailable" || flight.status === "matched") {
+    return `<p>Live flight data unavailable${fallback}.</p>`;
+  }
+  return `<p>No matching flight${fallback}.</p>`;
 }
 
 function mapLongitude(lon, center) {
@@ -105,124 +147,82 @@ function mapProjection(line, extra) {
   return {project, coast, grid: grid.join("")};
 }
 
-function frankfurtInset(stops, items, projectedRoute) {
-  if (!items.length || items[0].kind !== "aircraft") return "";
-  const airport = stops.at(-1);
-  const width = 154;
-  const height = 96;
-  const corners = [[14, trackHeight - height - 14], [trackWidth - width - 14, trackHeight - height - 14],
-    [14, 14], [trackWidth - width - 14, 14]];
-  const clearance = ([x, y]) => Math.min(...projectedRoute.map(([px, py]) => Math.hypot(
-    Math.max(x - px, 0, px - x - width), Math.max(y - py, 0, py - y - height),
-  )));
-  const [left, top] = corners.reduce((best, next) => clearance(next) > clearance(best) ? next : best);
-  const scale = Math.min(28 / Math.max(0.2, ...items.map(point => Math.abs(point.lat - airport.lat))),
-    57 / Math.max(0.2, ...items.map(point => Math.abs(point.lon - airport.lon))));
-  const dots = items.map(item => `<circle class="map-public" cx="${width / 2 + (item.lon - airport.lon) * scale}"
-    cy="${58 - (item.lat - airport.lat) * scale}" r="2.8"><title>${html(item.name)}</title></circle>`).join("");
-  return `<g class="map-inset" transform="translate(${left} ${top})">
-    <rect class="map-inset-background" width="${width}" height="${height}" rx="5"/>
-    <path class="map-inset-grid" d="M12 58H142 M77 31V87"/>
-    ${dots}<circle class="map-stop" cx="77" cy="58" r="3.5"/>
-    <text x="10" y="19">Near Frankfurt</text>
-  </g>`;
-}
-
 function mapFigure(tracking, land, id) {
   const details = trackDetails?.[id];
   if (!details?.route.length) {
-    const message = trackDetails ? "Tracking comparison is unavailable." : "Loading the shipment map.";
+    const message = trackDetails ? "Tracking map unavailable for this shipment." : "Loading the shipment map.";
     return `<p class="side-note">${message}</p>`;
   }
 
-  const {route, stops, expected, reported, transfer, public_context: context} = details;
-  const carrierUsable = reported && reported.plausibility === "plausible" && !tracking.hold;
-  const primary = carrierUsable ? reported : expected;
-  const confirmedDeparture = tracking.status !== "booked" && !tracking.hold;
-  const differs = confirmedDeparture && expected && reported && details.verdict && details.verdict !== "feeds agree";
-  const comparison = differs ? (carrierUsable ? expected : reported) : null;
+  const {route, stops, expected, reported, transfer, flight_match: flight, public_context: context} = details;
+  const carrierUnconfirmed = tracking.hold || tracking.status === "booked";
+  const useEstimate = details.current_position?.source === "Carrier feed" &&
+    (carrierUnconfirmed || (tracking.stale && tracking.status !== "arrived_port"));
+  const primary = useEstimate ? expected ?? reported : details.current_position;
+  const reportedDistance = primary && reported ? mapDistance(primary, reported) : 0;
+  const compareReport = tracking.mode !== "air" && !carrierUnconfirmed && reportedDistance > 25;
+  const candidates = flight?.status === "ambiguous" ? flight.candidates
+    .map(candidate => candidate.position).filter(position => position && (!primary || mapDistance(primary, position) > 25)) : [];
   const xy = ({lon, lat}) => [lon, lat];
-  const extra = [...transfer, ...[primary, comparison].filter(Boolean).map(xy)];
+  const alternatives = [...(compareReport ? [reported] : []), ...candidates];
+  const extra = [...transfer, ...[primary, ...alternatives].filter(Boolean).map(xy)];
   const {project, coast, grid} = mapProjection(route, extra);
   const polyline = points => points.map(point => project(point).join(",")).join(" ");
 
   const plottedStops = stops.map((stop, index) => {
     const [x, y] = project(xy(stop));
     const anchor = x < trackWidth / 3 ? "start" : x > trackWidth * 2 / 3 ? "end" : "middle";
-    const isTransferStop = transfer.length && index === stops.length - 1;
-    const offset = isTransferStop || (index === 1 && stops.length === 3) ? 22 : -14;
-    return `<circle class="map-stop" cx="${x}" cy="${y}" r="${offset > 0 ? 3.5 : 4.5}"/>
-      <text x="${x}" y="${y + offset}" text-anchor="${anchor}">${html(stop.name)}</text>`;
+    const lowerLabel = (transfer.length && index === stops.length - 1) || (index === 1 && stops.length === 3);
+    return `<circle class="map-stop" cx="${x}" cy="${y}" r="4"/>
+      <text x="${x}" y="${y + (lowerLabel ? 23 : -14)}" text-anchor="${anchor}">${html(stop.name)}</text>`;
   }).join("");
-  const handoff = transfer.length ? (() => {
-    const [x, y] = project(transfer[1]);
-    const anchor = x < trackWidth / 2 ? "start" : "end";
-    return `<polyline class="map-transfer" points="${polyline(transfer)}"/>
-      <circle class="map-stop" cx="${x}" cy="${y}" r="3"/>
-      <text x="${x}" y="${y - 12}" text-anchor="${anchor}">Hamburg warehouse</text>`;
-  })() : "";
-
-  const traffic = (context?.items ?? []).map(item => {
-    const [x, y] = project(xy(item));
-    if (x < 6 || x > trackWidth - 6 || y < 6 || y > trackHeight - 6) return "";
-    return `<circle class="map-public" cx="${x}" cy="${y}" r="2.7">
-      <title>${html(item.name)} from ${html(item.source)}</title></circle>`;
+  const handoff = transfer.length ? `<polyline class="map-transfer" points="${polyline(transfer)}"/>` : "";
+  const ghosts = alternatives.map(position => {
+    const [x, y] = project(xy(position));
+    return `<circle class="map-ghost ${position === reported ? "carrier-ghost" : "flight-ghost"}" cx="${x}" cy="${y}" r="6">
+      <title>${html(position.callsign ?? "Carrier report")}</title></circle>`;
   }).join("");
-  const inset = frankfurtInset(stops, context?.items ?? [], [...route, ...extra].map(project));
 
-  let cursor = "";
-  let connector = "";
-  let distanceLabel = "";
+  let marker = "";
   if (primary) {
     const [x, y] = project(xy(primary));
-    if (comparison) {
-      const [cx, cy] = project(xy(comparison));
-      const separation = Math.hypot(cx - x, cy - y);
-      if (separation > 15) {
-        const distance = `${trackDistance.format(details.divergence_km)} km apart`;
-        const [labelX, labelY] = [(x + cx) / 2, (y + cy) / 2];
-        connector = `<line class="map-connector" x1="${x}" y1="${y}" x2="${cx}" y2="${cy}"/>
-          <circle class="map-ghost ${carrierUsable ? "schedule-ghost" : "carrier-ghost"}" cx="${cx}" cy="${cy}" r="6">
-            <title>${html(comparison.source)}</title></circle>`;
-        distanceLabel = `<text class="map-distance" x="${labelX}" y="${labelY + (labelY < 42 ? 21 : -10)}"
-          text-anchor="middle">${html(distance)}</text>`;
-      }
-    }
-    const reportOutline = comparison && carrierUsable ?
-      `<circle class="map-ghost map-report-outline" cx="${x}" cy="${y}" r="8"/>` : "";
-    cursor = `<circle class="map-pulse" cx="${x}" cy="${y}" r="8"/>${reportOutline}
-      <circle class="map-position" cx="${x}" cy="${y}" r="${reportOutline ? 5 : 7}"><title>${html(primary.source)}</title></circle>`;
+    marker = `<circle class="map-pulse" cx="${x}" cy="${y}" r="8"/>
+      <circle class="map-position" cx="${x}" cy="${y}" r="7"><title>${html(primary.callsign ?? primary.source)}</title></circle>`;
   }
 
-  const progressLine = expected ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];
-  const scheduleLabel = expected ? `Schedule estimate ${Number(expected.progress_pct)}%` : "";
-  const caption = tracking.hold ? "Supplier hold. Departure is unconfirmed." : tracking.status === "booked" ?
-    "Booking on file. Departure is unconfirmed." : tracking.status === "arrived_port" && carrierUsable ?
-    `At the ${tracking.terminal} terminal. Waiting for pickup.` : reported?.plausibility === "implausible" ?
-    "The carrier position falls inland. The marker shows the schedule estimate." : tracking.stale && carrierUsable ?
-    "The carrier report is overdue." : "";
-  const distance = differs ? `${trackDistance.format(details.divergence_km)} km apart.` : "";
-  const name = [tracking.origin, tracking.terminal].filter(Boolean).join(" to ");
+  const estimated = primary?.source === "Schedule estimate";
+  const location = mapLocation(primary, stops, tracking.mode);
+  const mode = {air: "air freight", sea: "sea freight", road: "road freight"}[tracking.mode] ?? "shipment";
+  const label = details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1);
+  const arrival = Number.isFinite(Date.parse(details.eta)) ? `, due ${trackDay.format(new Date(details.eta))}` : "";
+  const positionLabel = primary?.simulated ? "simulated" : estimated ? "estimate" : "";
+  const heading = `${label}${arrival}${location ? `, ${location}` : ""}${positionLabel ? ` (${positionLabel})` : ""}`;
+  const progress = estimated ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];
+
+  const reportNote = compareReport ? `<p>${mapObservation(reported)}. ${reported.plausibility === "implausible" ?
+    "Reported position falls inland." : `${trackDistance.format(reportedDistance)} km from the current marker.`}</p>` : "";
+  const vesselNote = context?.status === "pending" ? "<p>Checking live vessel data.</p>" :
+    ["unavailable", "no_position"].includes(context?.status) ? `<p>Live vessel data unavailable${estimated ? ", showing schedule estimate" : ""}.</p>` : "";
+  const carrierNote = !flight && primary && !estimated ? `<p>${mapObservation(primary)}.</p>` : "";
+
   return `<figure class="shipment-map">
-    <svg viewBox="0 0 ${trackWidth} ${trackHeight}" role="img" aria-label="${html(`${name}. ${primary?.source ?? "Scheduled route"}. ${distance} ${caption}`)}">
+    <h4 class="map-heading">${html(heading)}</h4>
+    <svg viewBox="0 0 ${trackWidth} ${trackHeight}" role="img" aria-label="${html(stops.map(stop => stop.name).join(" to "))}">
       <path class="map-grid" d="${grid}"/>
-      <path class="map-land" fill-rule="evenodd" d="${coast(land)}"/>
+      <path class="map-land" fill-rule="evenodd" d="${coast(land ?? [])}"/>
       <polyline class="map-route" points="${polyline(route)}"/>
-      ${progressLine.length ? `<polyline class="map-progress" points="${polyline(progressLine)}"/>` : ""}
-      ${handoff}${traffic}${connector}${plottedStops}${distanceLabel}${cursor}${inset}
+      ${progress.length ? `<polyline class="map-progress" points="${polyline(progress)}"/>` : ""}
+      ${handoff}${plottedStops}${ghosts}${marker}
     </svg>
     <figcaption>
       <div class="map-legend">
-        ${primary ? `<span><i class="map-key position-key"></i><strong>${carrierUsable ? "Carrier report" : scheduleLabel}</strong></span>` : ""}
-        ${comparison ? `<span><i class="map-key ghost-key ${carrierUsable ? "schedule-ghost" : "carrier-ghost"}"></i>
-          ${carrierUsable ? scheduleLabel : "Carrier report"}</span>` : ""}
-        <span><i class="map-key route-key"></i>Scheduled route</span>
-        ${transfer.length ? '<span><i class="map-key transfer-key"></i>Road transfer</span>' : ""}
+        ${primary ? `<span><i class="map-key position-key" aria-hidden="true"></i><strong>${estimated ? "Estimate" : "Position"}</strong></span>` : ""}
+        ${compareReport ? '<span><i class="map-key ghost-key carrier-ghost" aria-hidden="true"></i>Carrier report</span>' : ""}
+        ${candidates.length ? '<span><i class="map-key ghost-key" aria-hidden="true"></i>Possible flight</span>' : ""}
+        <span><i class="map-key route-key" aria-hidden="true"></i>Route</span>
+        ${transfer.length ? '<span><i class="map-key transfer-key" aria-hidden="true"></i>Road leg</span>' : ""}
       </div>
-      ${caption || distance || (confirmedDeparture && reported?.timestamp) ?
-        `<p>${html(caption)} ${html(distance)} ${confirmedDeparture && reported?.timestamp ?
-          `${reported.simulated ? "Simulated carrier update" : "Carrier update"} ${mapTime(reported.timestamp)}.` : ""}</p>` : ""}
-      ${mapPublicCaption(context)}
+      ${mapFlightCaption(flight, primary)}${vesselNote}${carrierNote}${reportNote}
     </figcaption>
   </figure>`;
 }

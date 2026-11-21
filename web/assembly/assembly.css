@@ -195,6 +195,7 @@ img { display: block; max-width: 100%; }
 .premium input { width: 105px; padding: 5px 7px; background: var(--paper); border: 1px solid var(--line); border-radius: 3px; }
 .transport-view { width: min(100%, 720px); margin-top: 13px; }
 .shipment-map { margin: 0; }
+.shipment-map .map-heading { margin: 0 0 7px; font: 700 1rem/1.35 var(--body); }
 .shipment-map svg { display: block; width: 100%; background: var(--map-water); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .shipment-map .map-grid { stroke: var(--wire); stroke-width: .7; opacity: .18; fill: none; }
 .shipment-map .map-land { fill: var(--map-land); stroke: var(--wire); stroke-opacity: .26; stroke-width: .6; }
@@ -217,28 +218,20 @@ img { display: block; max-width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   .shipment-map .map-pulse { animation: none; opacity: .42; transform: scale(1.45); }
 }
-.shipment-map .map-connector { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
 .shipment-map .map-ghost { fill: var(--map-water); fill-opacity: .6; stroke: currentColor; stroke-width: 2.2; }
 .shipment-map .carrier-ghost { color: var(--short); }
-.shipment-map .schedule-ghost { color: var(--verified); }
-.shipment-map .map-report-outline { color: var(--active); }
-.shipment-map .map-public { fill: var(--covered); stroke: var(--sheet); stroke-width: .65; }
+.shipment-map .flight-ghost { color: var(--active); }
 .shipment-map text { font: 700 15px var(--body); fill: var(--ink); stroke: var(--map-water); stroke-width: 4; paint-order: stroke; }
-.shipment-map .map-distance { fill: var(--muted); stroke: var(--map-water); }
-.shipment-map .map-inset-background { fill: var(--map-water); stroke: var(--wire); stroke-opacity: .55; }
-.shipment-map .map-inset-grid { fill: none; stroke: var(--wire); stroke-opacity: .32; }
-.shipment-map .map-inset text { font-size: 13px; }
 .shipment-map figcaption { padding-top: 7px; font-size: .9rem; color: var(--muted); }
 .shipment-map figcaption p { margin-top: 4px; }
-.map-legend { display: flex; flex-wrap: wrap; gap: 3px 13px; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 3px 9px; }
 .map-legend strong { color: var(--ink); }
 .map-key { display: inline-block; width: 15px; margin-right: 5px; color: var(--active); vertical-align: .15em; }
-.map-key.route-key { border-top: 2px solid var(--active); }
+.map-key.route-key { border-top: 2px dashed var(--wire); }
 .map-key.transfer-key { border-top: 2px dotted var(--muted); }
-.map-key.position-key, .map-key.ghost-key, .map-key.public-key { width: 8px; height: 8px; border-radius: 50%; }
+.map-key.position-key, .map-key.ghost-key { width: 8px; height: 8px; border-radius: 50%; }
 .map-key.position-key { background: currentColor; }
 .map-key.ghost-key { border: 1.6px solid currentColor; }
-.map-key.public-key { background: var(--covered); }
 
 .operations { padding: 15px 0 30px; margin-top: 17px; border-top: 1px solid var(--line); scroll-margin-top: 12px; }
 .operations header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 12px; }
@@ -313,10 +306,13 @@ img { display: block; max-width: 100%; }
   .shipment-summary p { font-size: .9rem; }
   .route-picker select { width: 100%; }
   .shipment-map text { font-size: 21px; }
-  .shipment-map .map-inset text { font-size: 17px; }
   .shipment-map figcaption { font-size: .81rem; }
   .info-grid { grid-template-columns: minmax(0,1fr); }
   .process { padding: 12px 0; }
   .process li { font-size: .7rem; }
   .process li img { width: 21px; height: 21px; }
 }
+
+/* OpenAI key problem: plain, visible, not alarming */
+.llm-banner { margin: .4rem 0 .6rem; padding: .55rem .8rem; border-left: 3px solid var(--warn, #f2b300); background: color-mix(in srgb, var(--warn, #f2b300) 12%, transparent); font-size: .9rem; max-width: 80ch; }
+.llm-banner[data-kind="rate_limited"], .llm-banner[data-kind="offline"] { border-left-color: var(--muted, #8fa1a9); background: transparent; }

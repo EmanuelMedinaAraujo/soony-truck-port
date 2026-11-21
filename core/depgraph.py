@@ -57,7 +57,11 @@ def supplier_risks(conn, supplied_parts):
             summaries[f"Release condition — {condition}"] = None
         upstream = SUB_SUPPLIER.search(body)
         export_licence = re.search(r"export.{0,25}licen[cs]|licen[cs].{0,25}export", detail or "", re.I)
-        title = "Export licence" if export_licence else RISK_TYPES[kind]
+        text = " ".join(filter(None, [detail, *summaries])).lower()
+        title = ("Export licence" if export_licence else
+                 "Release pending" if re.search(r"ppap|written release|qualif", text) else
+                 "Downtime" if re.search(r"downtime|maintenance|przest", text) else
+                 "Failed inspection" if re.search(r"inspection|aql|reject", text) else RISK_TYPES[kind])
         detail = " ".join(filter(None, [detail, *summaries]))
         yield supplier, path, title, upstream[1].strip() if upstream else title, detail or None, scoped_parts, (
             "blocked" if kind == "supplier_hold" else "at_risk"
@@ -172,13 +176,18 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
 
         for supplier, path, title, name, detail, scoped_parts, status in supplier_risks(conn, supplied_parts):
             risk = f"risk:{supplier}:{path}"
-            add_node(risk, name, "risk", status, detail, subtitle=title, evidence=path)
+            generic = (name or "").strip().lower() in {"", "supply risk", "risk"}
+            add_node(risk, (title if generic and title else name) or "Supply risk", "risk", status, detail,
+                     subtitle=None if generic else title, evidence=path)
             add_edge(supplier, risk, "supply risk")
             for part in supplied_parts[supplier] & scoped_parts:
                 nodes[part]["status"] = "at_risk"
 
         carrier_names = dict(conn.execute("SELECT carrier_id, name FROM carriers"))
-        for shipment in sorted(evaluation["inbound"], key=lambda row: (row["eta_erp"] or "", row["shipment_id"])):
+        deadline = rules.ts(rules.cfg("deadline"))
+        later = defaultdict(list)  # parent node -> shipments that arrive after launch (collapsed into one node)
+        mode_names = {"sea": "Sea freight", "air": "Air freight", "road": "Truck", "rail": "Rail freight"}
+        for shipment in sorted(evaluation["inbound"], key=lambda row: (row["arrival_at_dc"] or row["eta_erp"] or "", row["shipment_id"])):
             carrying = [part for part in materials if part in shipment["materials"]]
             if not carrying or shipment["status"] in RECEIVED:
                 continue
@@ -186,23 +195,35 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
             held = status in {"held", "blocked", "on_hold", "cancelled"} or any(
                 flag.startswith("supplier hold") for flag in shipment["flags"]
             )
+            stuck = shipment["arrival_at_dc"] is None
+            arrival = rules.ts(shipment["arrival_at_dc"] or shipment["eta_erp"])
+            supplier = shipment["supplier_id"]
+            parent = supplier if supplier in supplied_parts and supplied_parts[supplier].intersection(carrying) else carrying[0]
+            if not stuck and arrival and arrival > deadline and not shipment["planned_for_launch"]:
+                later[parent].append((arrival, shipment))
+                continue
             uncertain = (status in {"booked", "delayed"} or shipment["flags"]
                          or (shipment["planned_for_launch"] and not shipment["makes_cutoff"]))
             shipment_id = shipment["shipment_id"]
-            mode = {"sea": "Sea freight", "air": "Air freight", "road": "Truck", "rail": "Rail freight"}.get(shipment["mode"], "Shipment")
-            arrival = rules.ts(shipment["arrival_at_dc"] or shipment["eta_erp"])
-            label = f"{mode}, {arrival.strftime('%d %b').lstrip('0')}" if arrival else mode
+            mode = mode_names.get(shipment["mode"], "Shipment")
+            if stuck:
+                label = f"{mode}, at the port" if status == "arrived_port" else f"{mode}, held"
+            else:
+                label = f"{mode}, {arrival.strftime('%a %H:%M') if arrival - rules.now() < __import__('datetime').timedelta(days=3) else arrival.strftime('%d %b').lstrip('0')}"
             detail = [status.replace("_", " ").capitalize(), carrier_names.get(shipment["carrier_id"]), *shipment["flags"]]
             if shipment["planned_for_launch"] and shipment["makes_cutoff"] is False:
                 detail.append("Misses the receiving cutoff")
-            add_node(shipment_id, label, "shipment", "blocked" if held else "at_risk" if uncertain else "ok",
-                     ". ".join(filter(None, detail)), code=shipment_id, reference=shipment["reference"])
-            supplier = shipment["supplier_id"]
-            relation = "held shipment" if held else "booked for" if status == "booked" else "on its way"
-            if supplier in supplied_parts and supplied_parts[supplier].intersection(carrying):
-                add_edge(supplier, shipment_id, relation)
-            else:
-                for part in carrying:
-                    add_edge(part, shipment_id, relation)
+            add_node(shipment_id, label, "shipment", "blocked" if held or stuck else "at_risk" if uncertain else "ok",
+                     ". ".join(filter(None, detail)), code=shipment_id, reference=shipment["reference"],
+                     subtitle="Arrives before launch" if not stuck and shipment["makes_cutoff"] else "Inbound shipment")
+            add_edge(parent, shipment_id, "held" if held else "stuck" if stuck else "on its way")
+        for parent, rows in later.items():
+            first, last = rows[0][0], rows[-1][0]
+            span = first.strftime("%d %b").lstrip("0") + ("" if len(rows) == 1 else f" to {last.strftime('%d %b').lstrip('0')}")
+            nid = f"later:{parent}"
+            add_node(nid, f"{len(rows)} later {'delivery' if len(rows) == 1 else 'deliveries'}, {span}", "shipment", "ok",
+                     "Arrive after the trucks leave, so they do not help this launch: " + ", ".join(r[1].get("reference") or r[1]["shipment_id"] for r in rows),
+                     subtitle="After launch")
+            add_edge(parent, nid, "after launch")
 
     return {"nodes": list(nodes.values()), "edges": edges}

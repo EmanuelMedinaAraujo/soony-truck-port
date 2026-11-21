@@ -123,7 +123,7 @@ class Tools:
         pic = {k: {x: v[x] for x in ("packed_est_now", "demand", "todo_now", "hours_left", "slack_copies", "as_of")} for k, v in r["picture"].items()}
         fs = [{k: f[k] for k in ("id", "severity", "title", "detail", "eur_at_risk", "ce_copies", "evidence")} for f in r["findings"][:14]]
         acts = [{k: a[k] for k in ("id", "finding_id", "title", "status", "approver_name")} for a in actions.list_actions(("proposed", "scheduled", "approved", "sent", "escalated", "auto"))]
-        return {"now": r["now"], "launch": pic, "findings": fs, "open_actions": acts}
+        return {"now": r["now"], "launch": pic, "findings": fs, "open_actions": acts, "tracking_questions": tracking_questions()}
 
     def get_dispatch_options(self):
         data = dispatch.snapshot(None)
@@ -211,12 +211,18 @@ SYSTEM = SYSTEM.replace("{cheap}", f"{rules.cfg('cheap_fix_eur'):,}")
 
 
 def run(user_msg: str, on_step=None, model: str | None = None, effort: str = "medium", *, read_only: bool = False) -> str:
+    from core import llm_health
+    llm_health.guard()
     client = OpenAI()
     t = Tools()
     items: list = [{"role": "user", "content": user_msg}]
     tools = [t for t in TOOLS if t["name"] not in {"propose_action", "note_reply"}] if read_only else TOOLS
     for _ in range(MAX_STEPS):
-        resp = client.responses.create(model=model or MODEL, instructions=SYSTEM, input=items, tools=tools, reasoning={"effort": effort})
+        try:
+            resp = client.responses.create(model=model or MODEL, instructions=SYSTEM, input=items, tools=tools, reasoning={"effort": effort})
+        except Exception as e:
+            raise llm_health.record_failure(e) or e
+        llm_health.record_ok()
         items += resp.output
         calls = [o for o in resp.output if o.type == "function_call"]
         if not calls:
@@ -232,9 +238,31 @@ def run(user_msg: str, on_step=None, model: str | None = None, effort: str = "me
     return "Stopped after too many steps."
 
 
+def tracking_questions() -> list[dict]:
+    """Shipments whose live position can't be pinned down: e.g. two flights fit the airports and the window."""
+    try:
+        import time
+        from core import tracking
+        snap = tracking.snapshot(include_public=True)["shipments"]
+        if any((t.get("flight_match") or {}).get("status") == "pending" for t in snap.values()):
+            time.sleep(4)  # live flight lookup runs in the background; give it one short chance (it times out after 3 s)
+            snap = tracking.snapshot(include_public=True)["shipments"]
+    except Exception:
+        return []
+    out = []
+    for sid, t in snap.items():
+        fm = t.get("flight_match") or {}
+        if t.get("needs_flight_number"):
+            out.append({"finding_id": f"flight-{sid}", "shipment_id": sid, "problem": "flight not unique",
+                        "candidates": [{"callsign": c.get("callsign"), "departed_at": c.get("departed_at"), "minutes_from_planned_departure": c.get("departure_offset_minutes")} for c in fm.get("candidates", [])][:4], "route": f"{fm.get('origin_icao')} to {fm.get('destination_icao')}", "simulated": fm.get("simulated"),
+                        "source": fm.get("source"), "ask": "the airline/forwarder (or the supplier who booked it) for the flight number or AWB routing"})
+    return out
+
+
 def plan(on_step=None, model: str | None = None) -> str:
     r = rules.evaluate()
     pending = [f["id"] for f in r["findings"] if f["severity"] in ("critical", "high") and not actions.open_action_for(f["id"])]
+    pending += [q["finding_id"] for q in tracking_questions() if not actions.open_action_for(q["finding_id"])]
     if not pending:
         return "No new findings without an action."
     actions.log_event("agent_plan", None, f"reviewing {len(pending)} findings")

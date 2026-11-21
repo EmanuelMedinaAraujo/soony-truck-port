@@ -117,13 +117,26 @@ def extract_one(client: OpenAI, path: Path) -> tuple[str, str]:
             cached["path"] = rel
             out.write_text(json.dumps(cached, ensure_ascii=False, indent=1))
         return rel, "cached"
-    resp = client.responses.create(
+    from core import llm_health
+    try:
+        resp = _create(client, path, rel)
+    except Exception as e:
+        raise llm_health.record_failure(e) or e
+    llm_health.record_ok()
+    return _store(resp, rel, sha, out)
+
+
+def _create(client, path, rel):
+    return client.responses.create(
         model=MODEL,
         instructions=SYSTEM,
         input=[{"role": "user", "content": content_for(path, rel) + [{"type": "input_text", "text": "Extract the facts."}]}],
         reasoning={"effort": "low"},
         text={"format": {"type": "json_schema", "name": "doc_facts", "schema": SCHEMA, "strict": True}},
     )
+
+
+def _store(resp, rel, sha, out):
     text = resp.output_text
     if not text:
         return rel, "empty"
@@ -160,21 +173,43 @@ def invalidate_unmapped() -> int:
 
 
 def run(limit: int | None = None, workers: int = 8) -> dict:
-    client = OpenAI()
+    from core import llm_health
     docs = documents()[:limit] if limit else documents()
-    stats = {}
+    todo = [p for p in docs if not _cached(p)]
+    stats = {str(p.relative_to(CURRENT)): "cached" for p in docs if p not in todo}
+    if not todo:
+        return stats
+    llm_health.guard()  # raises LLMUnavailable with a plain message when the key is out or paused
+    client = OpenAI()
+    stop = None
     with cf.ThreadPoolExecutor(workers) as ex:
-        futs = {ex.submit(extract_one, client, p): p for p in docs}
+        futs = {ex.submit(extract_one, client, p): p for p in todo}
         for fut in cf.as_completed(futs):
+            rel = str(futs[fut].relative_to(CURRENT))
             try:
                 rel, status = fut.result()
+            except llm_health.LLMUnavailable as e:  # key out of credit / invalid: stop, don't hammer the API
+                stop = stop or e
+                for f in futs:
+                    f.cancel()
+                status = f"paused: {e.kind}"
             except Exception as e:  # one bad document must not stop the rest
-                rel, status = str(futs[fut].relative_to(CURRENT)), f"error: {type(e).__name__}: {e}"
+                status = f"error: {type(e).__name__}: {e}"
             stats[rel] = status
             if status != "cached":
                 print(f"  {status:12} {rel}", flush=True)
+    if stop:
+        raise stop
     return stats
 
+
+def _cached(path: Path) -> bool:
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    out = OUT / f"{sha}.json"
+    try:
+        return out.exists() and json.loads(out.read_text()).get("version") == VERSION
+    except json.JSONDecodeError:
+        return False
 
 if __name__ == "__main__":
     if "--remap" in sys.argv:

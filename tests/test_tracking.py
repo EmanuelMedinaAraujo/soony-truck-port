@@ -1,6 +1,8 @@
 import datetime as dt
 import io
 import json
+from threading import Event
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -76,36 +78,176 @@ def test_air_arc_bows_north_and_road_transfer_starts_at_the_timed_destination():
     assert data["transfer"][1] == tracking.point_of(HAMBURG)
 
 
-def test_opensky_caches_timestamped_aircraft_and_degrades_offline(monkeypatch):
-    stamp = 1_795_291_530
-    calls = []
+@pytest.fixture
+def air_shipment():
+    shipment = {
+        "mode": "air", "origin": "ORD", "destination": "FRA", "dest_site": "DC-HAM",
+        "via": "", "route_via": "", "etd": "2026-11-19T11:00:00+00:00", "eta": "2026-11-20",
+        "carrier_id": "LSP-02", "last_lat": 41.97, "last_lon": -87.90,
+        "status": "in_transit", "updated_at": "2026-11-19T11:00:00+00:00",
+    }
+    places = {
+        "ORD": {"name": "Chicago", "lat": 41.9742, "lon": -87.9073},
+        "ICN": {"name": "Incheon", "lat": 37.4602, "lon": 126.4407},
+        "FRA": {"name": "Frankfurt", "lat": 50.0379, "lon": 8.5622},
+        "DC-HAM": HAMBURG,
+    }
+    now = dt.datetime.fromisoformat("2026-11-19T18:00:00+00:00")
+    return shipment, places, now
 
-    def open_snapshot(url, *, timeout):
-        calls.append(url)
-        return io.BytesIO(json.dumps({"time": stamp, "states": [
-            ["airborne", " Example ", "", stamp - 4, stamp, 8.6, 50.02, None, False],
-            ["ground", "", "", stamp, stamp, 8.6, 50.02, None, True],
-        ]}).encode())
 
+@pytest.fixture
+def opensky(monkeypatch, air_shipment):
+    shipment, _, now = air_shipment
+    etd = int(dt.datetime.fromisoformat(shipment["etd"]).timestamp())
+    stamp = int(now.timestamp())
+    rows, states, calls = [], [], []
+
+    def read(url, *, timeout):
+        assert timeout == 3
+        request = urlparse(url)
+        calls.append((request.path, parse_qs(request.query)))
+        payload = rows if request.path.endswith("/departure") else {"time": stamp, "states": states}
+        return io.BytesIO(json.dumps(payload).encode())
+
+    monkeypatch.delenv("TRACKING_MOCK", raising=False)
+    monkeypatch.delenv("OPENSKY_CLIENT_ID", raising=False)
     monkeypatch.setattr(tracking, "public_cache", {})
     monkeypatch.setattr(tracking.time, "time", lambda: stamp)
-    monkeypatch.setattr(tracking, "urlopen", open_snapshot)
-    live = tracking.opensky_context()
-    assert live["status"] == "live"
-    assert len(live["items"]) == 1
-    assert live["items"][0]["timestamp"] == tracking.utc_iso(stamp - 4)
-    assert live["items"][0]["matched"] is False
-    assert tracking.opensky_context() == live
+    monkeypatch.setattr(tracking, "urlopen", read)
+    return etd, stamp, rows, states, calls
+
+
+def departure(icao24, callsign, timestamp, origin="KORD", destination="EDDF"):
+    return {"icao24": icao24, "callsign": callsign, "firstSeen": timestamp,
+            "estDepartureAirport": origin, "estArrivalAirport": destination}
+
+
+def test_unique_flight_uses_matching_live_position_and_caches_both_requests(air_shipment, opensky):
+    etd, stamp, departures, states, calls = opensky
+    flight = departure("a12345", " GEC8221 ", etd + 60)
+    departures.extend([flight, flight.copy()])
+    states.extend([
+        ["a12345", " GEC8229 ", "", stamp - 1, stamp, 20.0, 55.0, None, False],
+        ["a12345", " GEC8221 ", "", stamp - 4, stamp, 8.6, 50.02, None, False],
+    ])
+
+    result = tracking.shipment_tracking(*air_shipment, include_public=True)
+    assert result["flight_match"]["status"] == "matched"
+    assert result["flight_match"]["candidate_count"] == 1
+    assert not result["needs_flight_number"]
+    assert result["current_position"] == {
+        "lat": 50.02, "lon": 8.6, "callsign": "GEC8221", "source": tracking.OPEN_SKY,
+        "timestamp": tracking.utc_iso(stamp - 4), "simulated": False,
+    }
+    assert tracking.shipment_tracking(*air_shipment, include_public=True) == result
+    assert calls == [
+        ("/api/flights/departure", {"airport": ["KORD"], "begin": [str(etd - 43200)], "end": [str(etd + 43200)]}),
+        ("/api/states/all", {"icao24": ["a12345"]}),
+    ]
+
+
+def test_ambiguous_flights_are_ranked_and_need_flight_number(air_shipment, opensky):
+    etd, stamp, departures, states, calls = opensky
+    departures.extend([
+        departure("a12345", "GEC8221", etd - 600),
+        departure("a12346", "GTI8314", etd + 120),
+    ])
+    states.extend([
+        ["a12345", "GEC8221", "", stamp - 4, stamp, -30, 52.0, None, False],
+        ["a12346", "GTI8314", "", stamp - 8, stamp, -60, 52.0, None, False],
+    ])
+
+    result = tracking.shipment_tracking(*air_shipment, include_public=True)
+    flight = result["flight_match"]
+    assert flight["status"] == "ambiguous"
+    assert flight["candidate_count"] == 2
+    assert flight["needs_flight_number"] and result["needs_flight_number"]
+    assert [c["callsign"] for c in flight["candidates"]] == ["GTI8314", "GEC8221"]
+    assert [c["departure_offset_minutes"] for c in flight["candidates"]] == [2, -10]
+    assert all(c["position"] for c in flight["candidates"])
+    assert result["current_position"] == result["expected"]
+    assert calls[-1] == ("/api/states/all", {"icao24": ["a12345", "a12346"]})
+
+
+def test_wrong_airports_and_departure_times_fall_back_to_schedule(air_shipment, opensky):
+    etd, _, departures, _, calls = opensky
+    departures.extend([
+        departure("a12345", "GEC8221", etd, destination="EDDM"),
+        departure("a12346", "GTI8314", etd, origin="KJFK"),
+        departure("a12347", "GEC8223", etd, destination=None),
+        departure("a12348", "GEC8225", etd + 43201),
+    ])
+
+    result = tracking.shipment_tracking(*air_shipment, include_public=True)
+    assert result["flight_match"]["status"] == "no_match"
+    assert not result["flight_match"]["candidates"]
+    assert not result["needs_flight_number"]
+    assert result["current_position"] == result["expected"]
     assert len(calls) == 1
 
-    def offline(*_, **__):
-        raise OSError("offline")
 
-    tracking.public_cache.clear()
-    monkeypatch.setattr(tracking, "urlopen", offline)
-    assert tracking.opensky_context()["status"] == "unavailable"
-    monkeypatch.delenv("AIS_API_KEY", raising=False)
-    assert tracking.ais_context(None, None, None)["status"] == "not_connected"
+def test_known_operator_filters_callsigns_and_old_flights_cannot_reuse_positions(air_shipment, opensky):
+    shipment, _, _ = air_shipment
+    shipment["carrier"] = "Lufthansa Cargo"
+    etd, stamp, departures, states, _ = opensky
+    departures.extend([
+        departure("a12345", "GTI8314", etd),
+        {**departure("a12346", "GEC8221", etd), "lastSeen": stamp - 3600},
+    ])
+    states.append(["a12346", "GEC8221", "", stamp - 1, stamp, 8.6, 50.02, None, False])
+
+    result = tracking.shipment_tracking(*air_shipment, include_public=True)
+    assert result["flight_match"]["status"] == "matched"
+    assert result["flight_match"]["candidates"][0]["callsign"] == "GEC8221"
+    assert result["flight_match"]["candidates"][0]["position"] is None
+    assert result["current_position"] == result["expected"]
+
+
+@pytest.mark.parametrize("source_status", ["mock", "no_data", "unavailable"])
+def test_simulated_air_source_covers_both_outcomes(monkeypatch, air_shipment, opensky, source_status):
+    shipment, places, now = air_shipment
+    if source_status == "mock":
+        monkeypatch.setenv("TRACKING_MOCK", "1")
+    if source_status == "unavailable":
+        def offline(*_, **__):
+            raise TimeoutError("offline")
+
+        monkeypatch.setattr(tracking, "urlopen", offline)
+    now += dt.timedelta(days=1)
+
+    unique = tracking.shipment_tracking(shipment, places, now, include_public=True)
+    ambiguous = tracking.shipment_tracking({**shipment, "origin": "ICN"}, places, now, include_public=True)
+    assert unique["flight_match"]["status"] == "matched"
+    assert unique["flight_match"]["source_status"] == source_status
+    assert unique["current_position"]["simulated"]
+    assert ambiguous["flight_match"]["status"] == "ambiguous"
+    assert ambiguous["flight_match"]["simulated"]
+    assert ambiguous["needs_flight_number"]
+    assert [c["callsign"] for c in ambiguous["flight_match"]["candidates"]] == ["KAL529", "GEC8471"]
+    assert ambiguous["current_position"] == ambiguous["expected"]
+    if source_status == "mock":
+        assert not opensky[-1]
+
+
+def test_background_tracking_returns_schedule_while_provider_is_pending(monkeypatch, air_shipment, opensky):
+    release = Event()
+    read = tracking.urlopen
+
+    def delayed(*args, **kwargs):
+        assert release.wait(3)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(tracking, "urlopen", delayed)
+    try:
+        result = tracking.shipment_tracking(*air_shipment, include_public=True, background=True)
+        assert result["flight_match"]["status"] == "pending"
+        assert result["current_position"] == result["expected"]
+    finally:
+        release.set()
+
+    assert tracking.shipment_tracking(*air_shipment, include_public=True)["flight_match"]["simulated"]
+    assert len(opensky[-1]) == 1
 
 
 @pytest.mark.parametrize("mmsi, imo", [("123456789", None), (None, "IMO 1234567")])

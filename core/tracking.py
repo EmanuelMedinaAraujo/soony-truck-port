@@ -1,4 +1,4 @@
-"""Carrier reports, schedule estimates, and public traffic around a shipment route."""
+"""Carrier reports, schedule estimates, and shipment-specific flight and vessel tracking."""
 from __future__ import annotations
 
 import datetime as dt
@@ -7,13 +7,14 @@ import math
 import os
 import sqlite3
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from core import rules
 from core.dispatch import coordinates
@@ -21,10 +22,32 @@ from core.dispatch import coordinates
 Point = tuple[float, float]  # longitude, latitude (GeoJSON order)
 SINGAPORE = {"name": "Singapore", "lat": 1.1714, "lon": 103.8611}
 AGREEMENT_KM = 25
-PUBLIC_CACHE_SECONDS = 240  # One OpenSky credit per snapshot, up to 360 per day.
+PUBLIC_CACHE_SECONDS = 240
+PUBLIC_TIMEOUT = 3
 OPEN_SKY = "OpenSky Network"
 AIS_STREAM = "AIS Stream"
-FRANKFURT = (8.5622, 50.0379)
+SIMULATED_FLIGHTS = "Simulated flight data"
+AIRPORT_ICAO = {"ICN": "RKSI", "ORD": "KORD", "FRA": "EDDF", "BOM": "VABB", "CAN": "ZGGG"}
+DEPARTURE_WINDOW = 12 * 3600
+MAX_FLIGHT_CANDIDATES = 3
+CARGO_CARRIERS = {
+    "lufthansa cargo": ("GEC",),
+    "atlas air": ("GTI",),
+    "cargolux": ("CLX",),
+    "korean air cargo": ("KAL",),
+    "air india cargo": ("AIC",),
+    "china southern cargo": ("CSN",),
+}
+CARGO_PREFIXES = tuple(prefix for prefixes in CARGO_CARRIERS.values() for prefix in prefixes)
+
+# Callsign, hours from the shipment ETD, flight duration, and fraction at the
+# last simulated position report. The forwarder in the demo uses several airlines.
+MOCK_FLIGHTS = {
+    ("RKSI", "EDDF"): (("KAL529", 1, 13, 0.44), ("GEC8471", -3, 13, 0.77)),
+    ("KORD", "EDDF"): (("GEC8221", 2, 9, 0.62),),
+    ("VABB", "EDDF"): (("GEC7571", 2, 9, 0.60),),
+    ("ZGGG", "EDDF"): (("CSN465", 3, 13, 0.65),),
+}
 
 
 def point_of(place: dict) -> Point:
@@ -194,50 +217,216 @@ def reported_position(shipment: dict, stops: list[dict]) -> dict | None:
 
 public_lock = Lock()
 public_cache: dict[tuple, tuple[float, dict]] = {}
+public_pending: dict[tuple, Future] = {}
+public_workers = ThreadPoolExecutor(max_workers=6, thread_name_prefix="tracking")
+token_lock = Lock()
+opensky_token = ("", 0.0)
 
 
 def public_context(source: str, status: str, items: list | None = None, timestamp: str | None = None) -> dict:
     return {"source": source, "status": status, "timestamp": timestamp, "items": items or []}
 
 
+def cached_public(key: tuple, fetch, *, background: bool) -> dict:
+    def refresh() -> dict:
+        try:
+            result = fetch()
+            with public_lock:
+                retry = result.pop("retry_after", 0)
+                public_cache[key] = time.monotonic() + max(PUBLIC_CACHE_SECONDS, retry), result
+            return result
+        finally:
+            with public_lock:
+                public_pending.pop(key, None)
+
+    with public_lock:
+        expires, cached = public_cache.get(key, (0, None))
+        if time.monotonic() < expires:
+            return cached
+        future = public_pending.get(key)
+        if future is None:
+            future = public_workers.submit(refresh)
+            public_pending[key] = future
+    return public_context(key[0], "pending") if background else future.result()
+
+
 def utc_iso(timestamp: float) -> str:
     return dt.datetime.fromtimestamp(timestamp, dt.UTC).isoformat(timespec="seconds")
 
 
-def opensky_context() -> dict:
-    with public_lock:
-        key = (OPEN_SKY,)
-        expires, cached = public_cache.get(key, (0, None))
-        if time.monotonic() < expires:
-            return cached
-        query = urlencode({"lamin": 48.8, "lomin": 6.5, "lamax": 51.3, "lomax": 10.6})
-        retry = PUBLIC_CACHE_SECONDS
+def opensky_request(path: str, query: dict) -> dict:
+    try:
+        url = f"https://opensky-network.org/api/{path}?{urlencode(query, doseq=True)}"
+        token = opensky_access_token()
+        request = Request(url, headers={"Authorization": f"Bearer {token}"}) if token else url
+        with urlopen(request, timeout=PUBLIC_TIMEOUT) as response:
+            data = json.load(response)
+        if path == "flights/departure":
+            if not isinstance(data, list):
+                return {"status": "unavailable"}
+            return {"status": "available" if data else "no_data", "data": data}
+        if not isinstance(data, dict) or not isinstance(data.get("time"), (int, float)):
+            return {"status": "unavailable"}
+        states = data.get("states")
+        if states is not None and not isinstance(states, list):
+            return {"status": "unavailable"}
+        return {"status": "available" if states else "no_data", "data": data}
+    except HTTPError as error:
         try:
-            with urlopen(f"https://opensky-network.org/api/states/all?{query}", timeout=3) as response:
-                data = json.load(response)
-            fetched_at = data["time"]
-            aircraft = []
-            for state in data.get("states") or []:
-                if len(state) < 9 or state[3] is None or state[8] or fetched_at - state[3] > 60:
-                    continue
-                position = coordinates(state[6], state[5])
-                if position:
-                    aircraft.append({
-                        **position, "kind": "aircraft", "id": state[0], "name": (state[1] or state[0]).strip(),
-                        "source": OPEN_SKY, "timestamp": utc_iso(state[3]), "matched": False,
-                    })
-            aircraft.sort(key=lambda item: distance_km(point_of(item), FRANKFURT))
-            status = "stale" if time.time() - fetched_at > PUBLIC_CACHE_SECONDS else "live"
-            result = public_context(OPEN_SKY, status, aircraft[:24], utc_iso(fetched_at))
-        except HTTPError as error:
             delay = (error.headers or {}).get("X-Rate-Limit-Retry-After-Seconds", "")
-            retry = max(retry, int(delay)) if delay.isdecimal() else retry
+            return {"status": "no_data" if error.code == 404 else "unavailable",
+                    "retry_after": int(delay) if delay.isdecimal() else 0}
+        finally:
             error.close()
-            result = public_context(OPEN_SKY, "unavailable")
-        except (OSError, ValueError, TypeError, KeyError, OverflowError):
-            result = public_context(OPEN_SKY, "unavailable")
-        public_cache[key] = time.monotonic() + retry, result
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        return {"status": "unavailable"}
+
+
+def opensky_access_token() -> str:
+    global opensky_token
+    client_id, client_secret = os.getenv("OPENSKY_CLIENT_ID"), os.getenv("OPENSKY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return ""
+    with token_lock:
+        token, expires = opensky_token
+        if time.monotonic() < expires:
+            return token
+        form = urlencode({"grant_type": "client_credentials", "client_id": client_id,
+                          "client_secret": client_secret}).encode()
+        url = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+        with urlopen(Request(url, data=form), timeout=PUBLIC_TIMEOUT) as response:
+            payload = json.load(response)
+        token = payload["access_token"]
+        opensky_token = token, time.monotonic() + max(0, float(payload["expires_in"]) - 60)
+        return token
+
+
+def mock_departures(origin: str, destination: str, etd: int, now: float, line: tuple[Point, ...]) -> list[dict]:
+    departures = []
+    for index, (callsign, offset, duration, fraction) in enumerate(MOCK_FLIGHTS.get((origin, destination), ())):
+        departure = etd + offset * 3600
+        if departure > now:
+            continue
+        observed = min(now, departure + duration * 3600 * fraction)
+        position = None
+        if line:
+            (lon, lat), _ = position_along(line, (observed - departure) / (duration * 3600))
+            position = {"lat": lat, "lon": lon, "timestamp": utc_iso(observed),
+                        "source": SIMULATED_FLIGHTS, "simulated": True}
+        departures.append({
+            "icao24": f"mock-{index + 1}", "callsign": callsign, "firstSeen": departure,
+            "estDepartureAirport": origin, "estArrivalAirport": destination, "position": position,
+        })
+    return departures
+
+
+def ranked_departures(rows: list, origin: str, destination: str, etd: int, prefixes: tuple) -> list[dict]:
+    candidates = {}
+    for row in rows:
+        if not isinstance(row, dict) or (row.get("estDepartureAirport"), row.get("estArrivalAirport")) != (origin, destination):
+            continue
+        departed = row.get("firstSeen")
+        if type(departed) is not int or abs(departed - etd) > DEPARTURE_WINDOW:
+            continue
+        icao24 = row.get("icao24")
+        callsign = row.get("callsign")
+        if not isinstance(icao24, str) or not icao24.strip():
+            continue
+        callsign = callsign.strip().upper() if isinstance(callsign, str) else ""
+        if prefixes and not callsign.startswith(prefixes):
+            continue
+        flight = {**row, "icao24": icao24.strip().lower(), "callsign": callsign}
+        candidates.setdefault((flight["icao24"], departed), flight)
+    return sorted(candidates.values(), key=lambda flight: (
+        abs(flight["firstSeen"] - etd), not flight["callsign"].startswith(CARGO_PREFIXES),
+        flight["firstSeen"], flight["icao24"],
+    ))
+
+
+def flight_position(flight: dict, data: dict) -> dict | None:
+    fetched = data["time"]
+    if not math.isfinite(fetched) or not -30 <= time.time() - fetched <= PUBLIC_CACHE_SECONDS:
+        return None
+    for state in data.get("states") or []:
+        if not isinstance(state, list) or len(state) < 9 or state[0] != flight["icao24"]:
+            continue
+        callsign, observed = state[1], state[3]
+        if not isinstance(callsign, str) or not flight["callsign"] or callsign.strip().upper() != flight["callsign"]:
+            continue
+        if (type(observed) is not int or observed < flight["firstSeen"] or not 0 <= fetched - observed <= 60):
+            continue
+        # Aircraft and callsigns can be reused on later departures.
+        arrived = flight.get("lastSeen")
+        if type(arrived) is int and observed > arrived + 15 * 60:
+            continue
+        if not all(type(value) in (int, float) for value in (state[5], state[6])):
+            continue
+        position = coordinates(state[6], state[5])
+        if position:
+            return {**position, "source": OPEN_SKY, "timestamp": utc_iso(observed), "simulated": False}
+    return None
+
+
+def match_flights(shipment: dict, now: dt.datetime, line: tuple[Point, ...], *, background: bool = False) -> dict:
+    origin, destination = (AIRPORT_ICAO.get(str(shipment[key]).strip().upper()) for key in ("origin", "destination"))
+    try:
+        departure = rules.ts(shipment["etd"])
+    except ValueError:
+        departure = None
+    result = {
+        "status": "no_match", "origin_icao": origin, "destination_icao": destination,
+        "source": OPEN_SKY, "source_status": "no_data", "simulated": False,
+        "candidate_count": 0, "candidates": [], "needs_flight_number": False,
+    }
+    if not (origin and destination and departure):
         return result
+
+    etd = int(departure.timestamp())
+    now = now if now.tzinfo else now.replace(tzinfo=rules.TZ)
+    mock = os.getenv("TRACKING_MOCK") == "1"
+    if mock:
+        source_status, rows = "mock", []
+    else:
+        key = OPEN_SKY, "departure", origin, etd
+        query = {"airport": origin, "begin": etd - DEPARTURE_WINDOW, "end": etd + DEPARTURE_WINDOW}
+        response = cached_public(key, lambda: opensky_request("flights/departure", query), background=background)
+        source_status, rows = response["status"], response.get("data", [])
+    result["source_status"] = source_status
+    if source_status == "pending":
+        return {**result, "status": "pending"}
+
+    simulated = mock or source_status in ("no_data", "unavailable")
+    if simulated:
+        rows = mock_departures(origin, destination, etd, now.timestamp(), line)
+        result.update(source=SIMULATED_FLIGHTS, simulated=True)
+    carrier = shipment.get("carrier") or shipment.get("carrier_id") or ""
+    prefixes = CARGO_CARRIERS.get(carrier.strip().lower(), ())
+    flights = ranked_departures(rows, origin, destination, etd, prefixes)
+    if not flights:
+        return result
+
+    result.update(status="matched" if len(flights) == 1 else "ambiguous",
+                  candidate_count=len(flights), needs_flight_number=len(flights) > 1)
+    top = flights[:MAX_FLIGHT_CANDIDATES]
+    position_status = "available" if simulated else "no_data"
+    states = None
+    if not simulated:
+        icao24 = tuple(sorted({flight["icao24"] for flight in top}))
+        key = OPEN_SKY, "states", icao24
+        response = cached_public(key, lambda: opensky_request("states/all", {"icao24": icao24}), background=background)
+        position_status, states = response["status"], response.get("data")
+
+    for flight in top:
+        position = flight.get("position") if simulated else flight_position(flight, states) if states else None
+        callsign = flight["callsign"] or flight["icao24"]
+        if position:
+            position = {**position, "callsign": callsign}
+        result["candidates"].append({
+            "icao24": flight["icao24"], "callsign": callsign, "departed_at": utc_iso(flight["firstSeen"]),
+            "departure_offset_minutes": (flight["firstSeen"] - etd) / 60, "position": position,
+        })
+    result["position_status"] = position_status
+    return result
 
 
 def _read_ais(key: str, mmsi: str, imo: str, center: Point) -> dict:
@@ -259,9 +448,9 @@ def _read_ais(key: str, mmsi: str, imo: str, center: Point) -> dict:
     if mmsi:
         subscription["FiltersShipMMSI"] = [mmsi]
     try:
-        with connect("wss://stream.aisstream.io/v0/stream", open_timeout=2, close_timeout=0.2) as socket:
+        with connect("wss://stream.aisstream.io/v0/stream", open_timeout=1, close_timeout=0.2) as socket:
             socket.send(json.dumps(subscription))
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + 1.5
             while (remaining := deadline - time.monotonic()) > 0:
                 message = json.loads(socket.recv(timeout=remaining))
                 if message.get("error"):
@@ -283,12 +472,12 @@ def _read_ais(key: str, mmsi: str, imo: str, center: Point) -> dict:
                         return public_context(AIS_STREAM, "live", [item], timestamp)
     except TimeoutError:
         return public_context(AIS_STREAM, "no_position")
-    except (OSError, WebSocketException, ValueError, TypeError):
+    except (OSError, WebSocketException, ValueError, TypeError, AttributeError, KeyError):
         return public_context(AIS_STREAM, "unavailable")
     return public_context(AIS_STREAM, "no_position")
 
 
-def ais_context(mmsi: str | None, imo: str | None, center: Point | None) -> dict:
+def ais_context(mmsi: str | None, imo: str | None, center: Point | None, *, background: bool = False) -> dict:
     key = os.getenv("AIS_API_KEY")
     if not key:
         return public_context(AIS_STREAM, "not_connected")
@@ -299,17 +488,10 @@ def ais_context(mmsi: str | None, imo: str | None, center: Point | None) -> dict
         return public_context(AIS_STREAM, "missing_identity")
     if not center:
         return public_context(AIS_STREAM, "no_position")
-    with public_lock:
-        cache_key = AIS_STREAM, mmsi, imo
-        expires, cached = public_cache.get(cache_key, (0, None))
-        if time.monotonic() < expires:
-            return cached
-        result = _read_ais(key, mmsi, imo, center)
-        public_cache[cache_key] = time.monotonic() + PUBLIC_CACHE_SECONDS, result
-        return result
+    return cached_public((AIS_STREAM, mmsi, imo), lambda: _read_ais(key, mmsi, imo, center), background=background)
 
 
-def shipment_tracking(shipment: dict, places: dict, now: dt.datetime, include_public: bool) -> dict:
+def shipment_tracking(shipment: dict, places: dict, now: dt.datetime, include_public: bool, *, background: bool = False) -> dict:
     mode = shipment["mode"]
     via = shipment["via"] or shipment["route_via"]
     origin, destination = shipment["origin"], shipment["destination"]
@@ -335,15 +517,26 @@ def shipment_tracking(shipment: dict, places: dict, now: dt.datetime, include_pu
     site = places.get(shipment["dest_site"])
     transfer = [point_of(places[destination]), point_of(site)] if mode == "air" and site and line else []
     context = None
-    if include_public and mode == "air" and destination == "FRA":
-        context = opensky_context()
+    flight_match = match_flights(shipment, now, line, background=background) if include_public and mode == "air" else None
+    current = expected
+    if flight_match and flight_match["status"] == "matched":
+        current = flight_match["candidates"][0]["position"] or expected
+    if mode != "air" and reported and reported["plausibility"] == "plausible":
+        current = reported
     if include_public and mode == "sea":
         center = expected or places.get(destination)
-        context = ais_context(shipment.get("vessel_mmsi"), shipment.get("vessel_imo"), point_of(center) if center else None)
+        context = ais_context(shipment.get("vessel_mmsi"), shipment.get("vessel_imo"),
+                              point_of(center) if center else None, background=background)
+        if context["items"]:
+            current = context["items"][0]
+        elif context["status"] in ("unavailable", "no_position", "pending"):
+            current = expected or current
     return {
         "route": line, "route_source": route_source, "stops": stops, "transfer": transfer,
         "transfer_destination": site if transfer else None, "reported": reported, "expected": expected,
         "divergence_km": divergence, "verdict": verdict, "public_context": context,
+        "eta": shipment["eta"], "current_position": current, "flight_match": flight_match,
+        "needs_flight_number": bool(flight_match and flight_match["needs_flight_number"]),
     }
 
 
@@ -359,8 +552,16 @@ def snapshot(db_path: Path = rules.DB_PATH, *, include_public: bool = True) -> d
         }
         places.setdefault("SGSIN", SINGAPORE)
         shipments = [dict(row) for row in conn.execute(
-            "SELECT s.*, r.via AS route_via FROM shipments s LEFT JOIN routes r USING (route_id)"
+            "SELECT s.*, r.via AS route_via, c.name AS carrier FROM shipments s "
+            "LEFT JOIN routes r USING (route_id) LEFT JOIN carriers c ON c.carrier_id = s.carrier_id"
         )]
-    return {"as_of": now.isoformat(), "shipments": {
-        row["shipment_id"]: shipment_tracking(row, places, now, include_public) for row in shipments
-    }}
+        components = dict(conn.execute("SELECT component_id, description FROM components"))
+    details = {}
+    for shipment in shipments:
+        materials = (shipment["material_ids"] or "").split("|")
+        cargo = "Mixed" if len(materials) > 1 else rules.plain(components.get(materials[0]))
+        cargo = " ".join(word if index == 0 or word.isupper() else word.lower()
+                         for index, word in enumerate(cargo.split()))
+        item = shipment_tracking(shipment, places, now, include_public, background=True)
+        details[shipment["shipment_id"]] = {**item, "cargo": cargo}
+    return {"as_of": now.isoformat(), "shipments": details}

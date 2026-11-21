@@ -64,7 +64,7 @@ class PartGraphTest(unittest.TestCase):
         self.assertEqual(risk["subtitle"], "Export licence")
         self.assertEqual(risk["status"], "blocked")
         self.assertIn(("SUP-0029", risk["id"], "supply risk"), edges)
-        self.assertIn(("SUP-0029", "ship-box", "on its way"), edges)
+        self.assertIn(("SUP-0029", "later:SUP-0029", "after launch"), edges)  # after-launch deliveries collapse per supplier
         self.assertNotIn("ship-case", nodes)
         self.assertNotIn("ship-delivered", nodes)
 
@@ -72,7 +72,7 @@ class PartGraphTest(unittest.TestCase):
         graph = part_graph("CMP-MAG-005", self.db)
         nodes = {node["id"]: node for node in graph["nodes"]}
         self.assertEqual(nodes["CMP-GAM-007"]["kind"], "assembly")
-        self.assertIn("ship-box", nodes)
+        self.assertIn("later:SUP-0029", nodes)
 
     def test_part_specific_risk_is_not_applied_to_another_part_from_same_supplier(self):
         graph = part_graph("CMP-GAM-003", self.db)

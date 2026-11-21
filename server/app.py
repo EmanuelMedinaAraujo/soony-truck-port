@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "sync"))
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
@@ -48,6 +48,22 @@ def notify_action(result: dict) -> None:
         a = actions.get(aid)
         kind = {"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed")
         notify(kind, {"action": a})
+
+
+def llm_paused(e) -> None:
+    """The OpenAI key failed: remember to re-plan later, tell people once, keep everything else running."""
+    from core import llm_health
+    STATE["llm_pending"] = True
+    st = llm_health.status()
+    if st.get("new", True):
+        actions.log_event("llm_paused", None, str(e))
+        notify("llm_down", {"message": str(e), "kind": getattr(e, "kind", "")})
+        try:
+            import json as _j
+            st["new"] = False
+            llm_health.STATUS.write_text(_j.dumps(st, indent=1))
+        except Exception:
+            pass
 
 
 def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
@@ -82,7 +98,11 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                 for rc in (e.get("row_changes") or [])[:20]:
                     actions.log_event("row_change", rc.get("key"), f"{e['path'].split('/')[-1]}: {rc['kind']} {json.dumps(rc.get('fields') or {}, ensure_ascii=False)[:200]}")
             notify("data_drop", {"paths": paths})
-        if events or force_plan or not rules.DB_PATH.exists():
+        from core import llm_health
+        retry_llm = STATE.get("llm_pending") and llm_health.available()
+        if events or force_plan or retry_llm or not rules.DB_PATH.exists():
+          try:
+            STATE["llm_pending"] = False
             STATE["busy"] = "rebuild"
             ingest.build()
             if os.environ.get("OPENAI_API_KEY"):
@@ -108,6 +128,8 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
 
                 STATE["agent_summary"] = agent.plan(progress, model=plan_model)
                 actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
+          except llm_health.LLMUnavailable as e:
+            llm_paused(e)
         if os.environ.get("IMAP_HOST"):
             try:
                 STATE["busy"] = "reading supplier replies"
@@ -126,6 +148,8 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                             notify_action(out)
                     STATE["reply_summary"] = agent.handle_replies(rprog)
                     actions.log_event("agent_replies_done", None, (STATE["reply_summary"] or "")[:300])
+            except llm_health.LLMUnavailable as e:
+                llm_paused(e)
             except Exception as e:
                 STATE["inbox_error"] = type(e).__name__
                 actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
@@ -190,7 +214,8 @@ def _compact_state() -> dict:
         "findings": r["findings"],
         "actions": actions.list_actions(),
         "events": ev,
-        "system": {**STATE, "files": n_files, "conflicts": n_conf, "docs_read": n_docs, "poll_seconds": POLL_SECONDS},
+        "system": {**STATE, "files": n_files, "conflicts": n_conf, "docs_read": n_docs, "poll_seconds": POLL_SECONDS,
+                   "llm": __import__("core.llm_health", fromlist=["status"]).status()},
     }
 
 
@@ -246,7 +271,11 @@ class Ask(BaseModel):
 @app.post("/api/chat")
 def chat(a: Ask):
     steps = []
-    ans = agent.chat(a.q, lambda n, args, out: steps.append({"tool": n, "args": args}))
+    from core import llm_health
+    try:
+        ans = agent.chat(a.q, lambda n, args, out: steps.append({"tool": n, "args": args}))
+    except llm_health.LLMUnavailable as e:
+        return JSONResponse({"answer": str(e), "steps": [], "error": e.kind}, status_code=503)
     actions.log_event("chat", None, a.q[:200])
     return {"answer": ans, "steps": steps}
 

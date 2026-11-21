@@ -63,7 +63,7 @@ class Bot(discord.Client):
             try:
                 ans = await asyncio.to_thread(agent.chat, question)
             except Exception as e:
-                ans = f"Dockside could not answer: {type(e).__name__}. Try again, or ask in the web control room."
+                ans = str(e) if type(e).__name__ == "LLMUnavailable" else f"Dockside could not answer: {type(e).__name__}. Try again, or ask in the web control room."
             await inter.followup.send(f"**{question}**\n{ans}"[:1990])
 
         @self.tree.command(name="status", description="Money at risk and decisions waiting")
@@ -154,6 +154,8 @@ def start(listeners: list, decide_fn) -> Bot | None:
         elif ev["kind"] == "reply":
             r = ev["reply"]
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Reply from **{r['from_name']}**: {r['subject']}. Dockside is reading it."), loop)
+        elif ev["kind"] == "llm_down":
+            asyncio.run_coroutine_threadsafe(bot.post_text(f"Agent paused: {ev['message']}"), loop)
         elif ev["kind"] == "data_drop":
             names = ", ".join(p.split("/")[-1] for p in ev["paths"][:5])
             asyncio.run_coroutine_threadsafe(bot.post_text(f"New data on the portal: {names}. Re-planning now."), loop)
