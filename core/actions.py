@@ -174,7 +174,7 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
     from core import release
 
     payload = dict(payload or {})
-    for key in ("signatures", "commitment_digest", "repeat_commitment", "held_reason"):
+    for key in ("signatures", "commitment_digest", "repeat_commitment", "held_reason", "confirmation_evidence"):
         payload.pop(key, None)
     aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     intent = release.instruction_kind(kind, messages)

@@ -42,9 +42,106 @@ Dockside classifies the action kind, subject, draft and translation for signs of
 
 For a repeat, reference the original signed and sent action with `repeat_action_id`. Dockside reuses its commitment ID, recipient and terms, and marks the message as a repeat of the existing instruction. Historical outbound instructions without signed typed terms need a fresh review before they can be repeated. A second initial instruction for the same commitment is held when the first was sent or delivery is uncertain.
 
-The cycle syncs portal files and polls the supplier mailbox before dispatch. Both checks must have succeeded within `release_max_age_minutes`. A failed refresh invalidates that source immediately. The gate checks the current supplier, offer, PO line and latest replies. A carrier or dock confirmation must come through a sent message linked to the same `delivery_id`. `GET /api/dispatch` exposes the signature digest, hold reason, evidence needed to clear it and the person or team responsible. Expired and superseded decisions have no approval controls.
+The cycle syncs portal files and polls the supplier mailbox before dispatch. Both checks must have succeeded within `release_max_age_minutes`. A failed refresh or rebuild invalidates that source immediately. An ingest issue tied to the supplier, part, PO or delivery also makes the evidence stale. The gate checks the current supplier, offer, PO line and latest replies.
+
+Send confirmation inquiries with the signed `delivery_id` and the relevant `confirmation_kind` (`book_truck` or `dock_slot`). The carrier or supplier logistics reply must confirm a booking reference and an ETA within the signed deadline. The site lead or deputy must confirm a dock window that covers that ETA. Use an ISO date or weekday and 24-hour times in replies, for example `Carrier confirmed booking WT-123, ETA Sun 10:30` and `Dock slot confirmed for Sun 07:00–12:00`. A clock-only ETA uses the signed delivery date. A clock-only slot uses the carrier's ETA date. Times without a zone use the configured site timezone.
+
+Set `release_carrier_contacts.value` to a map of delivery IDs to verified carrier email addresses. Use `release_supplier_logistics_contacts.value` to map supplier IDs to verified logistics addresses that can confirm that supplier's deliveries. Each map accepts one address or a list for each key. Dockside takes site contacts from the site lead and deputy roles in `people.value` and matches their addresses in `staff_email.value`.
+
+`GET /api/dispatch` exposes the signature digest, matched confirmation evidence, hold reason and the person or team responsible. Expired and superseded decisions have no approval controls.
 
 Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins under `staff_accounts.value`, Discord user IDs under `staff_discord_accounts.value`, and separately controlled mailboxes under `staff_email.value`. A joint approval waits for every assigned signer. To enable local demo approval, set `demo_local_operator.value` to one assigned person's name. Paid commitments are delivered by email.
+
+## Release gate replay
+
+```sh
+.venv/bin/python examples/replay_gate.py
+```
+
+This offline replay reconstructs the historical rush offer and the 02:07 supplier acceptance in temporary SQLite databases. It uses example email addresses, a fixed launch clock and an in-memory SMTP capture. The buyer signatures, carrier booking and receiving reply are replay inputs. The order keeps its historical emergency reference while the buyer's PO number is outstanding.
+
+```text
+ACT-F74B32 · Karton Nowak · 8,000 art books · €16,800 DAP Hamburg
+
+Dockside commitment
+{
+  "commitment_id": "COM-B14FD3555F7513A5C757",
+  "conditions": [
+    "dock_slot_confirmed",
+    "transport_confirmed"
+  ],
+  "currency": "EUR",
+  "deliver_by": "2026-11-22T12:00:00+01:00",
+  "delivery_id": "ART-BOOKS-20261122",
+  "delivery_place": "Hamburg",
+  "emergency_reference": "ACT-F74B32",
+  "incoterm": "DAP",
+  "instruction": "order",
+  "language": "en",
+  "latest_useful_at": "2026-11-22T03:00:00+01:00",
+  "part": "CMP-GAM-008",
+  "po": null,
+  "po_line": null,
+  "quantity": 8000,
+  "recipient": "orders@karton-nowak.example",
+  "supplier_id": "SUP-0028",
+  "total_price": 16800.0,
+  "unit_price": 2.1,
+  "valid_until": "2026-11-22",
+  "version": 1
+}
+Approval digest: 8afe7b4bef8e8a0c03b772bab619c1e2030d69ef26abf5ca08cb530eeb8d9ea2
+
+00:14 HELD — verified approval for these exact terms is missing
+  Carrier booking and ETA: no linked reply from an authorized contact
+  Dock slot: no linked reply from an authorized contact
+
+02:07 HISTORICAL EVIDENCE — Karton Nowak accepted the written €16,800 order and released the art books to its logistics team.
+HELD — newer supplier reply needs review of quantity, price and PO
+  Carrier booking and ETA: no linked reply from an authorized contact
+  Dock slot: no linked reply from an authorized contact
+
+02:08 BUYER REVIEW AND SIGNATURE — HELD — required condition missing: transport confirmed (no linked reply from an authorized contact)
+  Carrier booking and ETA: no linked reply from an authorized contact
+  Dock slot: no linked reply from an authorized contact
+
+02:09 RELEASED WITH SYNTHETIC EVIDENCE
+  Carrier confirmed booking WT-123, ETA Sun 10:30
+  Slot 07:00–12:00 confirmed by Katrin Jansen
+X-Dockside-Terms-SHA256: 8afe7b4bef8e8a0c03b772bab619c1e2030d69ef26abf5ca08cb530eeb8d9ea2
+Exact outbound body
+Purchase and dispatch according to these terms.
+
+Dockside commitment
+{
+  "commitment_id": "COM-B14FD3555F7513A5C757",
+  "conditions": [
+    "dock_slot_confirmed",
+    "transport_confirmed"
+  ],
+  "currency": "EUR",
+  "deliver_by": "2026-11-22T12:00:00+01:00",
+  "delivery_id": "ART-BOOKS-20261122",
+  "delivery_place": "Hamburg",
+  "emergency_reference": "ACT-F74B32",
+  "incoterm": "DAP",
+  "instruction": "order",
+  "language": "en",
+  "latest_useful_at": "2026-11-22T03:00:00+01:00",
+  "part": "CMP-GAM-008",
+  "po": null,
+  "po_line": null,
+  "quantity": 8000,
+  "recipient": "orders@karton-nowak.example",
+  "supplier_id": "SUP-0028",
+  "total_price": 16800.0,
+  "unit_price": 2.1,
+  "valid_until": "2026-11-22",
+  "version": 1
+}
+
+02:09 TAMPERED DRAFT (80,000 art books) — HELD — draft quantity disagrees with the commitment
+```
 
 ## Second customer in a day
 

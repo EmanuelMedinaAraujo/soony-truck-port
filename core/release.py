@@ -11,6 +11,7 @@ import unicodedata
 from contextlib import closing
 from decimal import Decimal
 from email.utils import parseaddr
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from core import actions, inbox, rules
@@ -23,6 +24,29 @@ CONDITIONS = {
     "transport_confirmed": ("book_truck", r"(?:truck|carrier|transport|pickup) (?:is |has been )?(?:confirmed|booked)"),
     "dock_slot_confirmed": ("dock_slot", r"(?:dock|unload|receiving) slot (?:is |has been )?(?:confirmed|booked)"),
 }
+SITE_ROLES = ("Site Lead DC-HAM (dock slots)", "Logistics Planner (deputy dock slots)")
+WEEKDAY = r"Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?"
+DAY = rf"\d{{4}}-\d{{2}}-\d{{2}}|{WEEKDAY}"
+DAY_SEPARATOR = r"(?:T|\s+(?:(?:at|from)\s+)?|,\s*)"
+CLOCK = r"(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?"
+ZONE = r"Z|UTC|CEST|CET|[+-](?:0\d|1[0-4]):[0-5]\d"
+TIME_ZONE = rf"(?:[ \t]*({ZONE}))?(?![\w:+-]|\s+(?:(?-i:[A-Z]{{2,5}})\b|[ap]\.?m\.?\b))"
+ARRIVAL = rf"(?:({DAY}){DAY_SEPARATOR})?({CLOCK}){TIME_ZONE}"
+SLOT_RANGE = rf"(?:({DAY}){DAY_SEPARATOR})?({CLOCK})\s*(?:[–—-]|\bto\b)\s*({CLOCK}){TIME_ZONE}"
+ETA = re.compile(rf"\b(?:ETA|estimated (?:time of )?arrival|arrival|Ankunft|przyjazd)\s*"
+                 rf"(?:(?:is|on|at)\s+|[:=,]\s*)*{ARRIVAL}", re.I)
+WINDOW = re.compile(rf"\b(?:slot|window|Zeitfenster|okno)\b\s*"
+                    rf"(?:(?:is|has been|confirmed|booked|window|for|on|at|from)\s*|[:=,.]\s*)*"
+                    rf"{SLOT_RANGE}", re.I)
+RAW_ETA = re.compile(rf"(?<![\w:+-]){ARRIVAL}", re.I)
+RAW_WINDOW = re.compile(rf"(?<![\w:+-]){SLOT_RANGE}", re.I)
+BOOKING = re.compile(r"\b(?:booking|Buchungsnummer|numer rezerwacji)"
+                     r"(?:\s+(?:ref(?:erence)?\.?|number|no\.?|ID|code))?\s*[:=#]?\s*"
+                     r"([A-Z0-9][A-Z0-9._/-]{2,79})(?![\w/-])", re.I)
+NEGATIVE_CONFIRMATION = re.compile(
+    r"\b(?:cancel\w*|unavailable|cannot|can't|not|pending|tentative|provisional|if|subject to|awaiting|"
+    r"storniert|nicht|vorläufig|odwołan\w*|nie|wstępn\w*)\b|[?]", re.I)
+AMBIGUOUS_DATE = re.compile(r"\b(?:today|tonight|tomorrow|yesterday|next week)\b", re.I)
 INSTRUCTIONS = {"order": "Purchase and dispatch", "dispatch": "Dispatch", "expedite": "Expedite dispatch",
                 "book_truck": "Book freight", "dock_slot": "Book a dock slot"}
 LOCAL_INSTRUCTIONS = {
@@ -161,8 +185,9 @@ def record_check(source: str, *, valid: bool = True) -> None:
 def _fresh(log) -> bool:
     log.execute(CHECKPOINT)
     stamps = dict(log.execute("SELECT source, checked_at FROM release_evidence"))
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=setting("release_max_age_minutes", 5))
-    return all(stamps.get(source) and rules.ts(stamps[source]) >= cutoff for source in ("files", "mailbox"))
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(minutes=setting("release_max_age_minutes", 5))
+    return all(stamps.get(source) and cutoff <= rules.ts(stamps[source]) <= now for source in ("files", "mailbox"))
 
 
 def _values(value) -> list[str]:
@@ -399,44 +424,249 @@ def _expired(terms: dict) -> bool:
     return bool(terms.get("latest_useful_at") and now >= rules.ts(terms["latest_useful_at"]))
 
 
+def _confirmation_contacts(terms):
+    carriers = _values(setting("release_carrier_contacts", {}).get(terms["delivery_id"]))
+    carriers += _values(setting("release_supplier_logistics_contacts", {}).get(terms["supplier_id"]))
+    site_aliases = [rules.setting("site"), setting("site_name", ""), *setting("site_aliases", [])]
+    dock = {}
+    if terms["delivery_place"].strip().casefold() in {alias.casefold() for alias in site_aliases}:
+        people, emails = setting("people", {}), setting("staff_email", {})
+        for role in SITE_ROLES:
+            name = people.get(role)
+            if address := emails.get(name):
+                dock[address.casefold()] = name
+    return {"transport_confirmed": {address.casefold(): address for address in carriers}, "dock_slot_confirmed": dock}
+
+
+def _single_match(pattern, body, summary, *, raw_pattern=None, accept=lambda _groups: True):
+    """Use a translation to locate literals found in the original reply."""
+    matches = {match.groups() for match in pattern.finditer(body) if accept(match.groups())}
+    if not matches:
+        def normalize(groups):
+            return tuple(part.casefold() if part else None for part in groups)
+
+        raw = {normalize(match.groups()) for match in raw_pattern.finditer(body)} if raw_pattern else None
+        matches = {match.groups() for match in pattern.finditer(summary)
+                   if accept(match.groups()) and (
+                       normalize(match.groups()) in raw if raw is not None else
+                       re.search(rf"(?<![\w/-]){re.escape(match[1].rstrip('.'))}(?![\w/-])", body, re.I))}
+    return matches.pop() if len(matches) == 1 else None
+
+
+def _appointment(day, clock, zone, anchor):
+    if not day:
+        date = anchor.date()
+    elif day[0].isdigit():
+        date = dt.date.fromisoformat(day)
+    else:
+        weekday = ("mon", "tue", "wed", "thu", "fri", "sat", "sun").index(day[:3].lower())
+        date = anchor.date() - dt.timedelta(days=(anchor.weekday() - weekday) % 7)
+    offset = {"Z": "+00:00", "UTC": "+00:00", "CET": "+01:00", "CEST": "+02:00"}.get((zone or "").upper(), zone)
+    tz = dt.timezone(dt.time.fromisoformat("00:00" + offset).utcoffset()) if offset else anchor.tzinfo
+    return dt.datetime.combine(date, dt.time(*map(int, clock.split(":")), tzinfo=tz)).astimezone(anchor.tzinfo)
+
+
+def _affirmed(condition, text):
+    _, pattern = CONDITIONS[condition]
+    if condition == "transport_confirmed":
+        pattern += r"|(?:carrier )?booking (?:is |has been )?confirmed|confirmed (?:carrier )?booking"
+    else:
+        pattern += r"|confirmed (?:dock|unload|receiving) slot|slot\b[^.!?\n]*\bconfirmed"
+    return re.search(rf"\b(?:{pattern})\b", text, re.I)
+
+
+def _confirmation_details(condition, reply, contact, deadline, eta, created):
+    details = {"reply_id": reply["id"], "contact": contact, "address": reply["from_addr"]}
+    if not reply["handled"]:
+        return details, "reply needs review"
+    body = _normalized(inbox._strip_quote(reply["body"] or ""))
+    summary = _normalized(reply["summary_en"])
+    if NEGATIVE_CONFIRMATION.search(body) or (not _affirmed(condition, body) and (
+            not _affirmed(condition, summary) or NEGATIVE_CONFIRMATION.search(summary))):
+        return details, "reply needs an affirmative confirmation"
+    if AMBIGUOUS_DATE.search(body):
+        return details, "use a calendar date or weekday for the ETA or slot window"
+    try:
+        if condition == "transport_confirmed":
+            booking = _single_match(BOOKING, body, summary,
+                                    accept=lambda groups: groups[0].isupper() or any(c.isdigit() for c in groups[0]))
+            arrived = _single_match(ETA, body, summary, raw_pattern=RAW_ETA)
+            missing = []
+            if booking:
+                details["booking_reference"] = booking[0].rstrip(".")
+            else:
+                missing.append("booking reference missing")
+            if arrived:
+                arrival = _appointment(*arrived, deadline)
+                details["eta"] = arrival.isoformat()
+                if not max(created, rules.now()) <= arrival <= deadline:
+                    missing.append("ETA is outside the signed delivery deadline or has passed")
+            else:
+                missing.append("ETA missing or ambiguous")
+            return details, ", ".join(missing) or None
+
+        if not (window := _single_match(WINDOW, body, summary, raw_pattern=RAW_WINDOW)):
+            return details, "slot window missing or ambiguous"
+        day, opening, closing, zone = window
+        anchor = eta or deadline
+        start = _appointment(day, opening, zone, anchor)
+        end = _appointment(day, closing, zone, anchor)
+        details.update(slot_start=start.isoformat(), slot_end=end.isoformat())
+        if end <= start:
+            return details, "slot window must end after it starts"
+        if eta is None:
+            return details, "slot window is awaiting a confirmed carrier ETA"
+        if not start <= eta <= end:
+            return details, "slot window does not cover the confirmed carrier ETA"
+    except ValueError:
+        return details, "reply contains an invalid delivery date or time"
+    return details, None
+
+
 def _related_replies(log, action, terms):
     inbox.init_schema(log)
-    recipient = terms["recipient"]
     delivery_id = terms["delivery_id"]
-    conditions = set(terms["conditions"])
-    if set(setting("release_conditions", {}).get(terms["instruction"], [])) - conditions:
-        return "required release conditions changed since approval"
-    confirmed = {}
+    signed_conditions = set(terms["conditions"])
+    conditions = signed_conditions | {"transport_confirmed"} if "dock_slot_confirmed" in signed_conditions else signed_conditions
+    contacts = _confirmation_contacts(terms) if conditions else {}
+    eligible, unauthorized = {}, set()
+    review = None
+    created = rules.ts(action["created_at"])
     for reply in log.execute("SELECT * FROM replies WHERE simulated=0 ORDER BY julianday(received_at), rowid"):
         sender = (reply["from_addr"] or "").casefold()
-        origin = actions._get(log, reply["action_id"]) if reply["action_id"] else None
-        if sender == recipient:
-            if not reply["handled"]:
-                return "an unread supplier reply needs review"
-            if rules.ts(reply["received_at"]) >= rules.ts(action["created_at"]):
-                return "newer supplier reply needs review of quantity, price and PO"
-        if origin is None:
+        condition = _linked_condition(log, reply, delivery_id, sender) if conditions else None
+        authorized = condition in contacts and sender in contacts[condition]
+        if condition in conditions:
+            if authorized:
+                eligible[condition] = (reply, contacts[condition][sender])
+            else:
+                unauthorized.add(condition)
+        if sender != terms["recipient"]:
             continue
-        origin_terms = terms_for(origin)
-        if origin_terms:
-            same_delivery = origin_terms["delivery_id"] == delivery_id
+        if not reply["handled"]:
+            review = "an unread supplier reply needs review"
+        elif not review and rules.ts(reply["received_at"]) >= created:
+            logistics_only = (authorized and condition == "transport_confirmed"
+                              and _affirmed(condition, reply["body"] or "")
+                              and not _body_blocker(terms, {"body": reply["body"]})
+                              and not re.search(r"\b(?:PO|purchase order|price|quantity|qty|incoterm|DAP|EXW)\b",
+                                                reply["body"] or "", re.I))
+            if not logistics_only:
+                review = "newer supplier reply needs review of quantity, price and PO"
+
+    matches = {}
+    eta = None
+    for condition in CONDITIONS:
+        if condition not in conditions:
+            continue
+        if condition in eligible:
+            details, reason = _confirmation_details(condition, *eligible[condition],
+                                                    rules.ts(terms["deliver_by"]).astimezone(rules.timezone()),
+                                                    eta, created)
         else:
-            reference = delivery_reference(delivery_id)
-            same_delivery = reference and origin["payload"].get("delivery_id") == delivery_id and any(
-                m["id"] == reply["msg_id"] and m["body"].endswith("\n\n" + reference) for m in origin["messages"])
-        if not same_delivery or not any(m["id"] == reply["msg_id"] and m["status"] in {"sent", "delivered"}
-                                        and (m["to_address"] or "").casefold() == sender for m in origin["messages"]):
+            details, reason = {}, ("reply sender is not authorized for this delivery" if condition in unauthorized
+                                   else "no linked reply from an authorized contact")
+        matches[condition] = {**details, "confirmed": reason is None, "reason": reason}
+        if reason is None and condition == "transport_confirmed":
+            eta = rules.ts(details["eta"])
+    if set(setting("release_conditions", {}).get(terms["instruction"], [])) - signed_conditions:
+        review = "required release conditions changed since approval"
+    return review, matches
+
+
+def _linked_condition(log, reply, delivery_id, sender):
+    origin = actions._get(log, reply["action_id"]) if reply["action_id"] else None
+    if not origin:
+        return None
+    origin_terms = terms_for(origin)
+    reference = delivery_reference(delivery_id)
+    for message in origin["messages"]:
+        if (message["id"] != reply["msg_id"] or message["channel"] != "email"
+                or message["status"] not in {"sent", "delivered"}
+                or (message["to_address"] or "").casefold() != sender):
             continue
-        for condition in conditions.intersection(CONDITIONS):
-            kind, pattern = CONDITIONS[condition]
-            if (origin["kind"] == kind or (origin_terms and origin_terms["instruction"] == kind)
-                    or (origin["kind"] == "confirm_terms" and origin["payload"].get("confirmation_kind") == kind)):
-                confirmed[condition] = bool(reply["handled"] and re.match(pattern + r"(?:[.!]|$)", (reply["body"] or "").strip(), re.I)
-                                            and not re.search(r"\b(?:cancel\w*|unavailable|cannot|not|but|pending)\b",
-                                                              reply["body"], re.I))
-    for condition in sorted(conditions):
-        if not confirmed.get(condition):
-            return f"required condition missing: {condition.replace('_', ' ')}"
+        if origin_terms:
+            linked = origin_terms["delivery_id"] == delivery_id
+        else:
+            linked = (reference and origin["payload"].get("delivery_id") == delivery_id
+                      and message["body"].endswith("\n\n" + reference))
+        if linked:
+            kind = (origin_terms or {}).get("instruction") or origin["kind"]
+            if kind == "confirm_terms":
+                kind = origin["payload"].get("confirmation_kind")
+            return next((condition for condition, (action_kind, _) in CONDITIONS.items() if kind == action_kind), None)
+    return None
+
+
+def confirmation_summary(matches):
+    lines = []
+    for condition, evidence in matches.items():
+        if condition == "transport_confirmed" and evidence["confirmed"]:
+            eta = rules.ts(evidence["eta"])
+            lines.append(f"Carrier confirmed booking {evidence['booking_reference']}, ETA {eta:%a %H:%M}")
+        elif condition == "dock_slot_confirmed" and evidence["confirmed"]:
+            start, end = (rules.ts(evidence[key]) for key in ("slot_start", "slot_end"))
+            lines.append(f"Slot {start:%H:%M}–{end:%H:%M} confirmed by {evidence['contact']}")
+        else:
+            label = "Carrier booking and ETA" if condition == "transport_confirmed" else "Dock slot"
+            lines.append(f"{label}: {evidence['reason']}")
+    return lines
+
+
+def preview_confirmations(action):
+    terms = terms_for(action)
+    if not terms or not terms.get("conditions") or proposal_blocker(action):
+        return {}
+    try:
+        with actions.tx() as log:
+            return _related_replies(log, action, terms)[1]
+    except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
+        return {}
+
+
+def _confirmation_blocker(matches):
+    return next((f"required condition missing: {condition.replace('_', ' ')} ({evidence['reason']})"
+                 for condition, evidence in matches.items() if not evidence["confirmed"]), None)
+
+
+def _ingest_blocker(db, terms):
+    issues = db.execute("SELECT path, issue FROM ingest_issues ORDER BY path, issue").fetchall()
+    if not issues:
+        return None
+    supplier, part, po, delivery = (terms[key] for key in ("supplier_id", "part", "po", "delivery_id"))
+    refs = {ref for ref in (supplier, part, po, delivery) if ref}
+    paths = setting("sources", {}).get("paths", {})
+    folder = db.execute("SELECT folder FROM suppliers WHERE supplier_id=?", (supplier,)).fetchone()
+    if folder and folder[0]:
+        refs.add(folder[0])
+    relevant_paths = {path for path, in db.execute(
+        """SELECT source FROM purchase_orders WHERE po_number=? OR supplier_id=? OR material_id=?
+           UNION SELECT path FROM documents WHERE supplier_id=? OR po_number=?
+           UNION SELECT path FROM doc_facts WHERE json_extract(payload,'$.supplier_id')=?
+               OR json_extract(payload,'$.material_id')=? OR json_extract(payload,'$.po_number')=?""",
+        (po, supplier, part, supplier, po, supplier, part, po)) if path}
+    related_shipments = db.execute(
+        """SELECT shipment_id, reference FROM shipments WHERE shipment_id=? OR supplier_id=?
+           OR instr('|' || coalesce(material_ids,'') || '|', '|' || ? || '|') > 0
+           OR instr('|' || coalesce(po_numbers,'') || '|', '|' || ? || '|') > 0""",
+        (delivery, supplier, part, po)).fetchall()
+    refs.update(value for shipment in related_shipments for value in shipment if value)
+    identifiers = re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(ref) for ref in sorted(refs)) +
+                             r")(?![A-Za-z0-9])", re.I)
+    relevant_paths.update(source for entity, source in db.execute("SELECT entity_id, source FROM observations")
+                          if entity and source and identifiers.search(entity))
+    relevant_paths = {path.partition("#")[0] for path in relevant_paths}
+    # These loaders supply the gate's evidence. An unscoped loader failure can leave partial rows.
+    loaders = {"master", "suppliers", "documents", "shipments"}
+    shared = {"components", "component_updates", "shipments"}
+    if po:
+        loaders.update(("pos", "receipts"))
+        shared.update(("purchase_orders", "receipts"))
+    for path, issue in issues:
+        source = (path or "").partition("#")[0]
+        scoped = identifiers.search(f"{path} {issue}") or source in relevant_paths
+        if scoped or source in loaders or any(fnmatchcase(source, paths[key]) for key in shared if paths.get(key)):
+            return f"evidence stale: ingest issue in {path or 'unknown source'}"
     return None
 
 
@@ -445,11 +675,13 @@ def _file_blocker(action: dict, terms: dict) -> str | None:
     po = _values(terms["po"])
     instruction = terms["instruction"]
     shipment_kind = "order" if instruction == "dispatch" else instruction
-    if reason := rules.shipment_commitment_blocker(f"ship-{terms['delivery_id']}", shipment_kind, po):
-        return reason
-    if reason := rules.shipment_commitment_blocker(action["finding_id"], shipment_kind, po):
-        return reason
     with _master() as db:
+        if reason := _ingest_blocker(db, terms):
+            return reason
+        if reason := rules.shipment_commitment_blocker(f"ship-{terms['delivery_id']}", shipment_kind, po):
+            return reason
+        if reason := rules.shipment_commitment_blocker(action["finding_id"], shipment_kind, po):
+            return reason
         status = db.execute("SELECT status FROM suppliers WHERE supplier_id=?", (supplier,)).fetchone() if supplier else None
         if supplier and (not status or (status[0] or "").casefold() != "active"):
             return "supplier is missing or inactive in the latest files"
@@ -577,11 +809,16 @@ def check(action: dict) -> tuple[bool, str | None]:
                     return False, "verified approval for these exact terms is missing"
             if not _fresh(log):
                 return False, "evidence stale"
-            if reason := _related_replies(log, action, terms):
-                return False, reason
-        reason = _file_blocker(action, terms)
-        return reason is None, reason
-    except (sqlite3.Error, ValueError, TypeError):
+            file_blocker = _file_blocker(action, terms)
+            if file_blocker and file_blocker.startswith("evidence stale"):
+                return False, file_blocker
+            review, matches = _related_replies(log, action, terms)
+            if matches and matches != action["payload"].get("confirmation_evidence"):
+                log.execute("UPDATE actions SET payload=json_set(payload,'$.confirmation_evidence',json(?)) WHERE id=?",
+                            (json.dumps(matches), action["id"]))
+            reason = review or _confirmation_blocker(matches) or file_blocker
+            return reason is None, reason
+    except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
         return False, "evidence stale or unreadable"
 
 
@@ -597,13 +834,16 @@ def decision_state(action: dict) -> dict:
     else:
         terminal = None
     reason = held or blocker
-    if reason in {"evidence stale", "evidence stale or unreadable"}:
-        owner, clears = "Dockside operator", "Restore portal sync and mailbox polling, then refresh both sources."
+    terms = terms_for(action)
+    matches = action["payload"].get("confirmation_evidence", {})
+    if reason and reason.startswith("evidence stale"):
+        owner, clears = "Dockside operator", "Resolve file ingest issues and refresh the portal and mailbox evidence."
     elif reason and reason.startswith("required condition missing"):
-        condition = reason.partition(": ")[2]
+        condition = reason.partition(": ")[2].partition(" (")[0]
         owner = "Carrier" if condition == "transport confirmed" else "Receiving team"
-        terms = terms_for(action) or {}
-        clears = f"Confirm {condition.removesuffix(' confirmed')} for delivery {terms.get('delivery_id')} in the linked email thread."
+        delivery = (terms or {}).get("delivery_id")
+        clears = (f"Delivery {delivery}. " + ". ".join(confirmation_summary(matches)) if matches else
+                  f"Confirm the {condition.removesuffix(' confirmed')} for {delivery} in the linked email thread.")
     elif reason and "supplier reply" in reason:
         owner, clears = "Buyer", "Review the latest supplier reply, then submit the instruction with the current terms."
     elif reason and reason.startswith("verified approval"):
@@ -614,4 +854,4 @@ def decision_state(action: dict) -> dict:
     return {"terminal": terminal, "can_approve": not (terminal or blocker) and action["status"] in
             {"proposed", "scheduled", "escalated"}, "held_reason": reason,
             "hold_owner": owner if reason and not terminal else None,
-            "hold_clears": clears if reason and not terminal else None}
+            "hold_clears": clears if reason and not terminal else None, "confirmation_evidence": matches}

@@ -328,6 +328,8 @@ def dispatch_view():
             decisions[aid] = {key: a[key] for key in ("id", "title", "rationale", "status", "approver_name", "next_check_at", "due_at")}
         terms = release.terms_for(a)
         decision = release.decision_state(a)
+        if decision["can_approve"] and terms:
+            decision["confirmation_evidence"] = release.preview_confirmations(a)
         instruction = None
         if terms and not release.proposal_blocker(a):
             _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")))

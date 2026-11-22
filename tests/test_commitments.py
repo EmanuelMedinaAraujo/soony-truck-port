@@ -1,4 +1,5 @@
 import datetime as dt
+import sys
 import json
 import sqlite3
 import shutil
@@ -212,28 +213,129 @@ def test_joint_signatures_from_two_channels(log, deliveries, monkeypatch):
     assert released["status"] == "sent" and deliveries == [ADDRESS]
 
 
-def test_condition_requires_correlated_supplier_confirmation(log, deliveries, monkeypatch):
+def test_conditions_require_authorized_contacts_and_signed_delivery_times(log, deliveries, monkeypatch):
     monkeypatch.setitem(rules.CONFIG, "release_conditions",
                         {"value": {"order": ["dock_slot_confirmed", "transport_confirmed"]}})
+    monkeypatch.setitem(rules.CONFIG["staff_email"]["value"], "Katrin Jansen", "dock@example.test")
     action = order()
-    held = approve(action)
-    assert "dock slot confirmed" in held["held_reason"]
-    def confirm(kind, body, address, delivery_id):
+    delivery = release.terms_for(action)["delivery_id"]
+    monkeypatch.setitem(rules.CONFIG, "release_carrier_contacts", {"value": {delivery: "carrier@example.test"}})
+
+    def confirm(kind, body, address, delivery_id=delivery, *, summary=None):
         origin = actions.propose(FINDING, "Check arrangement", "", "confirm_terms", 0, 0, 0, None, None,
                                  payload={"delivery_id": delivery_id, "confirmation_kind": kind},
                                  messages=[message(address, body="Please confirm availability.")])
         outbound._mark(origin["messages"][0]["id"], "sent")
         reply_from(origin, handled=True, text=body)
+        if summary:
+            with actions.tx() as c:
+                c.execute("UPDATE replies SET summary_en=? WHERE action_id=?", (summary, origin["id"]))
+        return outbound.dispatch(action["id"])
 
+    held = approve(action)
+    assert "no linked reply from an authorized contact" in held["held_reason"]
+    carrier = "carrier@example.test"
+    dock = "dock@example.test"
+    confirmed = "Truck is confirmed. Booking ref WT-123, ETA Sun 10:30."
+    assert "not authorized" in confirm("book_truck", confirmed, "unknown@example.test")["held_reason"]
+    assert "affirmative confirmation" in confirm("book_truck", "If the carrier confirmed booking WT-123, ETA Sun 10:30.",
+                                                 carrier)["held_reason"]
+    assert "booking reference missing, ETA missing" in confirm("book_truck", "Truck is confirmed.", carrier,
+                                                               summary=confirmed)["held_reason"]
+    assert "outside the signed delivery" in confirm("book_truck", "Carrier confirmed booking WT-123, ETA Mon 13:00.",
+                                                    carrier)["held_reason"]
+    assert "outside the signed delivery" in confirm("book_truck", "Carrier confirmed booking WT-123, ETA Mon 12:00:01.",
+                                                    carrier)["held_reason"]
+    assert "ETA missing" in confirm("book_truck", "Carrier confirmed booking WT-123, ETA Sun 10:30 PM.",
+                                    carrier, summary=confirmed)["held_reason"]
+    assert "dock slot confirmed" in confirm("book_truck", confirmed, carrier)["held_reason"]
+    window = "Dock slot confirmed for Sun 07:00–12:00."
+    assert "no linked reply" in confirm("dock_slot", window, dock, "unrelated-shipment")["held_reason"]
+    assert "not authorized" in confirm("dock_slot", window, "unknown-dock@example.test")["held_reason"]
+    assert "slot window missing" in confirm("dock_slot", "Dock slot is confirmed.", dock)["held_reason"]
+    assert "does not cover" in confirm("dock_slot", "Dock slot confirmed for Mon 07:00–12:00.", dock)["held_reason"]
+    held = confirm("dock_slot", "Dock slot confirmed for Sun 07:00–10:00.", dock)
+    card = release.decision_state(held)
+    assert card["hold_owner"] == "Receiving team"
+    assert "Carrier confirmed booking WT-123, ETA Sun 10:30" in card["hold_clears"]
+    assert card["confirmation_evidence"]["dock_slot_confirmed"]["slot_end"] == "2026-11-22T10:00:00+01:00"
+    released = confirm("dock_slot", window, dock)
+    assert released["status"] == "sent"
+    assert released["payload"]["confirmation_evidence"]["dock_slot_confirmed"]["contact"] == "Katrin Jansen"
+    assert deliveries == [ADDRESS]
+
+
+def test_supplier_logistics_and_deputy_can_confirm_using_corroborated_summary(log, deliveries, monkeypatch):
+    monkeypatch.setitem(rules.CONFIG, "release_supplier_logistics_contacts",
+                        {"value": {SUPPLIER: "logistics@example.test"}})
+    monkeypatch.setitem(rules.CONFIG["staff_email"]["value"], "Raj Patel", "deputy@example.test")
+    action = order(payload={"conditions": ["transport_confirmed", "dock_slot_confirmed"]})
     delivery = release.terms_for(action)["delivery_id"]
-    confirm("dock_slot", "Dock slot is confirmed.", "dock@example.test", "unrelated-shipment")
-    confirm("book_truck", "Truck is confirmed.", "carrier@example.test", delivery)
-    still_held = outbound.dispatch(action["id"])
-    assert "dock slot confirmed" in still_held["held_reason"]
-    assert release.decision_state(still_held)["hold_owner"] == "Receiving team"
-    confirm("dock_slot", "Dock slot is confirmed.", "dock@example.test", delivery)
+    assert "required condition missing" in approve(action)["held_reason"]
+    for kind, address, body, summary in (
+        ("book_truck", "logistics@example.test", "Transport potwierdzony. Numer rezerwacji WT-123. Sun 10:30.",
+         "Carrier confirmed booking WT-500; ETA Sun 10:30."),
+        ("dock_slot", "deputy@example.test", "Slot 07:00–12:00 confirmed.", None),
+    ):
+        origin = actions.propose(FINDING, "Check arrangement", "", "confirm_terms", 0, 0, 0, None, None,
+                                 payload={"delivery_id": delivery, "confirmation_kind": kind},
+                                 messages=[message(address, body="Please confirm availability.")])
+        outbound._mark(origin["messages"][0]["id"], "sent")
+        reply_from(origin, handled=True, text=body)
+        with actions.tx() as c:
+            c.execute("UPDATE replies SET summary_en=? WHERE action_id=?", (summary, origin["id"]))
+    released = outbound.dispatch(action["id"])
+    assert released["status"] == "sent"
+    evidence = released["payload"]["confirmation_evidence"]
+    assert evidence["transport_confirmed"]["booking_reference"] == "WT-123"
+    assert evidence["dock_slot_confirmed"]["contact"] == "Raj Patel"
+    assert deliveries == [ADDRESS]
+
+
+@pytest.mark.parametrize("source,issue", [
+    ("suppliers/SUP-0028_Karton_Nowak/profile.json", "raw load failed"),
+    ("material-update.csv", "invalid update for CMP-GAM-008"),
+    ("supplier-confirmation.xlsx#Orders", f"invalid date for {PO}"),
+    ("po-export.csv", "invalid spreadsheet"),
+])
+def test_related_ingest_issues_hold_until_rebuilt(log, deliveries, source, issue):
+    action = order()
+    with sqlite3.connect(rules.DB_PATH) as db:
+        db.execute("UPDATE purchase_orders SET source='po-export.csv'")
+        db.execute("INSERT INTO ingest_issues VALUES (?,?)", (source, issue))
+        db.execute("INSERT INTO ingest_issues VALUES (?,?)", ("suppliers/SUP-0128/profile.json", "invalid JSON"))
+    assert approve(action)["held_reason"] == f"evidence stale: ingest issue in {source}"
+    assert deliveries == []
+    with sqlite3.connect(rules.DB_PATH) as db:
+        db.execute("DELETE FROM ingest_issues WHERE path=?", (source,))
     assert outbound.dispatch(action["id"])["status"] == "sent"
     assert deliveries == [ADDRESS]
+
+
+def test_failed_rebuild_invalidates_release_checkpoint(log, deliveries, monkeypatch):
+    action = order()
+    monkeypatch.setenv("SOONY_TOKEN", "fixture")
+    monkeypatch.setattr(server.soony_sync, "sync_once", lambda _: [])
+    monkeypatch.setattr("core.extract_docs.documents", lambda: [])
+
+    def fail_build():
+        raise OSError("rebuild failed")
+
+    monkeypatch.setattr(ingest, "build", fail_build)
+    monkeypatch.setitem(server.STATE, "files_pending", True)
+    assert approve(action)["held_reason"] == "evidence stale"
+    assert server.STATE["files_pending"]
+    assert deliveries == []
+
+
+def test_historical_release_gate_replay():
+    root = Path(__file__).resolve().parents[1]
+    command = [sys.executable, str(root / "examples/replay_gate.py")]
+    result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
+    assert result.stdout == subprocess.check_output(command, cwd=root, text=True)
+    assert result.stdout.strip() in (root / "README.md").read_text()
+    assert "RELEASED WITH SYNTHETIC EVIDENCE" in result.stdout
+    assert "HELD — draft quantity disagrees with the commitment" in result.stdout
 
 
 def test_new_document_disagrees_with_commitment(log, deliveries):

@@ -123,8 +123,9 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
             return action
         order_refs = (po for message in action["messages"] for po in json.loads(message.get("po_numbers") or "[]"))
         gated = release.applies(action)
-        if reason := shipment_commitment_blocker(action["finding_id"], action["kind"], order_refs):
-            return actions.hold(action_id, reason)
+        if not release.terms_for(action):
+            if reason := shipment_commitment_blocker(action["finding_id"], action["kind"], order_refs):
+                return actions.hold(action_id, reason)
         reply = None
         if action["finding_id"].startswith("reply-"):
             from core import inbox
