@@ -35,20 +35,35 @@ def decision_embed(a: dict) -> discord.Embed:
     e.add_field(name="Needs", value=f"{a['approver_name']} ({a['approver_role']})"[:1024], inline=True)
     if a["ce_copies"]:
         e.add_field(name="Collector's copies", value=f"{a['ce_copies']:,}", inline=True)
-    if a["messages"]:
+    state = release.decision_state(a)
+    terms = release.terms_for(a)
+    if terms and not release.proposal_blocker(a):
+        _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")))
+        for start in range(0, len(instruction), 900):
+            e.add_field(name="Shipment instruction" if start == 0 else "Shipment instruction (continued)",
+                        value=instruction[start:start + 900], inline=False)
+    elif a["messages"] and not release.applies(a):
         e.add_field(name="Sends on approval", value="\n".join(f"{m['channel']} to {m['to_name']}: {m['subject']}" for m in a["messages"])[:1024], inline=False)
-    if a["status"] not in ("proposed",):
+    if state["terminal"] or state["held_reason"]:
+        detail = state["terminal"] or " · ".join(filter(None, (state["held_reason"], state["hold_owner"], state["hold_clears"])))
+        e.add_field(name="Release status", value=detail[:1024], inline=False)
+    elif a["status"] not in ("proposed",):
         e.set_footer(text=a["history"][-1]["entry"][:200] if a["history"] else a["status"])
     return e
 
 
 class DecisionView(discord.ui.View):
-    def __init__(self, aid: str, enabled: bool = True, scheduled: bool = False):
+    def __init__(self, action: dict):
         super().__init__(timeout=None)
+        scheduled = action["status"] == "scheduled"
+        enabled = release.decision_state(action)["can_approve"]
+        aid = action["id"]
+        digest = release.approval_digest(action)
         labels = (("Do it now", discord.ButtonStyle.success, "approve"), ("Stop", discord.ButtonStyle.danger, "reject")) if scheduled else \
                  (("Approve and send", discord.ButtonStyle.success, "approve"), ("Decline", discord.ButtonStyle.secondary, "reject"))
         for label, style, verb in labels:
-            self.add_item(discord.ui.Button(label=label, style=style, custom_id=f"dock:{verb}:{aid}", disabled=not enabled))
+            suffix = ":" + digest if digest else ""
+            self.add_item(discord.ui.Button(label=label, style=style, custom_id=f"dock:{verb}:{aid}{suffix}", disabled=not enabled))
 
 
 class Bot(discord.Client):
@@ -84,7 +99,7 @@ class Bot(discord.Client):
                 return
             await inter.response.send_message(f"{len(pending)} decision(s) waiting:")
             for a in pending:
-                await inter.followup.send(content=f"For **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"], scheduled=a["status"] == "scheduled"))
+                await inter.followup.send(content=f"For **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a))
 
     async def setup_hook(self):
         guild = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -100,20 +115,20 @@ class Bot(discord.Client):
         cid = (inter.data or {}).get("custom_id", "") if inter.type == discord.InteractionType.component else ""
         if not cid.startswith("dock:"):
             return
-        _, verb, aid = cid.split(":", 2)
+        _, verb, aid, *revision = cid.split(":", 3)
         who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
         if not who:
             await inter.response.send_message("This Discord account is not assigned to a Dockside staff member.", ephemeral=True)
             return
         try:
             await inter.response.defer()
-            a = await asyncio.to_thread(self.decide_fn, aid, verb, who, source="Discord")
+            a = await asyncio.to_thread(self.decide_fn, aid, verb, who, source="Discord",
+                                        commitment_digest=revision[0] if revision else None)
             waiting = a["status"] in {"proposed", "escalated", "scheduled"} and not a["held_reason"]
             detail = (f"Held: {a['held_reason']}" if a["held_reason"] else
                       f"Signed by {who}. Waiting for the remaining approvals." if waiting else
                       f"Decision recorded for {who}. Status: {a['status']}.")
-            await inter.edit_original_response(embed=decision_embed(a),
-                                               view=DecisionView(aid, scheduled=a["status"] == "scheduled", enabled=waiting))
+            await inter.edit_original_response(embed=decision_embed(a), view=DecisionView(a))
             await inter.followup.send(detail, ephemeral=True)
         except Exception as e:
             await inter.followup.send(f"Could not record that: {e}. Refresh the decision in the control room.", ephemeral=True)
@@ -122,10 +137,12 @@ class Bot(discord.Client):
         ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
         if a["status"] == "scheduled":
             await ch.send(content=f"Dockside will do this at {a['next_check_at'][11:16]} unless **{a['approver_name']}** stops it",
-                          embed=decision_embed(a), view=DecisionView(a["id"], scheduled=True))
+                          embed=decision_embed(a), view=DecisionView(a))
             return
         prefix = "Escalated to you: " if a["status"] == "escalated" else ""
-        await ch.send(content=f"{prefix}Signature needed from **{a['approver_name']}**", embed=decision_embed(a), view=DecisionView(a["id"]))
+        state = release.decision_state(a)
+        content = f"{prefix}Signature needed from **{a['approver_name']}**" if state["can_approve"] else None
+        await ch.send(content=content, embed=decision_embed(a), view=DecisionView(a))
 
     async def post_text(self, text: str, main: bool = False):
         cid = CHANNEL_ID if main else UPDATES_ID
@@ -172,7 +189,7 @@ def start(listeners: list, decide_fn) -> Bot | None:
     def on_event(ev: dict):
         if not bot.ready.is_set():
             return
-        if ev["kind"] in ("action_proposed", "action_escalated", "action_scheduled"):
+        if ev["kind"] in ("action_proposed", "action_escalated", "action_scheduled", "action_held"):
             asyncio.run_coroutine_threadsafe(bot.post_decision(ev["action"]), loop)
         elif ev["kind"] == "action_auto":
             a = ev["action"]

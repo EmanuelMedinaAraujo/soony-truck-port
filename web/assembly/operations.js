@@ -149,17 +149,19 @@ function decisionItem(decision) {
   const scheduled = decision.status === "scheduled";
   const due = scheduled ? decision.next_check_at : decision.due_at;
   const signed = Object.keys(decision.signatures ?? {});
-  const actionLine = decision.held_reason ? `On hold: ${decision.held_reason}. Dockside releases it once this clears.` :
+  const actionLine = decision.terminal || (decision.held_reason ?
+    [`On hold — ${decision.held_reason}`, decision.hold_owner && `${decision.hold_owner} · ${decision.hold_clears}`].filter(Boolean).join(". ") :
     scheduled ? `Goes ahead ${at(due)} unless stopped.` :
-    `Waiting for ${decision.approver_name || "an approver"}.${signed.length ? ` Signed so far: ${signed.join(", ")}.` : ""}${due ? ` Due ${at(due)}.` : ""}`;
-  const reviewed = decision.messages?.map(message =>
-    `<li><strong>${html(message.subject)}</strong> to ${html(message.to_name)}<p>${html(message.body_en || message.body)}</p></li>`).join("") ?? "";
-  return `<article class="decision" data-action="${html(decision.id)}"><h3>${html(decision.title)}</h3>
+    `Waiting for ${decision.approver_name || "an approver"}.${signed.length ? ` Signed so far: ${signed.join(", ")}.` : ""}${due ? ` Due ${at(due)}.` : ""}`);
+  const reviewed = decision.instruction ? "" : (decision.messages ?? []).map(message =>
+    `<li><strong>${html(message.subject)}</strong> to ${html(message.to_name)}<p>${html(message.body_en || message.body)}</p></li>`).join("");
+  return `<article class="decision" data-action="${html(decision.id)}" data-commitment-digest="${html(decision.commitment_digest || "")}"><h3>${html(decision.title)}</h3>
     <p>${html(decision.rationale)}</p><p class="side-note">${html(actionLine)}${decision.cost > 0 ? ` Estimated cost ${money(decision.cost)}.` : ""}</p>
+    ${decision.instruction ? `<details class="detail-block" open><summary>Shipment instruction</summary><pre style="white-space: pre-wrap">${html(decision.instruction)}</pre></details>` : ""}
     ${decision.details || reviewed ? `<details class="detail-block"><summary>Review action</summary>
        ${decision.details ? `<p>${html(decision.details)}</p>` : ""}${reviewed ? `<ul>${reviewed}</ul>` : ""}</details>` : ""}
-    <div class="decision-buttons"><button type="button" class="action-button" data-decision="approve">${scheduled ? "Do it now" : "Approve"}</button>
-      <button type="button" class="secondary-button" data-decision="reject">${scheduled ? "Stop" : "Decline"}</button></div></article>`;
+    ${decision.can_approve ? `<div class="decision-buttons"><button type="button" class="action-button" data-decision="approve">${scheduled ? "Do it now" : "Approve"}</button>
+      <button type="button" class="secondary-button" data-decision="reject">${scheduled ? "Stop" : "Decline"}</button></div>` : ""}</article>`;
 }
 
 function renderOperations(snapshot) {
@@ -205,7 +207,7 @@ function initOperations(reload) {
     decisionResult.textContent = "Recording decision…";
     try {
       const response = await fetch(`/api/actions/${encodeURIComponent(id)}/decide`, {method: "POST",
-        headers: {"Content-Type": "application/json"}, body: JSON.stringify({decision, by})});
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify({decision, by, commitment_digest: card.dataset.commitmentDigest || null})});
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Try again after refreshing the page.");
       const queued = result.messages?.some(message => ["draft", "outbox"].includes(message.status));

@@ -38,13 +38,13 @@ def _address(name: str, *, single: bool) -> str | None:
 def _body(a, name: str, due: dt.datetime | None) -> str:
     timing = (f"Dockside goes ahead at {due:%d %b %Y, %H:%M %z} unless you stop it."
               if due else "Dockside waits for explicit approval before releasing this action.")
-    ref = f"Commitment: {a['commitment_id']}\n" if a["commitment_id"] else ""
+    terms = release.terms_for(a)
+    instruction = "\n" + release.render_instruction(terms)[1] + "\n" if terms else ""
     return (f"Hi {name},\n\n"
-            f"{ref}"
             f"What: {a['title']}\nWhy: {a['rationale']}\n"
             f"Cost: €{a['cost_eur']:,.2f}\n"
             f"Protects: €{a['eur_protected'] or 0:,.2f} and {a['ce_copies'] or 0:,} {rules.cfg('edition_labels')['priority_copies']}.\n\n"
-            f"{timing}\n")
+            f"{timing}\n{instruction}")
 
 
 def _mailbox(address: str) -> str:
@@ -75,7 +75,7 @@ def _queue(aid: str) -> list[tuple[dict, str]]:
         c.execute(SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         a = actions._get(c, aid)
-        if not a or a["status"] not in WAITING or not a["cost_eur"] > 0:
+        if not a or not (a["cost_eur"] > 0 or release.applies(a)) or not release.decision_state(a)["can_approve"]:
             return []
         result = []
         now = rules.now()
@@ -87,7 +87,9 @@ def _queue(aid: str) -> list[tuple[dict, str]]:
             if link:
                 m = c.execute("SELECT * FROM messages WHERE id=?", (link["message_id"],)).fetchone()
                 same_address = address.casefold() == m["to_address"].casefold()
-                if same_address and (m["status"] in outbound.UNCONFIRMED or (
+                terms = release.terms_for(a)
+                same_terms = not terms or m["body"].endswith(release.terms_block(terms) + "\n")
+                if same_address and same_terms and (m["status"] in outbound.UNCONFIRMED or (
                         m["status"] == "sent" and (a["status"] == "scheduled" or rules.now() < rules.ts(link["expires_at"])))):
                     continue
             due = None
@@ -126,8 +128,8 @@ def email(aid: str) -> None:
 
 def email_open() -> None:
     with actions.tx() as c:
-        ids = [row[0] for row in c.execute("""SELECT id FROM actions WHERE cost_eur>0
-                                              AND status IN ('scheduled','proposed','escalated')""")]
+        ids = [row[0] for row in c.execute("""SELECT id FROM actions
+                                              WHERE status IN ('scheduled','proposed','escalated')""")]
     for aid in ids:
         email(aid)
 
@@ -137,7 +139,8 @@ def lookup(token: str) -> tuple[dict, str]:
         raise KeyError("Unknown approval link")
     with actions.tx() as c:
         c.execute(SCHEMA)
-        row = c.execute("""SELECT l.*, a.title, a.cost_eur, a.status, m.to_address, m.status AS message_status
+        row = c.execute("""SELECT l.*, a.title, a.cost_eur, a.status, m.to_address, m.status AS message_status,
+                                  m.body AS approval_body
                            FROM approval_signer_links l JOIN actions a ON a.id=l.action_id
                            JOIN messages m ON m.id=l.message_id
                            WHERE l.token=?""", (token,)).fetchone()
@@ -149,6 +152,10 @@ def lookup(token: str) -> tuple[dict, str]:
         raise KeyError("Unknown approval link")
     if row["status"] not in WAITING or row["approver_name"] in action["signatures"]:
         return dict(row), "used"
-    if rules.now() >= rules.ts(row["expires_at"]):
+    if rules.now() >= rules.ts(row["expires_at"]) or release.decision_state(action)["terminal"]:
         return dict(row), "expired"
-    return dict(row), "open"
+    terms = release.terms_for(action)
+    if release.applies(action) and (not terms or release.proposal_blocker(action) or
+                                    not row["approval_body"].endswith(release.terms_block(terms) + "\n")):
+        return dict(row), "used"
+    return {**dict(row), "commitment_digest": release.approval_digest(action), "terms": terms}, "open"

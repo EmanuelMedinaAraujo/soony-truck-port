@@ -103,7 +103,7 @@ def open_action_for(finding_id: str, kind: str | None = None) -> dict | None:
     return dict(r) if r else None
 
 
-COMMITMENTS = ("order", "book_truck", "expedite")
+COMMITMENTS = ("order", "dispatch", "book_truck", "expedite")
 PART = re.compile(r"\b[A-Z]{2,4}-[A-Z0-9]{2,5}-\d{2,4}\b")
 
 
@@ -145,13 +145,14 @@ def signers(action) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name.strip() for name in (action["approver_name"] or "").split(" + ") if name.strip()))
 
 
-def hold(aid: str, reason: str | None, *, supersede: bool = False) -> dict:
+def hold(aid: str, reason: str | None, *, supersede: bool = False, expire: bool = False) -> dict:
     """Keep the current queue and record changes to the release reason."""
     with tx() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         payload = json.loads(row["payload"] or "{}")
-        if reason == payload.get("held_reason"):
+        status = "superseded" if supersede else "expired" if expire else row["status"]
+        if reason == payload.get("held_reason") and status == row["status"]:
             return _get(c, aid)
         stamp = now().isoformat(timespec="seconds")
         history = row["history"]
@@ -161,7 +162,6 @@ def hold(aid: str, reason: str | None, *, supersede: bool = False) -> dict:
             c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "release_held", aid, reason))
         else:
             payload.pop("held_reason", None)
-        status = "superseded" if supersede else row["status"]
         c.execute("UPDATE actions SET status=?,payload=?,history=?,updated_at=? WHERE id=?",
                   (status, json.dumps(payload, ensure_ascii=False), history, stamp, aid))
         return _get(c, aid)
@@ -170,10 +170,40 @@ def hold(aid: str, reason: str | None, *, supersede: bool = False) -> dict:
 def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: float, eur_protected: float, ce_copies: int,
             category: str | None, owner: str | None, due_in_minutes: int = 60, payload: dict | None = None,
             messages: Sequence[dict] = (), *, connection: sqlite3.Connection | None = None,
-            parent: dict | None = None) -> dict:
-    ap = approver_for(cost_eur, category)
-    special = cfg("approval_by_kind").get(kind)
-    if cost_eur > 0 and (special or " + " in ap.get("role", "")):  # Paid actions can require additional role-specific sign-off.
+            parent: dict | None = None, repeat_commitment: bool = False) -> dict:
+    from core import release
+
+    payload = dict(payload or {})
+    for key in ("signatures", "commitment_digest", "repeat_commitment", "held_reason"):
+        payload.pop(key, None)
+    aid = "ACT-" + uuid.uuid4().hex[:6].upper()
+    intent = release.instruction_kind(kind, messages)
+    typed = bool(messages and (payload.get("commitment") or cost_eur > 0 or repeat_commitment))
+    proposal = {"id": aid, "finding_id": finding_id, "kind": kind, "cost_eur": cost_eur, "payload": payload,
+                "messages": messages}
+    if repeat_commitment:
+        payload["repeat_commitment"] = parent["id"] if parent else "missing"
+        inherited = release.terms_for(parent) if parent else None
+        if cost_eur == 0 and not payload.get("commitment") and inherited:
+            payload["commitment"] = inherited
+        else:
+            payload.pop("commitment", None)
+    elif typed:
+        payload["commitment"] = release.describe(proposal, parent=parent)
+    if terms := release.terms_for(proposal):
+        try:
+            payload["commitment_digest"] = release.fingerprint(terms)
+        except ValueError:
+            pass  # Malformed terms are held before approval.
+    if not typed and (reference := release.delivery_reference(payload.get("delivery_id"))):
+        messages = [dict(m, body=f"{m['body']}\n\n{reference}") if m["channel"] == "email" else m for m in messages]
+    special = cfg("approval_by_kind").get((terms or {}).get("instruction") or intent or kind)
+    # An unverified FX estimate cannot reduce the required approval tier.
+    routing_cost = cost_eur
+    if terms and isinstance(terms["total_price"], (float, int)) and terms["total_price"] > 0:
+        routing_cost = terms["total_price"] if terms["currency"] == "EUR" else float("inf")
+    ap = approver_for(routing_cost, category)
+    if (cost_eur > 0 or typed) and (special or " + " in ap.get("role", "")):
         people, names = cfg("people"), []
         for role in dict.fromkeys([*(special or []), *ap["role"].split(" + ")]):
             name = people.get(f"{role}:{category}") or people.get(role)
@@ -186,25 +216,18 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
     due = t + dt.timedelta(minutes=due_in_minutes)
     check = t + dt.timedelta(minutes=min(due_in_minutes, 30))
     entry = f"proposed; needs {ap.get('role')} ({ap.get('name')})" + (f" — {ap['note']}" if ap.get("note") else "")
-    if policy_automatic(kind, cost_eur):
+    if policy_automatic(kind, cost_eur) and (not typed or repeat_commitment):
         status = "auto"
         ap = {"role": "Dockside", "name": "Dockside"}
         entry = "released by Dockside (free and reversible, no signature needed)"
-    elif policy_schedules({"kind": kind, "cost_eur": cost_eur, "eur_protected": eur_protected, "approver_name": ap.get("name")}):
+    elif not typed and policy_schedules({"kind": kind, "cost_eur": cost_eur, "eur_protected": eur_protected, "approver_name": ap.get("name")}):
         status = "scheduled"
         due = check = t + dt.timedelta(minutes=cfg("autonomy")["act_unless_stopped"]["window_minutes"])
         entry = f"Dockside executes at {check:%H:%M} unless {ap['name']} stops it"
-    aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     stamp = t.isoformat(timespec="seconds")
-    payload = dict(payload or {})
-    if cost_eur > 0:
-        from core import release
-        payload["commitment"] = release.describe(
-            {"id": aid, "finding_id": finding_id, "kind": kind, "cost_eur": cost_eur, "payload": payload,
-             "messages": messages}, parent=parent)
-    elif parent and parent["commitment_id"]:
-        payload["commitment_key"] = parent["commitment_id"]
-        payload["commitment_origin_action_id"] = parent["payload"].get("commitment_origin_action_id", parent["id"])
+    if release.applies(proposal) and (reason := release.proposal_blocker(proposal)):
+        payload["held_reason"] = reason
+        entry = f"Held before release: {reason}"
     with (tx() if connection is None else nullcontext(connection)) as c:
         c.execute("INSERT INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             aid, finding_id, title, rationale, kind, cost_eur, eur_protected, ce_copies, category, ap.get("role"), ap.get("name"), owner,
@@ -244,12 +267,13 @@ def _get(c: sqlite3.Connection, aid: str) -> dict | None:
     d["history"] = json.loads(d["history"] or "[]")
     d["held_reason"] = d["payload"].get("held_reason")
     d["signatures"] = d["payload"].get("signatures", {})
-    d["commitment_id"] = d["payload"].get("commitment", {}).get("key") or d["payload"].get("commitment_key")
+    terms = d["payload"].get("commitment") or {}
+    d["commitment_id"] = terms.get("commitment_id") or terms.get("key") or d["payload"].get("commitment_key")
     d["messages"] = [dict(m) for m in c.execute("SELECT * FROM messages WHERE action_id=? ORDER BY created_at", (aid,))]
     return d
 
 
-def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent", "escalated", "done", "rejected", "auto", "superseded")) -> list[dict]:
+def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent", "escalated", "done", "rejected", "auto", "superseded", "expired")) -> list[dict]:
     with tx() as c:
         ids = [r[0] for r in c.execute(f"SELECT id FROM actions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY eur_protected DESC, created_at",
                                        statuses)]
@@ -257,7 +281,7 @@ def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent",
 
 
 def decide(aid: str, decision: str, by: str, note: str = "", *, source: str | None = None,
-           expires_at: str | None = None) -> dict:
+           expires_at: str | None = None, commitment_digest: str | None = None) -> dict:
     """Record a verified decision and wait for all required approvals."""
     if decision not in ("approve", "reject"):
         raise ValueError(f"Unknown decision: {decision}")
@@ -276,15 +300,24 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, source: str | No
         actor = f"{by} ({source})" if source else by
         event = f"action_{status}"
         entry = f"{status} by {actor}"
-        if r["cost_eur"] > 0:
+        from core import release
+        action = _get(c, aid)
+        gated = release.applies(action)
+        if r["cost_eur"] > 0 or gated:
             required = set(signers(r))
             if source not in {"dashboard", "Discord", "email", "local demo"} or by not in required:
                 raise UnverifiedApprover(f"{aid} requires a verified decision from {r['approver_name'] or r['approver_role']}.")
             if decision == "approve":
+                digest = release.approval_digest(action)
+                if gated and (reason := release.proposal_blocker(action)):
+                    raise ValueError(reason)
+                if gated and digest != commitment_digest:
+                    raise ValueError("Review the current shipment instruction before signing")
                 signatures = payload.setdefault("signatures", {})
                 if by in signatures:
                     raise ValueError(f"{by} already signed")
-                signatures[by] = {"source": source, "signed_at": stamp}
+                signatures[by] = {"source": source, "signed_at": stamp,
+                                  **({"commitment_digest": digest} if digest else {})}
                 if required - signatures.keys():
                     status, event = r["status"], "approval_signed"
                     entry = f"Signed by {actor}; awaiting {', '.join(sorted(required - signatures.keys()))}"
@@ -333,7 +366,10 @@ def release_free() -> list[dict]:
             SELECT id,status FROM actions WHERE cost_eur=0 AND status IN ('proposed','scheduled','escalated')
         """)]
     released = []
+    from core import release
     for aid, status in queued:
+        if release.applies(get(aid)):
+            continue
         if action := set_status(aid, "auto", "Released by Dockside without a spending decision.",
                                 expected=status, approver_role="Dockside", approver_name="Dockside"):
             released.append(action)

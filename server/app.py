@@ -68,7 +68,8 @@ def notify_action(result: dict) -> None:
     if aid:
         approvals.email(aid)
         a = actions.get(aid)
-        kind = {"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed")
+        kind = "action_held" if a["held_reason"] else {
+            "auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed")
         notify(kind, {"action": a})
 
 
@@ -114,8 +115,11 @@ def refresh_evidence(force_rebuild: bool = False) -> list[dict]:
                 release.record_check("files")
                 STATE["last_sync"], STATE["sync_error"] = rules.now().isoformat(timespec="seconds"), None
         except llm_health.LLMUnavailable as exc:
+            release.record_check("files", valid=False)
             llm_paused(exc)
         except Exception as exc:
+            release.record_check("files", valid=False)
+            STATE["files_pending"] = True
             STATE["sync_error"] = type(exc).__name__
             actions.log_event("sync_error", None, type(exc).__name__)
         if events:
@@ -134,6 +138,7 @@ def refresh_evidence(force_rebuild: bool = False) -> list[dict]:
                 release.record_check("mailbox")
                 STATE["last_inbox"], STATE["inbox_error"] = rules.now().isoformat(timespec="seconds"), None
             except Exception as exc:
+                release.record_check("mailbox", valid=False)
                 STATE["inbox_error"] = type(exc).__name__
                 actions.log_event("inbox_error", None, type(exc).__name__)
         return events
@@ -235,7 +240,10 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                 actions.log_event("followup_error", None, f"{type(e).__name__}: {e}")
         STATE["busy"] = "follow-ups"
         for a in actions.due_followups():
-            if a["status"] in ("proposed", "escalated"):
+            state = release.decision_state(a)
+            if state["terminal"] == "Expired — no longer useful":
+                actions.hold(a["id"], state["held_reason"], expire=True)
+            elif state["can_approve"]:
                 a = actions.escalate(a)
                 if a:
                     notify("action_escalated", {"action": a})
@@ -312,14 +320,21 @@ def dispatch_view():
     decisions = {decision["id"]: decision for decision in snapshot["decisions"]}
     with actions.tx() as c:
         ids = [row[0] for row in c.execute("""SELECT id FROM actions
-            WHERE status IN ('approved','sent','superseded') AND json_extract(payload,'$.held_reason') IS NOT NULL""")]
+            WHERE status IN ('auto','approved','scheduled','sent','superseded','expired')
+            AND json_extract(payload,'$.held_reason') IS NOT NULL""")]
     for aid in list(dict.fromkeys([*decisions, *ids])):
         a = actions.get(aid)
         if aid not in decisions:
             decisions[aid] = {key: a[key] for key in ("id", "title", "rationale", "status", "approver_name", "next_check_at", "due_at")}
-        decisions[aid].update(cost=a["cost_eur"], details=a["payload"].get("details"),
+        terms = release.terms_for(a)
+        decision = release.decision_state(a)
+        instruction = None
+        if terms and not release.proposal_blocker(a):
+            _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")))
+        decisions[aid].update(status=a["status"], cost=a["cost_eur"], details=a["payload"].get("details"),
                               messages=[{key: m[key] for key in ("to_name", "subject", "body", "body_en")} for m in a["messages"]],
-                              held_reason=a["held_reason"], commitment_id=a["commitment_id"], signatures=a["signatures"])
+                              commitment_id=a["commitment_id"], commitment_digest=release.approval_digest(a),
+                              instruction=instruction, signatures=a["signatures"], **decision)
     snapshot["decisions"] = list(decisions.values())
     return snapshot
 
@@ -365,15 +380,17 @@ class Decision(BaseModel):
     decision: str
     by: str = "web"
     note: str = ""
+    commitment_digest: str | None = None
 
 
 def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "", *, source: str,
-                        expires_at: str | None = None) -> dict:
+                        expires_at: str | None = None, commitment_digest: str | None = None) -> dict:
     """Record the decision and send through the outbound release gate."""
     with outbound.DISPATCH_LOCK:
-        a = actions.decide(aid, decision, by, note, source=source, expires_at=expires_at)
+        a = actions.decide(aid, decision, by, note, source=source, expires_at=expires_at,
+                           commitment_digest=commitment_digest)
         if a["status"] == "approved":
-            if a["cost_eur"] > 0 and any(m["channel"] != "approval_email" for m in a["messages"]):
+            if release.applies(a):
                 if os.environ.get("SOONY_TOKEN") or os.environ.get("IMAP_HOST"):
                     refresh_evidence()
             a = outbound.dispatch(aid)
@@ -409,7 +426,7 @@ def decide(aid: str, d: Decision, request: Request):
     if not who:
         raise HTTPException(403, "Sign in through the company network to decide, or use the link in the approval email.")
     try:
-        return decide_and_dispatch(aid, d.decision, who[0], d.note, source=who[1])
+        return decide_and_dispatch(aid, d.decision, who[0], d.note, source=who[1], commitment_digest=d.commitment_digest)
     except actions.UnverifiedApprover as e:
         raise HTTPException(403, str(e))
     except KeyError:
@@ -418,11 +435,12 @@ def decide(aid: str, d: Decision, request: Request):
         raise HTTPException(409, f"{e}. Someone already decided; reload to see who.")
 
 
-def _approval_page(title: str, detail: str, button: str = "", status: int = 200) -> HTMLResponse:
+def _approval_page(title: str, detail: str, button: str = "", status: int = 200, *, instruction: str = "") -> HTMLResponse:
     form = f'<form method="post"><button type="submit">{escape(button)}</button></form>' if button else ""
     return HTMLResponse(
         f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
-        f'<title>{escape(title)} · Dockside</title><main><h1>{escape(title)}</h1><p>{escape(detail)}</p>{form}</main></html>',
+        f'<title>{escape(title)} · Dockside</title><main><h1>{escape(title)}</h1><p>{escape(detail)}</p>'
+        + (f'<pre>{escape(instruction)}</pre>' if instruction else "") + f'{form}</main></html>',
         status_code=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
                                      "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'"},
     )
@@ -442,14 +460,17 @@ def email_decision(token: str, decision: str, request: Request):
         return _approval_page("Approval link expired", "Open Dockside to check the current action.", status=410)
     label = "Approve now" if decision == "approve" else "Stop"
     if request.method == "GET":
-        return _approval_page(f"{label}?", f"{link['title']} (€{link['cost_eur']:,.2f})", label)
+        instruction = release.render_instruction(link["terms"])[1] if link["terms"] else ""
+        return _approval_page(f"{label}?", f"{link['title']} (€{link['cost_eur']:,.2f})", label, instruction=instruction)
     try:
         action = decide_and_dispatch(link["action_id"], decision, link["approver_name"], source="email",
-                                     expires_at=link["expires_at"])
+                                     expires_at=link["expires_at"], commitment_digest=link["commitment_digest"])
     except (ValueError, actions.UnverifiedApprover):
         return _approval_page("Decision unavailable", "This action was already decided or the link expired.", status=409)
     if action["held_reason"]:
-        return _approval_page("Release held", action["held_reason"])
+        state = release.decision_state(action)
+        return _approval_page(state["terminal"] or "Release held",
+                              " ".join(filter(None, (state["held_reason"], state["hold_owner"], state["hold_clears"]))))
     if action["status"] in approvals.WAITING:
         pending = [name for name in actions.signers(action) if name not in action["signatures"]]
         return _approval_page("Signature recorded", f"Waiting for {', '.join(pending)}.")

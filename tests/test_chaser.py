@@ -41,7 +41,7 @@ def test_duplicate_email_is_removed_and_case_is_logged(native_cases, monkeypatch
         conn.executemany("INSERT INTO suppliers VALUES (?, ?)",
                          [("S001", "one@example.test"), ("S002", "two@example.test")])
     monkeypatch.setattr(rules, "DB_PATH", master_db)
-    monkeypatch.setattr(outbound, "dispatch", lambda action_id: None)
+    monkeypatch.setattr(outbound, "dispatch", actions.get)
     message = {"channel": "email", "to_name": "Supplier", "language": "en", "subject": "Confirm delivery",
                "body": "Can you confirm the delivery date?", "body_en": None, "po_numbers": ["000007"]}
     assert agent.Tools().get_chaser_cases("S001", "000007")["cases"][0]["case_id"] == "case-1"

@@ -1,6 +1,9 @@
 import datetime as dt
 import json
 import sqlite3
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,8 +35,9 @@ def log(tmp_path, monkeypatch):
     with sqlite3.connect(rules.DB_PATH) as db:
         db.executescript(ingest.SCHEMA)
         db.execute("INSERT INTO suppliers(supplier_id,status,contact_email) VALUES (?, 'active', ?)", (SUPPLIER, ADDRESS))
-        db.execute("""INSERT INTO purchase_orders(po_number,supplier_id,material_id,quantity,unit_price,currency,status)
-                      VALUES (?,?,?,8000,2.1,'EUR','open')""", (PO, SUPPLIER, PART))
+        db.execute("""INSERT INTO purchase_orders(po_number,supplier_id,material_id,quantity,unit_price,currency,status,
+                                                  po_line,incoterm,plant,requested_date)
+                      VALUES (?,?,?,8000,2.1,'EUR','open',10,'DAP','Hamburg','2026-11-23')""", (PO, SUPPLIER, PART))
     release.record_check("files")
     release.record_check("mailbox")
 
@@ -47,7 +51,10 @@ def client(log):
 def deliveries(log, monkeypatch):
     monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
     monkeypatch.setenv("MAIL_FROM", "dockside@example.test")
-    sent = []
+    class Deliveries(list):
+        messages = []
+
+    sent = Deliveries()
 
     class SMTP:
         def __init__(self, *_args, **_kwargs):
@@ -64,24 +71,26 @@ def deliveries(log, monkeypatch):
 
         def send_message(self, message):
             sent.append(message["To"])
+            sent.messages.append(message)
 
     monkeypatch.setattr(outbound.smtplib, "SMTP", SMTP)
     return sent
 
 
-def message(to=ADDRESS, *, po=PO):
+def message(to=ADDRESS, *, po=PO, body="8,000 units", subject="Delivery details"):
     return {"channel": "email", "to_name": "Supplier", "to_address": to, "language": "en",
-            "subject": "Order", "body": "8,000 units", "po_numbers": [po] if po else []}
+            "subject": subject, "body": body, "po_numbers": [po] if po else []}
 
 
-def order(finding=FINDING, *, to=ADDRESS, protected=1000, payload=None, parent=None):
+def order(finding=FINDING, *, to=ADDRESS, protected=1000, payload=None, parent=None, body="8,000 units"):
     terms = {"quantity": 8000, "unit_price_eur": 2.1, "valid_until": "2026-11-22", **(payload or {})}
     return actions.propose(finding, "Order 8,000 art books", "rush", "order", 16800, protected, 2500,
-                           "Print & Packaging", None, payload=terms, messages=[message(to)], parent=parent)
+                           "Print & Packaging", None, payload=terms, messages=[message(to, body=body)], parent=parent)
 
 
 def approve(action, source="dashboard", person="Paul Winter"):
-    return server.decide_and_dispatch(action["id"], "approve", person, source=source)
+    return server.decide_and_dispatch(action["id"], "approve", person, source=source,
+                                      commitment_digest=release.approval_digest(action))
 
 
 def reply_from(origin, *, handled, text="Only 4,000 are available and the price is now EUR 2.85."):
@@ -131,7 +140,7 @@ def test_dashboard_holds_newer_supplier_reply_on_approval_and_retry(client, deli
     origin = actions.propose(FINDING, "Check terms", "", "ask", 0, 0, 0, None, None, messages=[message()])
     outbound._mark(origin["messages"][0]["id"], "sent")
     reply_from(origin, handled=True)
-    result = client.post(f"/api/actions/{action['id']}/decide", json={"decision": "approve"},
+    result = client.post(f"/api/actions/{action['id']}/decide", json={"decision": "approve", "commitment_digest": release.approval_digest(action)},
                          headers={"Tailscale-User-Login": "paul@example.test"})
     held = result.json()
     assert result.status_code == 200 and held["status"] == "approved"
@@ -163,7 +172,9 @@ def test_outbox_retry_rechecks_updated_po(log, deliveries, monkeypatch):
 
 def test_expires_and_requires_fresh_checks(log, deliveries, monkeypatch):
     expired = order(payload={"latestUsefulAt": "2026-11-22T09:59:00+01:00"})
-    assert "expired" in approve(expired)["held_reason"]
+    with pytest.raises(ValueError, match="expired"):
+        approve(expired)
+    assert release.decision_state(actions.get(expired["id"]))["terminal"] == "Expired — no longer useful"
     action = order()
     with actions.tx() as c:
         old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
@@ -207,13 +218,20 @@ def test_condition_requires_correlated_supplier_confirmation(log, deliveries, mo
     action = order()
     held = approve(action)
     assert "dock slot confirmed" in held["held_reason"]
-    for kind, body, address in (
-        ("dock_slot", "Dock slot is confirmed.", "dock@example.test"),
-        ("book_truck", "Truck is confirmed.", "carrier@example.test"),
-    ):
-        origin = actions.propose(FINDING, "Confirm arrangement", "", kind, 0, 0, 0, None, None, messages=[message(address)])
+    def confirm(kind, body, address, delivery_id):
+        origin = actions.propose(FINDING, "Check arrangement", "", "confirm_terms", 0, 0, 0, None, None,
+                                 payload={"delivery_id": delivery_id, "confirmation_kind": kind},
+                                 messages=[message(address, body="Please confirm availability.")])
         outbound._mark(origin["messages"][0]["id"], "sent")
         reply_from(origin, handled=True, text=body)
+
+    delivery = release.terms_for(action)["delivery_id"]
+    confirm("dock_slot", "Dock slot is confirmed.", "dock@example.test", "unrelated-shipment")
+    confirm("book_truck", "Truck is confirmed.", "carrier@example.test", delivery)
+    still_held = outbound.dispatch(action["id"])
+    assert "dock slot confirmed" in still_held["held_reason"]
+    assert release.decision_state(still_held)["hold_owner"] == "Receiving team"
+    confirm("dock_slot", "Dock slot is confirmed.", "dock@example.test", delivery)
     assert outbound.dispatch(action["id"])["status"] == "sent"
     assert deliveries == [ADDRESS]
 
@@ -228,11 +246,11 @@ def test_new_document_disagrees_with_commitment(log, deliveries):
     assert deliveries == []
 
 
-def test_cycle_polls_and_syncs_before_due_paid_release(log, deliveries, monkeypatch):
+def test_cycle_polls_and_syncs_before_approved_release_retry(log, deliveries, monkeypatch):
     action = order(protected=300000)
-    assert action["status"] == "scheduled"
-    monkeypatch.setenv("PUBLIC_URL", "https://dockside.example.test")
-    approvals.email(action["id"])
+    assert action["status"] == "proposed"
+    actions.decide(action["id"], "approve", "Paul Winter", source="dashboard",
+                   commitment_digest=release.approval_digest(action))
     monkeypatch.setenv("SOONY_NOW", "2026-11-22T10:16:00+01:00")
     monkeypatch.setenv("SOONY_TOKEN", "fixture")
     monkeypatch.setenv("IMAP_HOST", "fixture")
@@ -258,8 +276,8 @@ def test_cycle_polls_and_syncs_before_due_paid_release(log, deliveries, monkeypa
     server.cycle()
     held = actions.get(action["id"])
     assert calls == ["files", "mailbox"]
-    assert held["status"] == "scheduled" and "unread supplier reply" in held["held_reason"]
-    assert deliveries == ["paul@example.test"]
+    assert held["status"] == "approved" and "unread supplier reply" in held["held_reason"]
+    assert deliveries == []
 
 
 def test_discord_decisions_use_account_id(log, monkeypatch):
@@ -297,3 +315,186 @@ def test_discord_decisions_use_account_id(log, monkeypatch):
     rejected = actions.get(action["id"])
     assert rejected["status"] == "rejected"
     assert "Paul Winter (Discord)" in rejected["history"][-1]["entry"]
+
+
+@pytest.mark.parametrize("body", [
+    "Please dispatch the 8,000 art books.",
+    "Could you dispatch the 8,000 art books?",
+    "Bitte versenden Sie die Bücher.",
+    "Proszę o potwierdzenie terminu. Proszę wysłać 8 000 sztuk.",
+    "아트북 8000권을 발송해 주세요.",
+    "请发货8000册。",
+    "8,000 art books at €2.10",
+    "Please book a truck for pickup.",
+])
+def test_zero_cost_ask_cannot_send_an_instruction(log, deliveries, body):
+    a = actions.propose(FINDING, "Ask supplier", "", "ask", 0, 0, 0, None, None,
+                        messages=[message(body=body)])
+    held = outbound.dispatch(a["id"])
+    assert held["held_reason"] == "typed commitment is missing"
+    assert deliveries == []
+
+
+def test_zero_cost_delivery_status_question_still_sends(log, deliveries):
+    a = actions.propose(FINDING, "Ask supplier", "", "ask", 0, 0, 0, None, None,
+                        messages=[message(body="Please confirm when the 8,000 art books shipped.")])
+    assert outbound.dispatch(a["id"])["messages"][0]["status"] == "sent"
+    assert deliveries == [ADDRESS]
+
+
+@pytest.mark.parametrize(("body", "reason"), [
+    ("Please dispatch the 4,000 art books.", "draft quantity"),
+    ("8,000 art books at PLN 2.10", "draft price or currency"),
+    ("8,000 art books at EUR 2.85", "draft price or currency"),
+])
+def test_draft_terms_that_disagree_are_held(log, deliveries, body, reason):
+    action = order(body=body)
+    assert reason in action["held_reason"]
+    with pytest.raises(ValueError, match=reason):
+        approve(action)
+    assert not release.decision_state(action)["can_approve"]
+    assert deliveries == []
+
+
+def test_signed_terms_are_the_same_in_approval_and_supplier_email_and_repeat(client, deliveries, monkeypatch):
+    from server import discord_bot
+
+    monkeypatch.setenv("PUBLIC_URL", "https://dockside.example.test")
+    monkeypatch.setattr(server.dispatch, "snapshot", lambda _: {"decisions": [{"id": action["id"]}]})
+    action = order(body="Please dispatch 8,000 art books at EUR 2.10. Unreviewed note about delivery.")
+    terms = release.terms_for(action)
+    block = release.terms_block(terms)
+    approvals.email(action["id"])
+    approval, = deliveries.messages
+    assert block in approval.get_content()
+    decision, = client.get("/api/dispatch").json()["decisions"]
+    assert block in decision["instruction"]
+    discord = discord_bot.decision_embed(action)
+    assert block in "".join(field.value for field in discord.fields if field.name.startswith("Shipment instruction"))
+
+    old_card = client.post(f"/api/actions/{action['id']}/decide", json={"decision": "approve"},
+                           headers={"Tailscale-User-Login": "paul@example.test"})
+    assert old_card.status_code == 409
+    assert deliveries == ["paul@example.test"]
+    original = approve(action)
+    shipment_mail = deliveries.messages[-1]
+    assert block in shipment_mail.get_content()
+    assert "Unreviewed note" not in shipment_mail.get_content()
+    assert original["signatures"]["Paul Winter"]["commitment_digest"] == shipment_mail["X-Dockside-Terms-SHA256"]
+
+    repeat = actions.propose("followup-original", "Repeat shipment instruction", "", "ask", 0, 0, 0, None, None,
+                             parent=original, repeat_commitment=True, messages=[message(body="Please dispatch 8,000 art books.")])
+    assert outbound.dispatch(repeat["id"])["messages"][0]["status"] == "sent"
+    repeat_mail = deliveries.messages[-1]
+    assert repeat_mail.get_content().split("\n\n", 1)[1] == shipment_mail.get_content().split("\n\n", 1)[1]
+    assert repeat_mail["X-Dockside-Commitment"] == shipment_mail["X-Dockside-Commitment"]
+    assert repeat_mail["X-Dockside-Terms-SHA256"] == shipment_mail["X-Dockside-Terms-SHA256"]
+    assert "Do not create an additional order or booking" in repeat_mail.get_content()
+
+
+def test_repeat_cannot_reuse_an_unsigned_instruction(log, deliveries):
+    repeat = actions.propose("followup", "Repeat", "", "ask", 0, 0, 0, None, None,
+                             parent=order(), repeat_commitment=True, messages=[message(body="Dispatch 8,000 art books.")])
+    assert "explicitly approved and sent" in outbound.dispatch(repeat["id"])["held_reason"]
+    assert deliveries == []
+
+
+def test_outbox_retry_rejects_change_to_signed_delivery_place(log, deliveries, monkeypatch):
+    monkeypatch.delenv("SMTP_HOST")
+    action = approve(order())
+    assert action["messages"][0]["status"] == "outbox"
+    payload = action["payload"]
+    terms = payload["commitment"]
+    terms["delivery_place"] = "Rotterdam"
+    payload["commitment_digest"] = release.fingerprint(terms)
+    with actions.tx() as db:
+        db.execute("UPDATE actions SET payload=? WHERE id=?", (json.dumps(payload), action["id"]))
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
+    assert "approval for these exact terms is missing" in outbound.dispatch(action["id"])["held_reason"]
+    assert deliveries == []
+
+
+@pytest.mark.parametrize("source", ["files", "mailbox"])
+def test_failed_preflight_invalidates_still_fresh_checkpoint(log, deliveries, monkeypatch, source):
+    action = order()
+    monkeypatch.setenv("SOONY_TOKEN", "fixture")
+    monkeypatch.setenv("IMAP_HOST", "fixture")
+    monkeypatch.setitem(server.STATE, "files_pending", False)
+
+    def fail(*_):
+        raise OSError("preflight failed")
+
+    monkeypatch.setattr(server.soony_sync, "sync_once", fail if source == "files" else lambda _: [])
+    monkeypatch.setattr(inbox, "fetch", fail if source == "mailbox" else lambda: [])
+    held = approve(action)
+    assert held["held_reason"] == "evidence stale"
+    assert release.decision_state(held)["hold_owner"] == "Dockside operator"
+    with actions.tx() as c:
+        assert c.execute("SELECT checked_at FROM release_evidence WHERE source=?", (source,)).fetchone()[0] is None
+    assert deliveries == []
+    release.record_check(source)
+    assert outbound.dispatch(action["id"])["status"] == "sent"
+
+
+def test_terminal_decision_cards_hide_approve(client, monkeypatch):
+    expired = order(payload={"latestUsefulAt": "2026-11-22T09:59:00+01:00"})
+    replaced = order()
+    actions.hold(replaced["id"], f"duplicate of {expired['id']}; already sent", supersede=True)
+    monkeypatch.setattr(server.dispatch, "snapshot", lambda _: {"decisions": [{"id": expired["id"]}]})
+    cards = client.get("/api/dispatch").json()["decisions"]
+    assert all(not card["can_approve"] for card in cards)
+    assert [card["terminal"] for card in cards] == ["Expired — no longer useful", f"Replaced by {expired['id']}"]
+    node = shutil.which("node")
+    if node:
+        js = Path(__file__).resolve().parents[1] / "web/assembly/operations.js"
+        render = 'const html = value => value; const money = String; const at = String;\n' + js.read_text()
+        render += "\nconsole.log(" + json.dumps(cards) + ".map(decisionItem).join(''));"
+        result = subprocess.run([node, "-"], input=render, text=True, check=True, capture_output=True)
+        assert 'data-decision="approve"' not in result.stdout
+        assert all(card["terminal"] in result.stdout for card in cards)
+
+
+def test_historical_zero_cost_resend_is_held_on_outbox_retry(log, deliveries):
+    original = actions.propose(FINDING, "Follow up", "", "ask", 0, 0, 0, None, None,
+                               messages=[message(body="Please confirm the arrival date.")])
+    with actions.tx() as db:
+        db.execute("UPDATE messages SET status='outbox',body=? WHERE action_id=?",
+                   ("Please dispatch the 8,000 art books.", original["id"]))
+    assert not original["held_reason"]
+    held = outbound.dispatch(original["id"])
+    assert held["held_reason"] == "typed commitment is missing"
+    assert held["messages"][0]["status"] == "outbox"
+    assert deliveries == []
+
+
+def test_freight_instruction_waits_for_approval_even_with_high_value_ratio(log, deliveries):
+    carrier = "carrier@example.test"
+    with sqlite3.connect(rules.DB_PATH) as db:
+        db.execute("INSERT INTO suppliers(supplier_id,status,contact_email) VALUES ('FR-01','active',?)", (carrier,))
+    booking = actions.propose("freight-booking", "Book art book pickup", "", "book_truck", 168, 50000, 0, "Print & Packaging", None,
+                              payload={"commitment": {"part": PART, "quantity": 8000, "unit_price": 0.021, "currency": "EUR",
+                                                      "incoterm": "DAP", "delivery_place": "Hamburg", "deliver_by": "2026-11-23",
+                                                      "po": PO, "po_line": 10, "valid_until": "2026-11-22"}},
+                              messages=[message(carrier, body="Please book freight for 8,000 art books. Total price EUR 168.")])
+    assert booking["status"] == "proposed"
+    assert outbound.dispatch(booking["id"])["status"] == "proposed"
+    assert deliveries == []
+    assert approve(booking)["status"] == "sent"
+    assert deliveries == [carrier]
+    assert "Book freight according to these terms." in deliveries.messages[0].get_content()
+
+
+def test_email_link_approves_the_exact_terms_in_its_message(client, deliveries, monkeypatch):
+    import re
+
+    monkeypatch.setenv("PUBLIC_URL", "https://dockside.example.test")
+    action = order()
+    approvals.email(action["id"])
+    path = re.search(r"https://dockside.example.test(/approval/[\w-]+/approve)", deliveries.messages[0].get_content())[1]
+    preview = client.get(path)
+    assert preview.status_code == 200 and action["commitment_id"] in preview.text
+    result = client.post(path)
+    assert "was approved" in result.text
+    assert deliveries == ["paul@example.test", ADDRESS]
+    stored = actions.get(action["id"])
+    assert stored["signatures"]["Paul Winter"]["commitment_digest"] == release.approval_digest(action)
