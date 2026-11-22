@@ -162,8 +162,8 @@ function renderProgress(route, line) {
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepStates[step.state] ?? "Unclear"}</span>
         <p>${html(step.detail)}</p>${step.events?.length ? `<ol class="events">${step.events.map(event =>
-          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "note" ? "Dockside estimate" : event.who)}</b> ${html(event.text)}${
-            event.message_id && event.kind !== "sent" && event.kind !== "note" ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>` : ""}</div></li>`;
+          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(event.text)}${
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

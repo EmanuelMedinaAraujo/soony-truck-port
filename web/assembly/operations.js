@@ -112,16 +112,20 @@ function conflictCard(part, item, snapshot) {
   const logistics = String(conflict.owner_logistics ?? "").includes("@") ? `${conflict.who} (supplier logistics)` : conflict.owner_logistics;
   const unload = option.modeledUnloadAt ? Date.parse(option.modeledUnloadAt) : null;
   const cutoff = Date.parse(snapshot.cutoff);
-  const late = unload && unload > cutoff ? Math.round((unload - cutoff) / 60000) : 0;
+  const late = option.modeledLateMinutes ?? (unload && unload > cutoff ? Math.round((unload - cutoff) / 60000) : 0);
+  const anchor = option.modeledUnloadAnchorAt ?? conflict.at;
   const q = item.question;
+  const task = item.next_step.task ?? q?.task;
+  const answered = task && task.status && task.status !== "open"
+    ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.person)} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
   return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
     <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome. ${option.copiesAdded ? `The rescue (+${number(option.copiesAdded)} copies) is at risk.` : `No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
     <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
       <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
-    <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(conflict.at))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
+    <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${option.modeledUnloadReplyId ? ` (<a href="/api/replies/${encodeURIComponent(option.modeledUnloadReplyId)}" target="_blank" rel="noreferrer">latest reply</a>)` : ""}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
       <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
-      ${option.departBy ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(option.departBy))}</b></span>` : ""}</p>
-    ${q ? questionBlock(part, {...q, person: q.person ?? person}) : ""}
+      ${option.departBy ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(option.departBy))}</b>${Date.now() > Date.parse(option.departBy) ? " (passed)" : ""}</span>` : ""}</p>
+    ${answered || (q ? questionBlock(part, {...q, person: q.person ?? person}) : "")}
     <details class="question"><summary>What clears it</summary>
       <ol class="clears">
         <li>${html(person)} confirms the order reference, quantity, price and the dispatch instruction with ${html(conflict.who)}.</li>
