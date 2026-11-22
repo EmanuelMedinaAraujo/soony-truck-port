@@ -123,7 +123,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 
 | Criterion | Live proof |
 |---|---|
-| A pitch that sticks | Follow a single art book from a corrected receipt to one more finished game on the Sunday truck. |
+| A pitch that sticks | Follow the art book from a corrected receipt to the supplier's reversal, and watch Dockside stop counting it and move the recommendation to the new bottleneck. |
 | A real business case | Compare verified offer cost with marginal refund exposure and show the effect of the next bottleneck. Apply the same calculation to a seasonal retail launch. |
 | Technical depth | Pull source changes by hash, retain evidence for receipt and inspection corrections, show real multilingual supplier replies and real outbound activity. Recompute forecasts from the shared bill of materials and the current packing clock. |
 | Taste | Keep the overview quiet. Select a part to open the exact path, evidence and decision. Keep the work Dockside is doing visible without asking the buyer to manage it. |

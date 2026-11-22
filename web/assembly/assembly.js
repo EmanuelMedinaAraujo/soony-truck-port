@@ -90,6 +90,12 @@ function renderStakes() {
 function renderEconomics(part, route) {
   const option = part.option;
   if (!option || !route?.id?.startsWith("offer-")) return "";
+  // When another part binds, this rescue adds nothing for now: say so first, before any economics.
+  const binding = state.components.find(item => item.id === state.focusComponentId);
+  if (!option.copiesAdded && binding && binding.id !== part.id) {
+    return `<p class="economics"><b>${html(nameOf(binding))} limits dispatch now.</b> This rescue adds no copies until that changes, so Dockside keeps any amendment on hold
+      and works on ${html(nameOf(binding).toLowerCase())} first. <button class="next-part" type="button" data-stake-part="${html(binding.id)}">Open ${html(nameOf(binding))}</button></p>`;
+  }
   const edition = state.editions.find(item => item.id === option.editionId);
   if (!edition) return "";
   const after = edition.projected + option.copiesAdded;
@@ -382,6 +388,8 @@ $("overview").addEventListener("click", event => {
 });
 $("inspector").addEventListener("click", event => {
   if (event.target.closest("#close-part")) selectPart(null);
+  const jump = event.target.closest("[data-stake-part]");
+  if (jump) selectPart(jump.dataset.stakePart);
 });
 $("inspector").addEventListener("change", event => {
   if (event.target.id === "assume-confirmed") assumeConfirmation = event.target.checked;

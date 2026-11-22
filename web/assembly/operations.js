@@ -115,7 +115,7 @@ function conflictCard(part, item, snapshot) {
   const late = unload && unload > cutoff ? Math.round((unload - cutoff) / 60000) : 0;
   const q = item.question;
   return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-    <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome. The rescue is at risk.</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
+    <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome. ${option.copiesAdded ? `The rescue (+${number(option.copiesAdded)} copies) is at risk.` : `No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
     <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
       <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
     <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(conflict.at))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
