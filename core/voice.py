@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import threading
+from contextlib import closing
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -16,7 +18,8 @@ from core import actions, inbox, rules
 API = "https://api.elevenlabs.io/v1"
 PROVIDER = "elevenlabs:"
 PREPARE_LOCK = threading.Lock()
-ACTIVE = {"initiated", "in-progress", "processing"}
+MAX_PREPARE_ATTEMPTS = 3
+DIAL_TIMEOUT = dt.timedelta(minutes=15)
 FIELDS = {
     "confirmed": ("boolean", "Did the callee explicitly confirm the requested plan? Leave unset if unclear."),
     "pickup_or_delivery_time": ("string", "Confirmed pickup or delivery date, time and time zone, if given."),
@@ -37,12 +40,17 @@ CREATE TABLE IF NOT EXISTS voice_calls(
     progress TEXT,
     result TEXT,
     reply_id TEXT,
-    dial_attempted INTEGER NOT NULL DEFAULT 0
+    dial_attempted INTEGER NOT NULL DEFAULT 0,
+    prepare_attempts INTEGER NOT NULL DEFAULT 0,
+    simulation_attempted INTEGER NOT NULL DEFAULT 0,
+    conversation_id TEXT,
+    started_at TEXT
 );
 """
 CALLS = """
 SELECT m.*, a.status AS action_status, a.title, a.rationale, a.cost_eur, a.payload,
-       v.progress, v.result, v.dial_attempted, r.summary_en
+       v.progress, v.result, v.dial_attempted, v.prepare_attempts, v.simulation_attempted,
+       v.conversation_id, v.started_at, r.summary_en
 FROM messages m JOIN actions a ON a.id=m.action_id
 LEFT JOIN voice_calls v ON v.msg_id=m.id
 LEFT JOIN replies r ON r.id=v.reply_id
@@ -54,11 +62,11 @@ class VoiceError(RuntimeError):
     """A provider failure with a message safe to log."""
 
 
-def _request(path: str, *, payload: dict | None = None):
+def _request(path: str, *, payload: dict | None = None, timeout: int = 12):
     req = Request(API + path, data=json.dumps(payload).encode() if payload is not None else None,
                   headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"], "Content-Type": "application/json"})
     try:
-        with urlopen(req, timeout=12) as response:
+        with urlopen(req, timeout=timeout) as response:
             return json.load(response)
     except HTTPError as exc:
         exc.close()
@@ -71,9 +79,21 @@ def _enabled() -> bool:
     return rules.cfg("voice")["enabled"] and bool(os.environ.get("ELEVENLABS_API_KEY"))
 
 
+def init_schema(c) -> None:
+    inbox.init_schema(c)
+    c.execute(CALL_SCHEMA)
+    fields = {"prepare_attempts": "INTEGER NOT NULL DEFAULT 0", "simulation_attempted": "INTEGER NOT NULL DEFAULT 0",
+              "conversation_id": "TEXT", "started_at": "TEXT"}
+    if fields.keys() - {r[1] for r in c.execute("PRAGMA table_info(voice_calls)")}:
+        c.execute("BEGIN IMMEDIATE")
+        for field in fields.keys() - {r[1] for r in c.execute("PRAGMA table_info(voice_calls)")}:
+            c.execute(f"ALTER TABLE voice_calls ADD COLUMN {field} {fields[field]}")
+        c.commit()
+
+
 def _calls(where: str = "", args: tuple = ()) -> list[dict]:
     with actions.tx() as c:
-        c.executescript(CALL_SCHEMA + inbox.REPLY_SCHEMA)
+        init_schema(c)
         return [dict(row) for row in c.execute(CALLS + where + " ORDER BY m.created_at, m.id", args)]
 
 
@@ -106,19 +126,15 @@ def talk_url(message_id: str) -> str | None:
 def _view(m: dict) -> dict:
     result = json.loads(m["result"]) if m["result"] else None
     agent_id = _agent_id(m)
-    url = None
     if result:
         result["summary"] = m["summary_en"] or result["summary"]
         status = "done"
-    elif not _enabled() or not _released(m):
+    elif not rules.cfg("voice")["enabled"] or not _released(m):
         status = "unavailable"
-    elif agent_id:
-        status = m["progress"] or "ready"
-        url = _talk_url(agent_id)
     else:
         status = m["progress"] or "preparing"
     return {"message_id": m["id"], "to_name": m["to_name"], "subject": m["subject"],
-            "script": m["body"], "status": status, "talk_url": url, "result": result}
+            "script": m["body"], "status": status, "talk_url": _talk_url(agent_id), "result": result}
 
 
 def get(message_id: str) -> dict:
@@ -130,8 +146,12 @@ def list_calls(action_id: str | None = None) -> list[dict]:
     return [_view(m) for m in rows]
 
 
+def _language(m: dict) -> str:
+    return (m["language"] or "en").strip().lower().replace("_", "-").split("-")[0]
+
+
 def _agent_payload(m: dict, name: str, voice_id: str) -> dict:
-    language = (m["language"] or "en").strip().lower().replace("_", "-").split("-")[0]
+    language = _language(m)
     details = json.loads(m["payload"] or "{}").get("details") or ""
     prompt = f"""You are Dockside, an AI voice assistant calling on behalf of Soony's Hamburg distribution center (DC-HAM).
 Ask if you have reached {m['to_name']} or someone authorized to answer for them before sharing the call details.
@@ -189,59 +209,159 @@ def _progress(message_id: str, progress: str) -> None:
                      ON CONFLICT(msg_id) DO UPDATE SET progress=excluded.progress""", (message_id, progress))
 
 
-def _dial_demo(m: dict, agent_id: str) -> None:
+def _dial_demo(m: dict, agent_id: str) -> bool:
     settings = rules.cfg("voice")
     target = settings.get("demo_number")
-    if not settings["dial_out"] or not target or m["dial_attempted"]:
-        return
+    if not settings["dial_out"] or not target:
+        return False
     if not re.fullmatch(r"\+[1-9]\d{7,14}", target):
         raise VoiceError("The demo number must be in international E.164 format")
-    providers = {"twilio": "twilio", "sip_trunk": "sip-trunk"}
     number = next((n for n in _request("/convai/phone-numbers")
-                   if n.get("provider") in providers and n.get("phone_number_id")), None)
+                   if n.get("provider") == "sip_trunk" and n.get("phone_number_id")), None)
     if not number:
-        return
-    # Persist the attempt before sending so an ambiguous timeout cannot place a second call.
+        return False
+    # A timeout may mean the call was placed. Persist the claim before asking the provider.
     with actions.tx() as c:
-        claimed = c.execute("""UPDATE voice_calls SET dial_attempted=1
-                               WHERE msg_id=? AND dial_attempted=0 AND result IS NULL""", (m["id"],)).rowcount
+        claimed = c.execute("""UPDATE voice_calls SET dial_attempted=1,progress='in_progress',started_at=?
+                               WHERE msg_id=? AND dial_attempted=0 AND simulation_attempted=0 AND result IS NULL""",
+                            (actions.now().isoformat(timespec="seconds"), m["id"])).rowcount
     if claimed:
-        path = f"/convai/{providers[number['provider']]}/outbound-call"
-        result = _request(path, payload={"agent_id": agent_id, "agent_phone_number_id": number["phone_number_id"],
-                                         "to_number": target})
+        result = _request("/convai/sip-trunk/outbound-call", payload={
+            "agent_id": agent_id, "agent_phone_number_id": number["phone_number_id"], "to_number": target})
         if not result.get("success"):
+            _progress(m["id"], "failed")
             raise VoiceError("ElevenLabs declined the demo call")
-        _progress(m["id"], "in_progress")
+        with actions.tx() as c:
+            c.execute("UPDATE voice_calls SET conversation_id=? WHERE msg_id=?", (result.get("conversation_id"), m["id"]))
+    return True
+
+
+def _prepare_agent(m: dict) -> str | None:
+    if agent_id := _agent_id(m):
+        return agent_id
+    if not _enabled() or (m["prepare_attempts"] or 0) >= MAX_PREPARE_ATTEMPTS:
+        return None
+    with actions.tx() as c:
+        c.execute("""INSERT INTO voice_calls(msg_id,prepare_attempts) VALUES (?,1)
+                     ON CONFLICT(msg_id) DO UPDATE SET prepare_attempts=prepare_attempts+1""", (m["id"],))
+    agent_id = _find_or_create_agent(m)
+    with actions.tx() as c:
+        c.execute("UPDATE messages SET provider_id=? WHERE id=?", (PROVIDER + agent_id, m["id"]))
+        c.execute("UPDATE voice_calls SET progress='ready' WHERE msg_id=?", (m["id"],))
+    actions.log_event("voice_ready", m["action_id"], f"Call agent ready for {m['id']}")
+    return agent_id
 
 
 def prepare(message_id: str) -> dict:
+    """Keep the optional live web session available through the existing API."""
     with PREPARE_LOCK:
         m = _call(message_id)
-        if not _enabled() or not _released(m) or m["result"]:
-            return _view(m)
-        agent_id = _agent_id(m)
-        try:
-            if not agent_id:
-                agent_id = _find_or_create_agent(m)
-                with actions.tx() as c:
-                    c.execute("UPDATE messages SET provider_id=? WHERE id=?", (PROVIDER + agent_id, message_id))
-                    c.execute("""INSERT INTO voice_calls(msg_id,progress) VALUES (?,'ready')
-                                 ON CONFLICT(msg_id) DO UPDATE SET progress='ready'""", (message_id,))
-                actions.log_event("voice_ready", m["action_id"], f"Call agent ready for {message_id}")
-            _dial_demo(m, agent_id)
-        except Exception as exc:
-            if not agent_id:
-                _progress(message_id, "unavailable")
-            _log_error(m, exc)
+        if _released(m) and _enabled():
+            try:
+                _prepare_agent(m)
+            except Exception as exc:
+                _log_error(m, exc)
+                if not m["result"]:
+                    _progress(m["id"], "unavailable")
         return get(message_id)
 
 
-def prepare_open() -> None:
-    if _enabled():
-        dial_out = rules.cfg("voice")["dial_out"]
-        for m in _calls(" AND v.result IS NULL AND m.status='delivered' AND a.status IN ('approved','auto','sent')"):
-            if not _agent_id(m) or (dial_out and not m["dial_attempted"]):
-                prepare(m["id"])
+def _shipment_records(m: dict) -> list[dict]:
+    # Match the contact and call reference before sharing any shipment records.
+    brief = (m["body"] + " " + (json.loads(m["payload"] or "{}").get("details") or "")).casefold()
+    contact = m["to_name"].casefold()
+    if not rules.DB_PATH.exists():
+        return []
+    with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute("""SELECT s.reference,s.status,s.eta,s.updated_at,s.note,car.name AS carrier,
+                                   sup.name AS supplier
+                            FROM shipments s LEFT JOIN carriers car USING(carrier_id)
+                            LEFT JOIN suppliers sup USING(supplier_id) WHERE s.reference IS NOT NULL""")
+        records = []
+        for row in rows:
+            if not row["reference"] or row["reference"].casefold() not in brief:
+                continue
+            names = [re.sub(r"\s+(?:gmbh|a/s|ltd\.?)$", "", name.casefold()) for name in
+                     (row["carrier"], row["supplier"]) if name]
+            if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", contact) for name in names):
+                records.append({k: row[k] for k in ("reference", "status", "eta", "updated_at", "note") if row[k]})
+        return records
+
+
+def _mock_conversation(m: dict, records: list[dict]) -> dict:
+    facts = []
+    for row in records:
+        status = row.get("status", "unknown status").replace("_", " ")
+        facts.append(f"the shipment record for {row['reference']} shows {status}")
+    if facts:
+        known = " and ".join(facts)
+        summary = f"{known[0].upper()}{known[1:]}, but the requested operational details still need confirmation."
+    else:
+        summary = "The requested operational details still need confirmation from the contact."
+    return {"transcript": [{"role": "agent", "message": m["body"]},
+                           {"role": "user", "message": summary}],
+            "analysis": {"transcript_summary": summary}}
+
+
+def _simulate(m: dict, agent_id: str | None) -> dict | None:
+    with actions.tx() as c:
+        claimed = c.execute("""INSERT INTO voice_calls(msg_id,simulation_attempted,progress)
+                               VALUES (?,1,'in_progress') ON CONFLICT(msg_id) DO UPDATE
+                               SET simulation_attempted=1,progress='in_progress'
+                               WHERE simulation_attempted=0 AND dial_attempted=0 AND result IS NULL""",
+                            (m["id"],)).rowcount
+    try:
+        records = _shipment_records(m)
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        _log_error(m, exc)
+        records = []
+    if claimed and agent_id and _enabled():
+        prompt = (f"You play {m['to_name']} in a text-only rehearsal. Speak {_language(m)}. "
+                  "Use only the following shipment records as background. Describe them as recorded, "
+                  "without implying you independently verified them. For every question the records do "
+                  "not answer, say you don't know yet and that the real contact needs to check. "
+                  "Never accept a booking or invent times, scans, quotes, release or commitments. "
+                  f"Shipment records: {json.dumps(records, ensure_ascii=False)}")
+        try:
+            response = _request(f"/convai/agents/{quote(agent_id, safe='')}/simulate-conversation", timeout=60,
+                                payload={"simulation_specification": {"simulated_user_config": {
+                                    "language": _language(m), "prompt": {"prompt": prompt}}}, "new_turns_limit": 12})
+            if reply := _store_result(m, {"transcript": response["simulated_conversation"],
+                                          "analysis": response.get("analysis")}, simulated=True):
+                return reply
+            raise VoiceError("ElevenLabs simulation returned no answer")
+        except Exception as exc:
+            _log_error(m, exc)
+    # An unavailable provider or restart still yields a clearly labeled, grounded local mock.
+    return _store_result(m, _mock_conversation(m, records), simulated=True, source="mock")
+
+
+def prepare_open() -> list[dict]:
+    replies = []
+    if not rules.cfg("voice")["enabled"]:
+        return replies
+    for row in _calls(" AND v.result IS NULL AND m.status='delivered' AND a.status IN ('approved','auto','sent')"):
+        with PREPARE_LOCK:
+            m = _call(row["id"])
+            if not _released(m) or m["result"] or m["dial_attempted"] or m["progress"] == "failed":
+                continue
+            try:
+                _progress(m["id"], "in_progress")
+                try:
+                    agent_id = _prepare_agent(m)
+                except Exception as exc:
+                    _log_error(m, exc)
+                    agent_id = None
+                if agent_id and _enabled() and not m["simulation_attempted"] and _dial_demo(m, agent_id):
+                    continue
+                if reply := _simulate(m, agent_id):
+                    replies.append(reply)
+            except Exception as exc:
+                _log_error(m, exc)
+                if not _call(m["id"])["dial_attempted"]:
+                    _progress(m["id"], "failed")
+    return replies
 
 
 def _log_error(m: dict, exc: Exception) -> None:
@@ -260,35 +380,43 @@ def _conversations(agent_id: str):
         params["cursor"] = cursor
 
 
-def _store_result(m: dict, conversation: dict) -> dict | None:
+def _store_result(m: dict, conversation: dict, *, simulated: bool = False,
+                  source: str = "elevenlabs") -> dict | None:
     turns = conversation.get("transcript") or []
     if not any(t["role"] == "user" and t.get("message") for t in turns):
         return None
-    transcript = "\n".join(f"{'Dockside' if t['role'] == 'agent' else m['to_name']}: {t['message']}"
+    name = m["to_name"] + (" (simulated call)" if simulated else "")
+    transcript = "\n".join(f"{'Dockside' if t['role'] == 'agent' else name}: {t['message']}"
                            for t in turns if t["role"] in {"agent", "user"} and t.get("message"))
     analysis = conversation.get("analysis") or {}
     collected = analysis.get("data_collection_results") or {}
     fields = {k: (collected.get(k) or {}).get("value") for k in FIELDS}
+    if simulated:
+        fields["confirmed"] = False
     body = f"{transcript}\n\nCollected fields:\n{json.dumps(fields, ensure_ascii=False, indent=2)}"
     start = (conversation.get("metadata") or {}).get("start_time_unix_secs")
     received = dt.datetime.fromtimestamp(start, tz=dt.timezone.utc) if start is not None else actions.now()
-    mid = f"call:{conversation['conversation_id']}"
+    mid = f"simulation:{m['id']}" if simulated else f"call:{conversation['conversation_id']}"
+    prefix = "Simulated call" if simulated else "Call"
+    summary = analysis.get("transcript_summary") or "See the transcript for the response."
+    if simulated:
+        summary = f"{prefix}: {summary}"
     rid = "RPL-" + hashlib.sha1(mid.encode()).hexdigest()[:12].upper()
     row = dict(id=rid, message_id=mid, msg_id=m["id"], action_id=m["action_id"], from_addr="",
-               from_name=m["to_name"], subject=f"Call: {m['subject']}", received_at=received.isoformat(timespec="seconds"),
-               body=body)
-    result = {"summary": analysis.get("transcript_summary"), "fields": fields}
+               from_name=name, subject=f"{prefix}: {m['subject']}", received_at=received.isoformat(timespec="seconds"),
+               body=body, simulated=int(simulated))
+    result = {"summary": summary, "fields": fields, "transcript": transcript, "simulated": simulated, "source": source}
     with actions.tx() as c:
         c.execute("BEGIN IMMEDIATE")
         if c.execute("SELECT 1 FROM voice_calls WHERE msg_id=? AND result IS NOT NULL", (m["id"],)).fetchone():
             return None
-        if not c.execute("""INSERT OR IGNORE INTO replies(id,message_id,msg_id,action_id,from_addr,from_name,subject,received_at,body)
-                            VALUES (?,?,?,?,?,?,?,?,?)""", tuple(row.values())).rowcount:
+        if not c.execute("""INSERT OR IGNORE INTO replies(id,message_id,msg_id,action_id,from_addr,from_name,subject,received_at,body,simulated)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)""", tuple(row.values())).rowcount:
             return None
         c.execute("""INSERT INTO voice_calls(msg_id,reply_id,result) VALUES (?,?,?)
                      ON CONFLICT(msg_id) DO UPDATE SET reply_id=excluded.reply_id,result=excluded.result""",
                   (m["id"], rid, json.dumps(result, ensure_ascii=False)))
-    actions.log_event("reply", m["action_id"], f"{m['to_name']} replied: {row['subject']}")
+    actions.log_event("reply", m["action_id"], f"{name} replied: {row['subject']}")
     return row
 
 
@@ -296,20 +424,28 @@ def collect() -> list[dict]:
     replies = []
     if not _enabled():
         return replies
-    for m in _calls(" AND m.provider_id LIKE 'elevenlabs:%' AND v.result IS NULL"):
+    for m in _calls(" AND m.provider_id LIKE 'elevenlabs:%' AND v.result IS NULL AND v.dial_attempted=1 "
+                    "AND v.progress IS NOT 'failed' AND m.status='delivered' AND a.status IN ('approved','auto','sent')"):
         try:
-            active = False
-            for conversation in _conversations(_agent_id(m)):
-                status = conversation["status"]
-                active |= status in ACTIVE
-                if status != "done" or conversation.get("user_message_count") == 0:
+            started = rules.ts(m["started_at"] or m["sent_at"])
+            if started and actions.now() - started >= DIAL_TIMEOUT:
+                _progress(m["id"], "failed")
+                raise VoiceError("Demo call did not yield a transcript before the collection deadline")
+            cid = m["conversation_id"]
+            if not cid:
+                # Recover a call if the outbound request timed out before returning its ID.
+                items = _conversations(_agent_id(m))
+                cid = next((item["conversation_id"] for item in items
+                            if item.get("call_type") == "phone" and started and
+                            item.get("start_time_unix_secs", 0) >= int(started.timestamp())), None)
+                if not cid:
                     continue
-                detail = _request("/convai/conversations/" + quote(conversation["conversation_id"], safe=""))
-                if detail["status"] == "done" and (reply := _store_result(m, detail)):
-                    replies.append(reply)
-                    break
-            else:
-                _progress(m["id"], "in_progress" if active else "ready")
+            detail = _request("/convai/conversations/" + quote(cid, safe=""))
+            if detail["status"] == "done" and (reply := _store_result(m, detail)):
+                replies.append(reply)
+            elif detail["status"] in {"done", "failed"}:
+                _progress(m["id"], "failed")
+                raise VoiceError("Demo call ended without an answer")
         except Exception as exc:
             _log_error(m, exc)
     return replies

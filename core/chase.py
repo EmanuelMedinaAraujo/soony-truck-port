@@ -199,7 +199,7 @@ def _prepare(c, snapshot, report):
 
 
 def _reconcile_replies(c, lines, report):
-    replies = c.execute("""SELECT r.* FROM replies r WHERE EXISTS(
+    replies = c.execute("""SELECT r.* FROM replies r WHERE r.simulated=0 AND EXISTS(
         SELECT 1 FROM chase_case_messages m JOIN chase_cases cc USING(case_id)
         WHERE m.message_id=r.msg_id AND m.direction='outbound')
         ORDER BY COALESCE(r.received_at,''),r.rowid""").fetchall()
@@ -496,7 +496,7 @@ def run(*, dry_run=False):
         return report
     snapshot = detect()
     with closing(_connection(dry_run)) as c:
-        c.execute(inbox.REPLY_SCHEMA)
+        inbox.init_schema(c)
         lines = _prepare(c, snapshot, report)
         _reconcile_replies(c, lines, report)
         groups = _groups(c, lines)

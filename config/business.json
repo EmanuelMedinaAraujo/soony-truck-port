@@ -3,7 +3,7 @@
   "site": "DC-HAM",
   "voice": {
     "value": {"enabled": true, "dial_out": false, "demo_number": null},
-    "source": "Dockside demo uses ElevenLabs web calls without a connected phone line."
+    "source": "Dockside automatically rehearses calls with ElevenLabs or a local mock. Telephone mode uses only a configured demo destination on an ElevenLabs SIP line."
   },
   "timezone": "+01:00",
   "deadline": {
@@ -100,6 +100,10 @@
     },
     "source": "assumption per mode"
   },
+  "staff_email": {
+    "value": {},
+    "source": "The challenge data has staff names but no addresses. Set known addresses here. The demo uses plus-addresses at the Gmail account configured in MAIL_FROM."
+  },
   "approval_by_kind": {
     "value": {
       "quality_release": [
@@ -122,16 +126,6 @@
   },
   "autonomy": {
     "value": {
-      "auto_kinds": [
-        "ask",
-        "chase_supplier",
-        "chase_escalation",
-        "confirm_terms",
-        "data_fix",
-        "escalate",
-        "reserve"
-      ],
-      "auto_max_cost_eur": 0,
       "act_unless_stopped": {
         "kinds": [
           "order",
@@ -147,7 +141,7 @@
         "quality_release"
       ]
     },
-    "source": "Team decision 2026-11-21: Dockside works autonomously. Free actions go out immediately. Commitments within the Buyer limit (PP-07, < EUR 50k) that protect at least 10x their cost, and dock slots, are executed after a 15-minute stop window in which the responsible person can stop them. Quality concessions need a written release (PP-07, inspection report) and always wait for a signature."
+    "source": "Team decision: free actions go out immediately. Paid orders, trucks, dock slots and expediting under the Buyer limit (PP-07, < EUR 50k) that protect at least 10x their cost have a 15-minute stop window after email notification. Other paid actions, including paid quality concessions, require explicit approval."
   },
   "followup": {
     "value": {

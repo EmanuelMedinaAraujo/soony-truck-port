@@ -18,16 +18,25 @@ DISPATCH_LOCK = threading.Lock()
 UNCONFIRMED = {"sending", "delivery_unknown"}
 
 
-def _mark(mid: str, status: str, provider_id: str | None = None, *, expected: tuple[str, ...] = ()) -> int:
+def _mark(mid: str, status: str, provider_id: str | None = None, *, expected: tuple[str, ...] = (),
+          approval: dict | None = None) -> int:
     with actions.tx() as c:
         sent_at = now().isoformat(timespec="seconds") if status in ("sent", "delivered") else None
         condition = " AND status IN (" + ",".join("?" for _ in expected) + ")" if expected else ""
-        return c.execute("UPDATE messages SET status=?, sent_at=?, provider_id=COALESCE(?,provider_id) WHERE id=?" + condition,
+        changed = c.execute("UPDATE messages SET status=?, sent_at=?, provider_id=COALESCE(?,provider_id) WHERE id=?" + condition,
                          (status, sent_at, provider_id, mid, *expected)).rowcount
+        if changed and approval:
+            aid = approval["action_id"]
+            a = c.execute("SELECT history FROM actions WHERE id=?", (aid,)).fetchone()
+            line = f"Emailed {approval['to_name']} for approval"
+            c.execute("UPDATE actions SET history=? WHERE id=?", (actions._hist(a, line), aid))
+            c.execute("INSERT INTO events VALUES (?,?,?,?)", (sent_at, "approval_email_sent", aid, line))
+        return changed
 
 
 def send(m: dict, in_reply_to: str | None = None) -> str:
-    if m["channel"] == "email":
+    approval = m["channel"] == "approval_email"
+    if m["channel"] == "email" or approval:
         if not m.get("to_address"):
             raise ValueError("E-mail draft has no recipient")
         host, user, pw, sender = (os.environ.get(k) for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "MAIL_FROM"))
@@ -54,8 +63,9 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
                     _mark(m["id"], "delivery_unknown")
                     actions.log_event("dispatch_error", m["action_id"], f"{m['subject']}: SMTP acceptance is unknown")
                     return "delivery_unknown"
-                _mark(m["id"], "sent", msg["Message-ID"])
-            actions.log_event("email_sent", m["action_id"], f"to {m['to_address']}: {m['subject']}")
+                _mark(m["id"], "sent", msg["Message-ID"], approval=m if approval else None)
+            if not approval:
+                actions.log_event("email_sent", m["action_id"], f"to {m['to_address']}: {m['subject']}")
             return "sent"
         _mark(m["id"], "outbox", expected=("draft", "outbox"))
         if m["status"] != "outbox":
@@ -78,9 +88,9 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
         if action["finding_id"].startswith("reply-"):
             from core import inbox
             reply = inbox.get_reply(action["finding_id"].removeprefix("reply-"))
-        pending = any(m["status"] in UNCONFIRMED for m in action["messages"])
+        pending = any(m["status"] in UNCONFIRMED and m["channel"] != "approval_email" for m in action["messages"])
         for m in action["messages"]:
-            if m["status"] not in ("draft", "outbox"):
+            if m["channel"] == "approval_email" or m["status"] not in ("draft", "outbox"):
                 continue
             if action["kind"] == "chase_escalation" and m["channel"] == "discord":
                 continue

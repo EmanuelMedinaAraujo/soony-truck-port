@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 import re
 import sqlite3
 from collections import defaultdict
 from contextlib import closing
 
-from core import actions, inbox, rules
+from core import actions, rules, voice
 
 
 def forecast(picture: dict, coverage: dict, bom: dict, priority: str, extra: dict | None = None) -> tuple[dict, dict]:
@@ -75,12 +76,22 @@ def internal_followup(action: dict, message: dict) -> dict:
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
     who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", "Hamburg", who)
     if message["channel"] == "phone_script":
-        task = INTERNAL_FOLLOWUP[action["kind"]]
-        if str(message.get("provider_id") or "").startswith("elevenlabs:") and rules.cfg("voice").get("enabled"):
-            text = f"Dockside's voice agent will call {who} to {task}. Start the call, or send {who.split(' ')[0]} the link."
+        call = message.get("call")
+        state = "Asking"
+        if call and call["result"]:
+            result = json.loads(call["result"])
+            label = " (simulated, no phone line yet)" if result.get("simulated") else ""
+            summary = call["summary_en"] or result.get("summary") or "See the transcript."
+            text = f"Dockside called {who}{label}: {_first_sentence(summary.removeprefix('Simulated call: '))}"
+            state = "Waiting for reply" if result.get("simulated") else "Asking"
+        elif call and call["progress"] == "failed":
+            state, text = "Stuck", f"Dockside's call to {who} failed."
+        elif not rules.cfg("voice")["enabled"]:
+            state, text = "Stuck", f"The call to {who} is unavailable."
         else:
-            text = f"Call {who} to {task}. The call script is below."
-        return next_step("Needs you", text, message["sent_at"], action["id"]) | {"call_id": message["id"]}
+            text = f"Dockside is calling {who} now."
+        return next_step(state, text, call["received_at"] if call and call["received_at"] else message["sent_at"],
+                         action["id"]) | {"call_id": message["id"]}
     task = INTERNAL_FOLLOWUP[action["kind"]]
     if action["kind"] == "dock_slot":
         return next_step("Waiting for reply", f"Unload slot requested from {who}; waiting for the site to confirm it.", message["sent_at"], action["id"])
@@ -109,7 +120,7 @@ def readable_activity(log, limit: int = 10) -> dict:
     """Recent work in plain English: who was asked what, what they answered, what changed.
     The raw event log has e-mail addresses and foreign-language subjects; those stay out."""
     rows = log.execute("""SELECT e.ts, e.kind, e.ref, e.text, a.title FROM events e LEFT JOIN actions a ON a.id = e.ref
-                          WHERE e.kind IN ('email_sent','reply','action_auto','action_approved','action_done','data_drop','docs_read')
+                          WHERE e.kind IN ('email_sent','approval_email_sent','reply','action_auto','action_approved','action_done','data_drop','docs_read')
                           ORDER BY e.ts DESC, e.rowid DESC LIMIT 60""").fetchall()
     replies = log.execute("SELECT action_id, from_name, received_at, summary_en FROM replies ORDER BY received_at").fetchall()
     sent_to = {r[0]: r[1] for r in log.execute("SELECT action_id, to_name FROM messages WHERE channel='email' ORDER BY created_at")}
@@ -122,6 +133,8 @@ def readable_activity(log, limit: int = 10) -> dict:
         if kind == "email_sent":
             who = sent_to.get(ref) or "a supplier"
             line = f"Emailed {who}" + (f" to {what}" if what else "") + "."
+        elif kind == "approval_email_sent":
+            line = text
         elif kind == "reply":
             reply = next((r for r in reversed(replies) if r[0] == ref and r[2] <= ts), None) if ref else None
             who = (reply[1] if reply else text.split(" replied", 1)[0]) or "Supplier"
@@ -146,7 +159,7 @@ def readable_activity(log, limit: int = 10) -> dict:
             counts[kind] += 1
         if len(items) < limit and (not items or items[-1]["text"] != line):
             items.append({"ts": ts, "text": line})
-    parts = [(counts["email_sent"], "email sent", "emails sent"), (counts["reply"], "reply received", "replies received"),
+    parts = [(counts["email_sent"] + counts["approval_email_sent"], "email sent", "emails sent"), (counts["reply"], "reply received", "replies received"),
              (counts["action_done"] + counts["action_auto"] + counts["action_approved"], "step taken", "steps taken")]
     summary = ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in parts if n)
     return {"summary": f"Last 24 hours: {summary}" if summary else "Nothing in the last 24 hours", "items": items}
@@ -173,6 +186,8 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
             continue
         if status in ("approved", "auto", "sent"):
             for message in action["messages"]:
+                if message["channel"] == "approval_email":
+                    continue
                 mail_status = message["status"]
                 if mail_status in ("sending", "delivery_unknown", "outbox", "draft"):
                     text = {
@@ -194,11 +209,12 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
                     if not who or "@" in who or re.search(r"\b(?:CMP|SUP|SHP|DC)-", who) or len(text.split()) > 12:
                         text = f"Sent the {email_subject}{timing}."
                     candidates.append((3, next_step("Waiting for reply", text, sent_at, aid)))
-                elif mail_status == "delivered" and action["kind"] in INTERNAL_FOLLOWUP:
-                    followup = internal_followup(action, message)
-                    candidates.append((0 if followup["state"] == "Needs you" else 4, followup))
+                elif mail_status == "delivered" and (message["channel"] == "phone_script" or action["kind"] in INTERNAL_FOLLOWUP):
+                    candidates.append((4, internal_followup(action, message)))
         for reply in action["replies"]:
             if not reply["handled"]:
+                if any(m["id"] == reply["msg_id"] and m["channel"] == "phone_script" for m in action["messages"]):
+                    continue  # the call step already shows the result and transcript
                 who = supplier or "the supplier"
                 candidates.append((2, next_step("Asking", f"Dockside is reading the reply from {who}.", reply["received_at"], aid)))
 
@@ -226,7 +242,7 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
     if status == "booked":
         if logged:
             return "ship", logged
-        reply = max((row for action in related for row in action["replies"]), key=lambda row: row["received_at"] or "", default=None)
+        reply = max((row for action in related for row in action["replies"] if not row.get("simulated")), key=lambda row: row["received_at"] or "", default=None)
         heard, tracked = (rules.ts(reply["received_at"]) if reply else None), rules.ts(updated)
         if reply and reply.get("summary_en") and heard and (not tracked or heard > tracked):
             # The supplier told us more than the tracker knows: show what they said.
@@ -338,15 +354,19 @@ def embedded_components(conn: sqlite3.Connection, coverage: dict) -> dict:
 
 
 def linked_actions(conn: sqlite3.Connection) -> dict:
-    conn.executescript(inbox.REPLY_SCHEMA)
+    if conn.in_transaction:
+        conn.commit()
+    voice.init_schema(conn)
     conn.execute("BEGIN")
     action_rows = {row["id"]: dict(row) | {"messages": [], "replies": []} for row in conn.execute(
-        "SELECT id, finding_id, title, kind, status, updated_at, next_check_at FROM actions")}
+        "SELECT id, finding_id, title, kind, status, updated_at, next_check_at, payload FROM actions")}
+    call_rows = {row["msg_id"]: dict(row) for row in conn.execute(
+        """SELECT v.*, r.summary_en, r.received_at FROM voice_calls v LEFT JOIN replies r ON r.id=v.reply_id""")}
     for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at, provider_id FROM messages"):
         if action := action_rows.get(message["action_id"]):
-            action["messages"].append(dict(message))
+            action["messages"].append(dict(message) | {"call": call_rows.get(message["id"])})
     parent_actions = {}
-    for reply in conn.execute("""SELECT id, msg_id, action_id, from_name, summary_en, received_at, handled
+    for reply in conn.execute("""SELECT id, msg_id, action_id, from_name, summary_en, received_at, handled, simulated
                                 FROM replies ORDER BY received_at DESC"""):
         if action := action_rows.get(reply["action_id"]):
             action["replies"].append(dict(reply))
@@ -368,7 +388,7 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
 
 
 def latest_summary(related: list[dict]) -> dict | None:
-    return max((reply for action in related for reply in action["replies"] if reply["summary_en"]),
+    return max((reply for action in related for reply in action["replies"] if reply["summary_en"] and not reply.get("simulated")),
                key=lambda reply: reply["received_at"] or "", default=None)
 
 
@@ -423,8 +443,8 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              step("Dock slot", "pending", "Dockside books the unload slot with Hamburg; the site lead can move or stop it."),
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
              step("Hamburg receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
-    done = {"sent", "done", "auto", "delivered"}
-    replies = sorted((r for action in related for r in action.get("replies", [])), key=lambda r: r.get("received_at") or "")
+    replies = sorted((r for action in related for r in action["replies"] if not r.get("simulated")),
+                     key=lambda r: r["received_at"] or "")
     for action in sorted(related, key=lambda a: a.get("updated_at") or ""):  # what Dockside already did moves the matching step forward
         if action["status"] not in {"sent", "done", "auto", "delivered"}:
             continue
@@ -453,7 +473,8 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         last = f" (last answer {heard.astimezone(rules.TZ):%H:%M})" if heard else ""
         next_action = next_step("Waiting for reply", f"{supplier} has {quantity:,} ready but no truck to bring them yet{last}.",
                                 active["received_at"] if active else None, active["action_id"] if active else None)
-    stage = "confirm" if any(action["kind"] == "order" and action["status"] == "done" for action in related) else "order"
+    stage = "confirm" if any(action["kind"] == "order" and action["status"] == "done"
+                               and not json.loads(action.get("payload") or "{}").get("from_simulated_call") for action in related) else "order"
     return ({"id": f"offer-{offer['supplier_id']}-{component}", "name": f"Rush supply from {supplier}", "quantity": quantity,
              "steps": steps, "evidence": sources, "current_stage": stage, "next_step": next_action},
             {"name": "Rush supply", "supplier": supplier, "quantity": quantity, "cost": cost, "copiesAdded": copies,

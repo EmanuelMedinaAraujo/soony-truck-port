@@ -18,8 +18,17 @@ from core import actions, rules
 REPLY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS replies(
   id TEXT PRIMARY KEY, message_id TEXT UNIQUE, msg_id TEXT, action_id TEXT, from_addr TEXT, from_name TEXT,
-  subject TEXT, received_at TEXT, body TEXT, summary_en TEXT, handled INTEGER DEFAULT 0);
+  subject TEXT, received_at TEXT, body TEXT, summary_en TEXT, handled INTEGER DEFAULT 0, simulated INTEGER NOT NULL DEFAULT 0);
 """
+
+
+def init_schema(c) -> None:
+    c.execute(REPLY_SCHEMA)
+    if "simulated" not in {r[1] for r in c.execute("PRAGMA table_info(replies)")}:
+        c.execute("BEGIN IMMEDIATE")
+        if "simulated" not in {r[1] for r in c.execute("PRAGMA table_info(replies)")}:
+            c.execute("ALTER TABLE replies ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0")
+        c.commit()
 
 
 def _h(v) -> str:
@@ -53,7 +62,7 @@ def fetch() -> list[dict]:
     if not host:
         return []
     with actions.tx() as c:
-        c.executescript(REPLY_SCHEMA)
+        init_schema(c)
         ours = c.execute("""SELECT m.id,m.action_id,m.subject,m.provider_id,m.to_address,a.kind
             FROM messages m LEFT JOIN actions a ON a.id=m.action_id WHERE m.channel='email'
             AND (a.kind IS NULL OR a.kind<>'chase_escalation')
@@ -112,7 +121,7 @@ def fetch() -> list[dict]:
 
 def unhandled() -> list[dict]:
     with actions.tx() as c:
-        c.executescript(REPLY_SCHEMA)
+        init_schema(c)
         return [dict(r) for r in c.execute("""SELECT r.* FROM replies r LEFT JOIN actions a ON a.id=r.action_id
             WHERE r.handled=0 AND (a.kind IS NULL OR a.kind<>'chase_supplier')
             AND instr(lower(r.subject),'[sc:')=0
@@ -123,18 +132,20 @@ def unhandled() -> list[dict]:
 
 def get_reply(rid: str) -> dict | None:
     with actions.tx() as c:
-        c.executescript(REPLY_SCHEMA)
+        init_schema(c)
         row = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
     return dict(row) if row else None
 
 
 def mark_handled(rid: str, summary_en: str) -> dict | None:
     with actions.tx() as c:
-        c.executescript(REPLY_SCHEMA)
+        init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
         if not r:
             return None
+        if r["simulated"] and not summary_en.startswith("Simulated call:"):
+            summary_en = f"Simulated call: {summary_en}"
         if not r["handled"]:
             c.execute("UPDATE replies SET handled=1, summary_en=? WHERE id=?", (summary_en, rid))
             a = c.execute("SELECT history FROM actions WHERE id=?", (r["action_id"],)).fetchone()

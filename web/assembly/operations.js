@@ -1,6 +1,7 @@
 let queueKey = "";
 let activityKey = "";
 let nextStepsKey = "";
+let callsKey = "";
 let busyRequestOpen = false;
 const pendingDecisions = new Set();
 
@@ -20,25 +21,53 @@ async function refreshCalls() {
   }
 }
 
-/* A step that needs a phone call: the voice agent's start link and the script it follows. */
-function callControls(next) {
-  const call = next?.call_id && calls.get(next.call_id);
-  if (!call) return "";
-  const result = call.result?.summary ? `<p class="call-result"><b>Call result:</b> ${html(call.result.summary)}</p>` : "";
-  const start = call.talk_url && call.status !== "done"
-    ? `<a class="call-button" href="${html(call.talk_url)}" target="_blank" rel="noreferrer">${call.status === "in_progress" ? "Call in progress" : "Start call"}</a>
-       <button class="text-button call-copy" type="button" data-copy="${html(call.talk_url)}">Copy link</button>` : "";
-  return `<span class="call-controls">${start}
-    <details class="call-script"><summary>Call script</summary><p><b>${html(call.subject)}</b></p><p>${html(call.script)}</p></details>${result}</span>`;
+function callFold(call) {
+  const live = call.talk_url
+    ? `<p><a href="${html(call.talk_url)}" target="_blank" rel="noreferrer">Try it live</a></p>` : "";
+  const transcript = call.result?.transcript
+    ? `<p><b>${call.result.simulated ? "Simulated transcript" : "Transcript"}</b></p>
+       <p style="white-space: pre-wrap; overflow-wrap: anywhere">${html(call.result.transcript)}</p>` : "";
+  return `<details class="call-script"><summary>${transcript ? "Transcript and call script" : "Call script"}</summary>
+    ${transcript}<p><b>${html(call.subject)}</b></p><p>${html(call.script)}</p>${live}</details>`;
 }
 
-document.addEventListener("click", async event => {
-  const button = event.target.closest("[data-copy]");
-  if (!button) return;
-  try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "Link copied"; }
-  catch { button.textContent = "Copy failed"; }
-  setTimeout(() => { button.textContent = "Copy link"; }, 2000);
-});
+function callControls(next) {
+  const call = next?.call_id && calls.get(next.call_id);
+  return call ? `<span class="call-controls">${callFold(call)}</span>` : "";
+}
+
+function callStatus(call) {
+  if (call.result) {
+    const label = call.result.simulated ? " (simulated, no phone line yet)" : "";
+    const summary = (call.result.summary || "See the transcript.").replace(/^Simulated call:\s*/, "");
+    const sentence = summary.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? summary;
+    return `Dockside called ${call.to_name}${label}: ${sentence}`;
+  }
+  if (call.status === "failed") return `Dockside’s call to ${call.to_name} failed.`;
+  if (call.status === "unavailable") return `Call to ${call.to_name} is unavailable.`;
+  return `Dockside is calling ${call.to_name} now.`;
+}
+
+function renderCalls() {
+  const rows = [...calls.values()].filter(call => call.status !== "unavailable");
+  const key = JSON.stringify(rows);
+  if (callsKey === key) return;
+  callsKey = key;
+  let section = $("calls-history");
+  if (!section) {
+    section = document.createElement("details");
+    section.id = "calls-history";
+    section.className = "operation-details";
+    $("activity-summary").parentElement.after(section);
+  }
+  const open = new Set([...section.querySelectorAll("li:has(details[open])")].map(li => li.dataset.call));
+  section.hidden = !rows.length;
+  section.innerHTML = `<summary>Calls</summary><ul>${rows.map(call =>
+    `<li data-call="${html(call.message_id)}"><p>${html(callStatus(call))}</p>${callFold(call)}</li>`).join("")}</ul>`;
+  for (const item of section.querySelectorAll("li[data-call]")) {
+    if (open.has(item.dataset.call)) item.querySelector("details").open = true;
+  }
+}
 
 function nextStepLine(next) {
   if (!next) return "";
@@ -122,6 +151,7 @@ function decisionItem(decision) {
 }
 
 function renderOperations(snapshot) {
+  renderCalls();
   const decisions = snapshot.decisions;
   $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "open action" : "open actions"}` : "Nothing waiting for your approval.";
   const next = JSON.stringify(decisions);

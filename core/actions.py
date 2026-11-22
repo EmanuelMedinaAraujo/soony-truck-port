@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
-from core.rules import approver_for, cfg, now
+from core.rules import approver_for, cfg, now, ts
 
 DB = Path(__file__).resolve().parent.parent / "data" / "actions.db"
 
@@ -107,7 +107,7 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
             messages: Sequence[dict] = (), *, connection: sqlite3.Connection | None = None) -> dict:
     ap = approver_for(cost_eur, category)
     special = cfg("approval_by_kind").get(kind)
-    if special:  # non-monetary sign-offs (quality concession, dock slot) follow their own rule, not the cost ladder
+    if special and cost_eur > 0:  # Paid actions can require additional role-specific sign-off.
         people, names = cfg("people"), []
         for role in special:
             name = people.get(f"{role}:{category}") if role == "Category Lead" else people.get(role)
@@ -180,7 +180,8 @@ def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent",
     return [get(i) for i in ids]
 
 
-def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: bool = False) -> dict:
+def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: bool = False,
+           expires_at: str | None = None) -> dict:
     """Human decision from the web UI or Discord. approve -> messages become sendable."""
     if decision not in ("approve", "reject"):
         raise ValueError(f"Unknown decision: {decision}")
@@ -190,6 +191,8 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: 
         r = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         if not r:
             raise KeyError(aid)
+        if expires_at and now() >= ts(expires_at):
+            raise ValueError("This email link expired")
         allowed = ("scheduled",) if scheduled_only else ("proposed", "escalated", "scheduled")
         if r["status"] not in allowed:
             raise ValueError(f"{aid} is already {r['status']}")
@@ -213,26 +216,41 @@ def set_status(aid: str, status: str, entry: str, *, expected: str | None = None
 
 
 def policy_automatic(kind: str, cost: float) -> bool:
-    policy = cfg("autonomy")
-    return kind in policy["auto_kinds"] and 0 <= cost <= policy["auto_max_cost_eur"]
+    return cost == 0
 
 
 def policy_schedules(a: dict) -> bool:
-    """Act-unless-stopped: within the Buyer limit and clearly worth it, or a dock slot."""
+    """Act-unless-stopped within the Buyer limit and above the value threshold."""
     pol = cfg("autonomy")["act_unless_stopped"]
     if a["kind"] in cfg("autonomy")["always_sign"] or a["kind"] not in pol["kinds"]:
         return False
     cost = a["cost_eur"] or 0
-    if not 0 <= cost < pol["max_cost_eur"]:
+    if not 0 < cost < pol["max_cost_eur"]:
         return False
-    worth = cost <= cfg("cheap_fix_eur") or (a["eur_protected"] or 0) >= pol["min_value_ratio"] * cost
-    return a["kind"] == "dock_slot" or worth
+    return (a["eur_protected"] or 0) >= pol["min_value_ratio"] * cost
+
+
+def release_free() -> list[dict]:
+    """Apply today's free-action policy to open decisions already in the action log."""
+    with tx() as c:
+        queued = [tuple(row) for row in c.execute("""
+            SELECT id,status FROM actions WHERE cost_eur=0 AND status IN ('proposed','scheduled','escalated')
+        """)]
+    released = []
+    for aid, status in queued:
+        if action := set_status(aid, "auto", "Released by Dockside without a spending decision.",
+                                expected=status, approver_role="Dockside", approver_name="Dockside"):
+            released.append(action)
+    return released
 
 
 def due_scheduled() -> list[dict]:
     t = now().isoformat(timespec="seconds")
     with tx() as c:
-        ids = [r[0] for r in c.execute("SELECT id FROM actions WHERE status='scheduled' AND next_check_at <= ?", (t,))]
+        ids = [r[0] for r in c.execute("""SELECT a.id FROM actions a
+            WHERE a.status='scheduled' AND a.next_check_at <= ? AND EXISTS (
+                SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.channel='approval_email' AND m.status='sent')
+            """, (t,))]
     return [get(i) for i in ids]
 
 
@@ -248,9 +266,9 @@ def pending_dispatch() -> list[str]:
     with tx() as c:
         return [r[0] for r in c.execute("""SELECT a.id FROM actions a WHERE a.status IN ('approved','auto','sent')
             AND a.kind NOT IN ('chase_supplier','chase_escalation') AND (
-            EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.status IN ('draft','outbox')) OR
+            EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.channel<>'approval_email' AND m.status IN ('draft','outbox')) OR
             (a.status='approved' AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id
-                                                 AND m.status IN ('sending','delivery_unknown'))))""")]
+                                                 AND m.channel<>'approval_email' AND m.status IN ('sending','delivery_unknown'))))""")]
 
 
 def escalate(a: dict) -> dict | None:

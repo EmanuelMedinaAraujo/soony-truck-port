@@ -1,8 +1,7 @@
 """Nothing waits silently: items with no progress get a follow-up from Dockside.
 
-A part's next step that is waiting on someone (a supplier reply, an overdue pickup, a call nobody made) is reviewed again once it has been
-quiet for `followup.after_hours`, sooner if a deadline comes first. The agent then takes the next step itself: a reminder, a dock slot that
-goes ahead unless the site lead stops it, a question about a pickup, or an escalation. Each review is logged, so an item is reviewed at most
+A part's next step that is waiting on someone (a supplier reply or an overdue pickup) is reviewed again once it has been
+quiet for `followup.after_hours`, sooner if a deadline comes first. The agent then takes the next step itself: a reminder, a dock slot, a question about a pickup, or an escalation. Each review is logged, so an item is reviewed at most
 once per interval, also when the model call fails.
 """
 from __future__ import annotations

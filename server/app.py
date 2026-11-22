@@ -5,29 +5,40 @@ Run: .venv/bin/uvicorn server.app:app --env-file .env --port 8765
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
 import threading
 import time
 import traceback
+from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "sync"))
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import soony_sync  # noqa: E402
-from core import actions, agent, chase, dispatch, ingest, outbound, rules, voice  # noqa: E402
+from core import actions, agent, approvals, chase, dispatch, ingest, outbound, rules, voice  # noqa: E402
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
 app = FastAPI(title="Dockside")
+
+
+class ApprovalAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and str(args[2]).startswith(approvals.PATH))
+
+
+logging.getLogger("uvicorn.access").addFilter(ApprovalAccessFilter())
 
 
 @app.middleware("http")
@@ -54,6 +65,7 @@ def notify(kind: str, payload: dict) -> None:
 def notify_action(result: dict) -> None:
     aid = result.get("created") or result.get("done_automatically") or result.get("scheduled")
     if aid:
+        approvals.email(aid)
         a = actions.get(aid)
         kind = {"auto": "action_auto", "scheduled": "action_scheduled"}.get(a["status"], "action_proposed")
         notify(kind, {"action": a})
@@ -79,6 +91,10 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
     """One pass of the whole pipeline. Safe to call from the loop or an API request."""
     with LOCK:
         out = {"changes": 0}
+        STATE["busy"] = "checking spending approvals"
+        for a in actions.release_free():
+            notify_action({"done_automatically": a["id"]})
+        approvals.email_open()
         STATE["busy"] = "executing scheduled actions"
         for a in actions.due_scheduled():
             try:
@@ -327,9 +343,9 @@ class Decision(BaseModel):
     note: str = ""
 
 
-def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "") -> dict:
+def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "", *, expires_at: str | None = None) -> dict:
     """The one approval path for web and Discord: record the decision, release messages, tell everyone."""
-    a = actions.decide(aid, decision, by, note)
+    a = actions.decide(aid, decision, by, note, expires_at=expires_at)
     if a["status"] == "approved":
         a = outbound.dispatch(aid)
     notify("action_decided", {"action": a})
@@ -344,6 +360,39 @@ def decide(aid: str, d: Decision):
         raise HTTPException(404, f"No decision {aid}. It may have been replaced; reload the page.")
     except ValueError as e:
         raise HTTPException(409, f"{e}. Someone already decided; reload to see who.")
+
+
+def _approval_page(title: str, detail: str, button: str = "", status: int = 200) -> HTMLResponse:
+    form = f'<form method="post"><button type="submit">{escape(button)}</button></form>' if button else ""
+    return HTMLResponse(
+        f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+        f'<title>{escape(title)} · Dockside</title><main><h1>{escape(title)}</h1><p>{escape(detail)}</p>{form}</main></html>',
+        status_code=status, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                     "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'"},
+    )
+
+
+@app.api_route(approvals.PATH + "{token}/{decision}", methods=["GET", "POST"], include_in_schema=False)
+def email_decision(token: str, decision: str, request: Request):
+    if decision not in {"approve", "reject"}:
+        return _approval_page("Unknown approval link", "Check the link in the original email.", status=404)
+    try:
+        link, state = approvals.lookup(token)
+    except KeyError:
+        return _approval_page("Unknown approval link", "Check the link in the original email.", status=404)
+    if state == "used":
+        return _approval_page("Decision already recorded", f"{link['title']} has status {link['status']}.")
+    if state == "expired":
+        return _approval_page("Approval link expired", "Open Dockside to check the current action.", status=410)
+    label = "Approve now" if decision == "approve" else "Stop"
+    if request.method == "GET":
+        return _approval_page(f"{label}?", f"{link['title']} (€{link['cost_eur']:,.2f})", label)
+    try:
+        decide_and_dispatch(link["action_id"], decision, link["approver_name"], "Decision from approval email",
+                            expires_at=link["expires_at"])
+    except ValueError:
+        return _approval_page("Decision unavailable", "This action was already decided or the link expired.", status=409)
+    return _approval_page("Decision recorded", f"{link['title']} was {'approved' if decision == 'approve' else 'stopped'}.")
 
 
 class Ask(BaseModel):
