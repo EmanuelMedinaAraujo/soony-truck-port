@@ -163,6 +163,13 @@ function questionBlock(part, step) {
   return questionParts(part, step).html;
 }
 
+/* One line for the binding part: the open check (a simulated call is evidence of nothing), and when Dockside looks again. */
+function blockerText(step) {
+  const followUp = step.text.match(/Dockside (?:follows up at [^.]+|is following up now)\.?/)?.[0] ?? "";
+  if (step.call_id) return `Departure and arrival are not confirmed; a real confirmation from the carrier is still missing (the call so far was simulated). ${followUp}`.trim();
+  return step.text;
+}
+
 /* Lead with what the person must do now, in one sentence. */
 function instruction(step, advice) {
   if (!step.person) return step.text;
@@ -206,7 +213,14 @@ function renderNextSteps(snapshot) {
   const needs = $("needs-you");
   const drafts = new Map([...needs.querySelectorAll("form[data-answer]")].map(form => [form.dataset.answer, form.querySelector("textarea").value]));
   const opened = new Set([...needs.querySelectorAll("[data-question] details[open]")].map(node => node.closest("[data-question]").dataset.question));
-  needs.innerHTML = [...yours.map(item => {
+  // The part that limits dispatch comes first: what Dockside is checking, by when, and a link to its evidence.
+  const binding = snapshot.components.find(component => component.id === snapshot.focusComponentId);
+  const bindingStep = binding?.next_step;
+  const blocker = binding && bindingStep && !yours.some(item => item.component_id === binding.id) ? [`<li class="blocker-line">
+      <span class="state-chip" data-tone="alert">Limits dispatch</span>
+      <button class="next-part" type="button" data-next-part="${html(binding.id)}">${html(nameOf(binding))}</button>
+      <span>${html(blockerText(bindingStep))}</span></li>`] : [];
+  needs.innerHTML = [...blocker, ...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const conflict = part.option?.deliveryState?.conflict;
       if (conflict) return conflictCard(part, item, snapshot);
@@ -230,7 +244,7 @@ function renderNextSteps(snapshot) {
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
-  needs.hidden = !count && !scheduled.length && !team.length;
+  needs.hidden = !count && !scheduled.length && !team.length && !blocker.length;
   for (const node of needs.querySelectorAll("[data-question]")) if (opened.has(node.dataset.question)) node.querySelector("details").open = true;
   for (const form of needs.querySelectorAll("form[data-answer]")) form.querySelector("textarea").value = drafts.get(form.dataset.answer) ?? "";
   const focusedPart = document.activeElement?.dataset.nextPart;

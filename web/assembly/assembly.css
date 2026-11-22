@@ -410,3 +410,5 @@ img { display: block; max-width: 100%; }
 .clears li { padding: 2px 0; border: 0; }
 .progress li[data-state="superseded"] b, .progress li[data-state="superseded"] p { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent); }
 .task-state { margin-top: 6px; max-width: 80ch; }
+.blocker-line { margin-bottom: 8px; }
+.blocker-line .next-part { margin-right: 6px; }
