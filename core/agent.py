@@ -79,7 +79,7 @@ TOOLS = [
           "confirmation_kind": {"type": ["string", "null"], "enum": ["book_truck", "dock_slot", None],
                                 "description": "For a confirm_terms inquiry, which existing arrangement the recipient is being asked to verify."},
           "commitment": {"type": ["object", "null"], "additionalProperties": False,
-                         "description": "Evidenced terms for any shipment instruction. Supply either a PO number and line or an emergency reference. Use null for unknown fields.",
+                         "description": "Evidenced terms for any shipment instruction. Dockside calculates depart_by from the arrival and drive time. Supply either a PO number and line or an emergency reference. Use null for unknown fields.",
                          "required": ["supplier_id", "part", "quantity", "unit_price", "total_price", "currency", "incoterm",
                                       "delivery_place", "po", "po_line", "emergency_reference", "deliver_by", "valid_until",
                                       "latest_useful_at", "conditions", "revises_action_id", "vehicle_limit_t"],
@@ -322,7 +322,8 @@ class Tools:
             a = actions.propose(finding_id, what, why, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes,
                                 payload={"proposed_by": MODEL, "details": details, "from_simulated_call": simulated,
                                          "delivery_id": delivery_id, "confirmation_kind": confirmation_kind,
-                                         **({"commitment": commitment} if commitment else {})}, messages=messages, parent=origin,
+                                         **({"commitment": commitment} if commitment else {})}, messages=messages,
+                                parent=original if amendment else origin,
                                 repeat_commitment=bool(repeat_action_id), connection=db)
         if a["status"] == "auto":
             from core import outbound

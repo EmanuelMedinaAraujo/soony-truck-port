@@ -34,7 +34,7 @@ def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime |
         delivery = option.get("deliveryState") or {}
         if delivery.get("needs_revised_terms") and delivery.get("can_propose_revision"):
             # The revision only helps if the goods can still leave in time for the cutoff.
-            return rules.ts(option.get("departBy")) or cutoff
+            return rules.ts(delivery.get("depart_by") or option.get("departBy")) or cutoff
         if deliver_by := rules.ts(delivery.get("deliver_by")):
             return deliver_by
         return rules.ts(option.get("latestUsefulAt")) or cutoff
@@ -158,6 +158,8 @@ How to decide, per part:
   Once the amendment is proposed, email an authorized receiving contact for a fresh unload slot covering verified_eta, under the
   amendment's finding ID. The earlier slot does not establish the revised slot. If verified_eta, booking_ref or required vehicle
   confirmation is missing, email a listed transport contact for the missing evidence and use any open request that already covers it.
+  If the carrier has left, ask for the actual departure time and current ETA. Dockside checks departure evidence against act_by
+  and requires a confirmed slot for that ETA once act_by has passed.
   Wait for a verified ETA before choosing arrival terms. Use kind 'confirm_terms', the same delivery_id and confirmation_kind 'dock_slot'
   or 'book_truck' for the emails. Skip the generic reminder and slot rules below for this delivery.
 - Rush delivery with signed conditions still open: use delivery_state.contacts and the same delivery_id for the missing written checks.

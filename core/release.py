@@ -1,6 +1,7 @@
 """Typed supplier instructions and release checks against current evidence."""
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import hashlib
 import json
@@ -25,7 +26,6 @@ CONDITIONS = {
     "transport_confirmed": ("book_truck", r"(?:truck|carrier|transport|pickup) (?:is |has been )?(?:confirmed|booked)"),
     "dock_slot_confirmed": ("dock_slot", r"(?:dock|unload|receiving) slot (?:is |has been )?(?:confirmed|booked)"),
 }
-SITE_ROLES = ("Site Lead DC-HAM (dock slots)", "Logistics Planner (deputy dock slots)")
 WEEKDAY = r"Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?"
 DAY = rf"\d{{4}}-\d{{2}}-\d{{2}}|{WEEKDAY}"
 DAY_SEPARATOR = r"(?:T|\s+(?:(?:at|from)\s+)?|,\s*)"
@@ -41,6 +41,12 @@ WINDOW = re.compile(rf"\b(?:slot|window|Zeitfenster|okno)\b\s*"
                     rf"{SLOT_RANGE}", re.I)
 RAW_ETA = re.compile(rf"(?<![\w:+-]){ARRIVAL}", re.I)
 RAW_WINDOW = re.compile(rf"(?<![\w:+-]){SLOT_RANGE}", re.I)
+DEPARTURE = re.compile(
+    rf"\b(?:departed|left|actual departure|abgefahren|wyjechał[ao]?)\s*"
+    rf"(?:[^\d.!?;\n,:]+?\s+(?:at|um|o)\s+|(?:(?:on|at|um|o)\s+|[:=,]\s*)*){ARRIVAL}", re.I)
+PROJECTED_DEPARTURE = re.compile(r"\b(?:plan\w*|expect\w*|schedul\w*|will|would|should|must|may|might|"
+                                r"estimated|forecast|ETD|soll|voraussichtlich|prawdopodobnie)\b", re.I)
+DEPARTURE_HOLD = "departure deadline passed"
 BOOKING = re.compile(r"\b(?:booking|Buchungsnummer|numer rezerwacji)"
                      r"(?:\s+(?:ref(?:erence)?\.?|number|no\.?|ID|code))?\s*[:=#]?\s*"
                      r"([A-Z0-9][A-Z0-9._/-]{2,79})(?![\w/-])", re.I)
@@ -102,9 +108,12 @@ TOTAL_PRICE = re.compile(rf"\b(?:total price|gesamtpreis|cena całkowita)\s*[:=]
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}")
 INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"}
 TERMS_VERSION = 1
+MONTHS = {name.casefold(): month for month, name in enumerate(calendar.month_name) if name}
+MONTHS.update({name: month for month, name in enumerate(
+    "stycznia lutego marca kwietnia maja czerwca lipca sierpnia września października listopada grudnia".split(), 1)})
 HISTORICAL_DEADLINE = re.compile(
-    rf"\b(?:Sunday|niedzielę)\s+(\d{{1,2}})\s+(November|listopada)\b[^.!?\n]*?"
-    rf"(?:no later than|najpóźniej do(?: godziny)?)\s+({CLOCK})", re.I)
+    rf"\b(?:(\d{{4}}-\d{{2}}-\d{{2}})|(\d{{1,2}})\s+({'|'.join(MONTHS)})(?:\s+(\d{{4}}))?)\b"
+    rf"[^.!?;\n]*?(?:no later than|najpóźniej do(?: godziny)?)\s+({CLOCK}){TIME_ZONE}", re.I)
 VEHICLE_LIMIT = re.compile(
     r"(?:maximum permitted gross weight of|dopuszczalnej masie całkowitej maksymalnie)"
     r"\s*(\d+(?:[.,]\d+)?)\s*(?:t|tonnes?)\b", re.I)
@@ -245,6 +254,12 @@ def _master():
     return closing(sqlite3.connect(f"{rules.DB_PATH.resolve().as_uri()}?mode=ro", uri=True))
 
 
+def _action_log():
+    log = sqlite3.connect(f"{actions.DB.resolve().as_uri()}?mode=ro", uri=True)
+    log.row_factory = sqlite3.Row
+    return closing(log)
+
+
 def _offers(db, supplier, part):
     return [offer for offer in rules.facts(db, "offer")
             if offer.get("supplier_id") == supplier and offer.get("material_id") == part]
@@ -256,12 +271,41 @@ def _offer_price(db, offer):
 
 
 def _latest_offer_release(offer: dict) -> str | None:
-    lead = [re.search(r"(\d+(?:\.\d+)?)\s*h\b", offer.get(field) or "", re.I)
-            for field in ("lead_time_note", "transport")]
-    if not all(lead):
+    from core.dispatch import hours_in
+    load, drive = (hours_in(offer.get(field)) for field in ("lead_time_note", "transport"))
+    if load is None or drive is None:
         return None
-    cutoff = rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
-    return (cutoff - dt.timedelta(hours=sum(float(match[1]) for match in lead))).isoformat()
+    return (_receiving_cutoff() - dt.timedelta(hours=load + drive)).isoformat()
+
+
+def _receiving_cutoff():
+    return rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
+
+
+def _derive_depart_by(terms, arrival):
+    from core.dispatch import hours_in
+
+    if not arrival or "T" not in arrival:
+        return None
+    drive = setting("release_drive_hours", {}).get(terms["delivery_id"])
+    if drive is None and rules.DB_PATH.is_file():
+        with _master() as db:
+            offers = _offers(db, terms["supplier_id"], terms["part"])
+        durations = {hours_in(offer.get("transport")) for offer in offers}
+        if len(durations) == 1:
+            drive = durations.pop()
+    if type(drive) in (int, float) and math.isfinite(drive) and drive > 0:
+        return (rules.ts(arrival) - dt.timedelta(hours=drive)).isoformat()
+    return None
+
+
+def _prior_terms(log, original_id):
+    original = actions._get(log, original_id)
+    return delivery_terms(original) if original and sent_order_message(original) else None
+
+
+def _revision_depart_by(original):
+    return original.get("depart_by") or _derive_depart_by(original, _receiving_cutoff().isoformat())
 
 
 def describe(action: dict, *, parent: dict | None = None) -> dict:
@@ -291,6 +335,12 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
     if rules.DB_PATH.is_file():
         try:
             with _master() as db:
+                if instruction == "order" and (not part or not supplier):
+                    matches = {(offer["supplier_id"], offer["material_id"]) for offer in rules.facts(db, "offer")
+                               if finding == f"offer-{offer.get('supplier_id')}-{offer.get('material_id')}"}
+                    if len(matches) == 1:
+                        offer_supplier, offer_part = matches.pop()
+                        supplier, part = supplier or offer_supplier, part or offer_part
                 if not supplier and addresses:
                     matches = {sid for sid, address in db.execute("SELECT supplier_id, contact_email FROM suppliers")
                                if (address or "").casefold() in addresses}
@@ -339,6 +389,18 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
         terms["vehicle_limit_t"] = saved["vehicle_limit_t"]
     if saved.get("revises_action_id") is not None:
         terms["revises_action_id"] = saved["revises_action_id"]
+    try:
+        if original_id := terms.get("revises_action_id"):
+            if parent and parent["id"] == original_id and sent_order_message(parent):
+                original = delivery_terms(parent)
+            else:
+                with _action_log() as log:
+                    original = _prior_terms(log, original_id)
+            terms["depart_by"] = _revision_depart_by(original) if original else None
+        else:
+            terms["depart_by"] = _derive_depart_by(terms, deliver_by)
+    except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
+        terms["depart_by"] = None
     return terms
 
 
@@ -380,7 +442,7 @@ def _body_blocker(terms, message):
     return None
 
 
-def proposal_blocker(action: dict) -> str | None:
+def proposal_blocker(action: dict, *, check_departure=True) -> str | None:
     terms = terms_for(action)
     if not terms:
         return "typed commitment is missing"
@@ -438,6 +500,8 @@ def proposal_blocker(action: dict) -> str | None:
                 return "approved cost disagrees with the approved total price"
             if not existing_po and terms["currency"] != "EUR" and terms["total_price"] and action["cost_eur"] <= 0:
                 return "record the evidenced EUR equivalent for approval routing"
+        if check_departure:
+            return _departure_blocker(action, terms)
     except (ArithmeticError, AttributeError, KeyError, ValueError, TypeError):
         return "commitment terms are malformed"
     return None
@@ -475,15 +539,19 @@ def _expired(terms: dict) -> bool:
 def _confirmation_contacts(terms):
     carriers = _values(setting("release_carrier_contacts", {}).get(terms["delivery_id"]))
     carriers += _values(setting("release_supplier_logistics_contacts", {}).get(terms["supplier_id"]))
-    site_aliases = [rules.setting("site"), setting("site_name", ""), *setting("site_aliases", [])]
     dock = {}
-    if (terms.get("delivery_place") or "").strip().casefold() in {alias.casefold() for alias in site_aliases}:
+    if (terms.get("delivery_place") or "").strip().casefold() in _site_names():
         people, emails = setting("people", {}), setting("staff_email", {})
-        for role in SITE_ROLES:
+        for role in (setting("site_lead_role", "Site Lead"), setting("site_deputy_role", "Logistics Planner (deputy dock slots)")):
             name = people.get(role)
             if name and (address := emails.get(name) or demo_staff_address(name)):
                 dock[address.casefold()] = name
     return {"transport_confirmed": {address.casefold(): address for address in carriers}, "dock_slot_confirmed": dock}
+
+
+def _site_names():
+    return {name.casefold() for name in (rules.setting("site"), setting("site_name", ""), setting("site_port", ""),
+                                        *setting("site_aliases", [])) if name}
 
 
 def _single_match(pattern, body, summary, *, raw_pattern=None, accept=lambda _groups: True):
@@ -523,19 +591,36 @@ def _affirmed(condition, text):
     return re.search(rf"\b(?:{pattern})\b", text, re.I)
 
 
-def _confirmation_details(condition, reply, contact, deadline, eta, created, vehicle_limit, now):
+def _reported_departure(body, received):
+    actual = "\n".join(line for line in re.split(r"(?<=[.;])\s+|\n+", body)
+                       if not PROJECTED_DEPARTURE.search(line))
+    if departed := _single_match(DEPARTURE, actual, ""):
+        departure = _appointment(*departed, received)
+        if departure <= received:
+            return departure.isoformat()
+    return None
+
+
+def _confirmation_details(condition, reply, contact, deadline, eta, created, vehicle_limit, now, *, prior=None):
     details = {"reply_id": reply["id"], "contact": contact, "address": reply["from_addr"],
                "received_at": reply["received_at"]}
     if not reply["handled"]:
         return details, "reply needs review"
     body = _normalized(inbox._strip_quote(reply["body"] or ""))
     summary = _normalized(reply["summary_en"])
-    if NEGATIVE_CONFIRMATION.search(body) or (not _affirmed(condition, body) and (
-            not _affirmed(condition, summary) or NEGATIVE_CONFIRMATION.search(summary))):
-        return details, "reply needs an affirmative confirmation"
-    if AMBIGUOUS_DATE.search(body):
-        return details, "use a calendar date or weekday for the ETA or slot window"
     try:
+        if AMBIGUOUS_DATE.search(body):
+            return details, "use a calendar date or weekday for the ETA or slot window"
+        prior = prior or {}
+        departure = None
+        if condition == "transport_confirmed":
+            received = rules.ts(reply["received_at"]).astimezone(deadline.tzinfo)
+            departure = _reported_departure(body, received)
+        departure_update = departure and prior.get("booking_reference")
+        affirmative = (_affirmed(condition, body) or departure_update
+                       or (_affirmed(condition, summary) and not NEGATIVE_CONFIRMATION.search(summary)))
+        if NEGATIVE_CONFIRMATION.search(body) or not affirmative:
+            return details, "reply needs an affirmative confirmation"
         if condition == "transport_confirmed":
             booking = _single_match(BOOKING, body, summary,
                                     accept=lambda groups: groups[0].isupper() or any(c.isdigit() for c in groups[0]))
@@ -543,8 +628,13 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created, veh
             missing = []
             if booking:
                 details["booking_reference"] = booking[0].rstrip(".")
+            elif departure_update and not BOOKING.search(body):
+                details["booking_reference"] = prior["booking_reference"]
             else:
                 missing.append("booking reference missing")
+            same_booking = details.get("booking_reference") and details["booking_reference"] == prior.get("booking_reference")
+            if departure or (same_booking and (departure := prior.get("departed_at"))):
+                details["departed_at"] = departure
             if arrived:
                 arrival = _appointment(*arrived, deadline)
                 details["eta"] = arrival.isoformat()
@@ -555,6 +645,8 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created, veh
                 missing.append("ETA missing or ambiguous")
             if vehicle_limit is not None:
                 ratings = {float(m[1].replace(",", ".")) for m in VEHICLE_RATING.finditer(body)}
+                if not ratings and departure_update and same_booking and prior.get("vehicle_rating_t"):
+                    ratings.add(prior["vehicle_rating_t"])
                 if not ratings or any(not 0 < weight <= vehicle_limit for weight in ratings):
                     missing.append(f"confirm vehicle gross weight rating at most {vehicle_limit:g} t")
                 else:
@@ -579,16 +671,18 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created, veh
     return details, None
 
 
-def _related_replies(log, action, terms, now):
-    inbox.init_schema(log)
+def _related_replies(log, action, terms, now, *, after_departure=False):
     delivery_id = terms["delivery_id"]
     signed_conditions = set(terms["conditions"])
-    conditions = signed_conditions | {"transport_confirmed"} if "dock_slot_confirmed" in signed_conditions else signed_conditions
+    conditions = set(CONDITIONS) if after_departure else (
+        signed_conditions | {"transport_confirmed"} if "dock_slot_confirmed" in signed_conditions else signed_conditions)
     contacts = _confirmation_contacts(terms) if conditions else {}
-    eligible, unauthorized = {}, set()
+    eligible, unauthorized, transport_threads = {}, set(), {}
     review = None
-    created = rules.ts(action["created_at"])
-    for reply in log.execute("SELECT * FROM replies WHERE simulated=0 ORDER BY julianday(received_at), rowid"):
+    created = rules.ts(action.get("created_at")) or now
+    has_replies = "simulated" in {column[1] for column in log.execute("PRAGMA table_info(replies)")}
+    replies = log.execute("SELECT * FROM replies WHERE simulated=0 ORDER BY julianday(received_at), rowid") if has_replies else ()
+    for reply in replies:
         received = rules.ts(reply["received_at"])
         if not received or received > now:
             continue
@@ -597,8 +691,10 @@ def _related_replies(log, action, terms, now):
         authorized = condition in contacts and sender in contacts[condition]
         if condition in conditions:
             if authorized and (condition != "dock_slot_confirmed" or not terms.get("revises_action_id")
-                               or received >= created):
+                               or received >= created or _revision_slot_request(log, reply, action)):
                 eligible[condition] = (reply, contacts[condition][sender])
+                if condition == "transport_confirmed":
+                    transport_threads.setdefault(reply["msg_id"], []).append(eligible[condition])
             elif not authorized:
                 unauthorized.add(condition)
         if sender != terms["recipient"]:
@@ -606,11 +702,12 @@ def _related_replies(log, action, terms, now):
         if not reply["handled"]:
             review = "an unread supplier reply needs review"
         elif not review and received >= created:
+            body = _normalized(inbox._strip_quote(reply["body"] or ""))
             logistics_only = (authorized and condition == "transport_confirmed"
-                              and _affirmed(condition, reply["body"] or "")
-                              and not _body_blocker(terms, {"body": reply["body"]})
+                              and (_affirmed(condition, body) or _reported_departure(body, received.astimezone(rules.timezone())))
+                              and not _body_blocker(terms, {"body": body})
                               and not re.search(r"\b(?:PO|purchase order|price|quantity|qty|incoterm|DAP|EXW)\b",
-                                                reply["body"] or "", re.I))
+                                                body, re.I))
             if not logistics_only:
                 review = "newer supplier reply needs review of quantity, price and PO"
 
@@ -620,9 +717,13 @@ def _related_replies(log, action, terms, now):
         if condition not in conditions:
             continue
         if condition in eligible:
-            details, reason = _confirmation_details(condition, *eligible[condition],
-                                                    rules.ts(terms["deliver_by"]).astimezone(rules.timezone()),
-                                                    eta, created, terms.get("vehicle_limit_t"), now)
+            reply, _ = eligible[condition]
+            history = transport_threads[reply["msg_id"]] if condition == "transport_confirmed" else [eligible[condition]]
+            deadline = rules.ts(terms["deliver_by"]).astimezone(rules.timezone())
+            details = {}
+            for observation in history:
+                details, reason = _confirmation_details(condition, *observation, deadline, eta, created,
+                                                        terms.get("vehicle_limit_t"), now, prior=details)
         else:
             details, reason = {}, ("reply sender is not authorized for this delivery" if condition in unauthorized
                                    else "no linked reply from an authorized contact")
@@ -632,6 +733,12 @@ def _related_replies(log, action, terms, now):
     if set(setting("release_conditions", {}).get(terms["instruction"], [])) - signed_conditions:
         review = "required release conditions changed since approval"
     return review, matches
+
+
+def _revision_slot_request(log, reply, action):
+    origin = actions._get(log, reply["action_id"])
+    return bool(origin and origin["kind"] == "confirm_terms" and origin["finding_id"] == action["finding_id"]
+                and origin["finding_id"].startswith("followup-"))
 
 
 def _linked_condition(log, reply, delivery_id, sender):
@@ -664,6 +771,11 @@ def confirmation_summary(matches):
         if condition == "transport_confirmed" and evidence["confirmed"]:
             eta = rules.ts(evidence["eta"])
             lines.append(f"Carrier confirmed booking {evidence['booking_reference']}, ETA {eta:%a %H:%M}")
+            if departed := rules.ts(evidence.get("departed_at")):
+                lines.append(f"Departure at {departed:%a %H:%M} confirmed by {evidence['contact']}")
+            elif position := evidence.get("departure_position"):
+                observed = rules.ts(position["observed_at"])
+                lines.append(f"Carrier position at {observed:%a %H:%M} confirms departure")
         elif condition == "dock_slot_confirmed" and evidence["confirmed"]:
             start, end = (rules.ts(evidence[key]) for key in ("slot_start", "slot_end"))
             lines.append(f"Slot {start:%H:%M}–{end:%H:%M} confirmed by {evidence['contact']}")
@@ -684,33 +796,63 @@ def _historical_terms(action):
     if not message:
         return None
     sent = rules.ts(message["sent_at"]).astimezone(rules.timezone())
-    # These explicit order clauses appear in both the original Polish and its recorded translation.
     body = "\n".join(_normalized(message.get(field)) for field in ("body", "body_en"))
-    dates = {(int(match[1]), match[3]) for match in HISTORICAL_DEADLINE.finditer(body)}
-    if len(dates) != 1:
-        return None
-    (day, clock), = dates
     try:
-        deadline = _appointment(f"{sent.year}-11-{day:02d}", clock, None, sent)
+        dates = set()
+        for iso_date, day, month, year, clock, zone in HISTORICAL_DEADLINE.findall(body):
+            if not iso_date:
+                date = dt.date(int(year or sent.year), MONTHS[month.casefold()], int(day))
+                if not year and date < sent.date():
+                    date = date.replace(year=sent.year + 1)
+                iso_date = date.isoformat()
+            dates.add(_appointment(iso_date, clock, zone or None, sent))
     except ValueError:
         return None
-    if deadline.date() < sent.date() or deadline.weekday() != 6:
+    if len(dates) != 1:
+        return None
+    deadline = dates.pop()
+    if deadline < sent:
         return None
     limits = {float(match[1].replace(",", ".")) for match in VEHICLE_LIMIT.finditer(body)}
     if len(limits) > 1:
         return None
-    translated = _normalized(message.get("body_en"))
-    quantity = re.search(r"\b([\d ,]+) (?:finished )?art books\b", translated, re.I)
-    total = re.search(r"\btotal price of EUR ([\d ,]+)\b", translated, re.I)
-    qty, cost = (int(re.sub(r"\D", "", match[1])) if match else None for match in (quantity, total))
-    commercial = re.search(r"\b(DAP) (?:DC )?(Hamburg)\b", body, re.I)
     terms = describe(action)
-    return {**terms, "delivery_id": action["id"], "emergency_reference": action["id"],
-            "deliver_by": deadline.isoformat(), "vehicle_limit_t": next(iter(limits), None),
-            "quantity": qty, "total_price": cost, "unit_price": round(cost / qty, 2) if cost is not None and qty else None,
-            "currency": "EUR" if cost is not None else None, "incoterm": commercial[1].upper() if commercial else None,
-            "delivery_place": commercial[2].title() if commercial else None,
-            "conditions": sorted(set(terms["conditions"]) | {"transport_confirmed", "dock_slot_confirmed"})}
+    qty, cost, currency = _historical_amounts(terms["part"], body)
+    sites = "|".join(re.escape(name) for name in sorted(_site_names(), key=lambda name: (-len(name), name)))
+    incoterms = {match[1].upper() for match in re.finditer(
+        rf"\b({'|'.join(sorted(INCOTERMS))})\s+(?:DC\s+)?(?:{sites})(?![\w-])", body, re.I)} if sites else set()
+    incoterm = incoterms.pop() if len(incoterms) == 1 else None
+    terms.update(delivery_id=action["id"], emergency_reference=action["id"], deliver_by=deadline.isoformat(),
+                 vehicle_limit_t=next(iter(limits), None), quantity=qty, total_price=cost,
+                 unit_price=round(cost / qty, 8) if cost is not None and qty else None, currency=currency,
+                 incoterm=incoterm, delivery_place=setting("site_name", None) if incoterm else None,
+                 conditions=sorted(set(terms["conditions"]) | CONDITIONS.keys()))
+    terms["depart_by"] = _derive_depart_by(terms, _receiving_cutoff().isoformat())
+    return terms
+
+
+def _historical_amounts(part, body):
+    from core.ingest import num
+
+    names = [part]
+    label = setting("display", {}).get("parts", {}).get(part)
+    if label:
+        names.append(label[1])
+    if part and rules.DB_PATH.is_file():
+        with _master() as db:
+            names.extend(row[0] for row in db.execute("SELECT description FROM components WHERE component_id=?", (part,)))
+    labels = "|".join(re.escape(_normalized(name)) for name in names if name)
+    part_quantity = re.compile(rf"(?<![\w.,-])({NUMBER})\s+(?:finished\s+)?(?:{labels})s?(?![\w-])", re.I) if labels else None
+    matches = list(part_quantity.finditer(body)) if part_quantity else []
+    if not matches:
+        matches = list(QUANTITY_LABEL.finditer(body))
+    quantities = {num(match[1]) for match in matches}
+    qty = quantities.pop() if len(quantities) == 1 else None
+    totals = {(num(match[2] or match[3]), (match[1] or match[4]).upper()) for match in re.finditer(
+        rf"\btotal(?:\s+price)?\s*(?:of\s+|[:=]\s*)?{PRICE.pattern}", body, re.I)
+              if re.fullmatch(r"[A-Za-z]{3}", match[1] or match[4])}
+    cost, currency = totals.pop() if len(totals) == 1 else (None, None)
+    return qty, cost, currency
 
 
 def delivery_terms(action):
@@ -723,7 +865,7 @@ def amendment_window(original: dict, cutoff: dt.datetime | None = None) -> dict 
     if not (after := rules.ts(original.get("deliver_by"))):
         return None
     if cutoff is None:
-        cutoff = rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
+        cutoff = _receiving_cutoff()
     return {"after": after.isoformat(), "latest": cutoff.isoformat()}
 
 
@@ -746,18 +888,109 @@ def amendment_deadline_blocker(original: dict, deliver_by: str | None, eta: str 
     return None
 
 
+def _effective_depart_by(terms, log):
+    # Preserve the digest of commitments signed before the departure field existed.
+    if "depart_by" in terms:
+        return rules.ts(terms["depart_by"])
+    if original_id := terms.get("revises_action_id"):
+        original = _prior_terms(log, original_id)
+        return rules.ts(_revision_depart_by(original)) if original else None
+    return rules.ts(_derive_depart_by(terms, terms.get("deliver_by")))
+
+
+def _carrier_departure(terms, booking, depart_by, now):
+    from core.dispatch import coordinates
+
+    if not rules.DB_PATH.is_file():
+        return None
+    with _master() as db:
+        rows = db.execute("""SELECT shipment_id, reference, material_ids, dest_site, last_lat, last_lon, updated_at,
+                                    ports.lat, ports.lon
+                             FROM shipments JOIN carriers USING (carrier_id)
+                             LEFT JOIN ports ON ports.locode=shipments.origin
+                             WHERE (shipment_id=? OR reference=?)
+                               AND supplier_id=? AND shipments.mode='road'
+                               AND status IN ('in_transit', 'in_delivery', 'delayed')""",
+                          (terms["delivery_id"], booking, terms["supplier_id"])).fetchall()
+    if len(rows) != 1:
+        return None
+    shipment_id, reference, materials, site, lat, lon, observed, origin_lat, origin_lon = rows[0]
+    if (terms["part"] not in (materials or "").split("|") or (site or "").casefold() not in _site_names()
+            or not coordinates(lat, lon) or (lat, lon) == (origin_lat, origin_lon) or not observed or "T" not in observed):
+        return None
+    observed_at = rules.ts(observed)
+    freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
+    if now - freshness <= observed_at <= depart_by:
+        return {"shipment_id": shipment_id, "reference": reference, "observed_at": observed_at.isoformat(),
+                "lat": lat, "lon": lon}
+    return None
+
+
+def _departure_evidence(log, terms, matches, depart_by, now):
+    transport = matches.get("transport_confirmed", {})
+    slot = matches.get("dock_slot_confirmed", {})
+    if not (transport.get("confirmed") and slot.get("confirmed")):
+        return DEPARTURE_HOLD
+    eta = rules.ts(transport["eta"])
+    freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
+    if not (now <= eta and rules.ts(transport["received_at"]) >= now - freshness):
+        return DEPARTURE_HOLD
+    if original_id := terms.get("revises_action_id"):
+        original = _prior_terms(log, original_id)
+        if not original or eta <= rules.ts(original["deliver_by"]):
+            return DEPARTURE_HOLD
+    if (departed := rules.ts(transport.get("departed_at"))) and departed <= depart_by:
+        return None
+    if position := _carrier_departure(terms, transport["booking_reference"], depart_by, now):
+        transport["departure_position"] = position
+        return None
+    return DEPARTURE_HOLD
+
+
+def _departure_blocker(action, terms):
+    """Read evidence without taking a write lock inside the approval transaction."""
+    if "depart_by" in terms and not terms["depart_by"]:
+        return "departure deadline is missing" if terms.get("revises_action_id") else None
+    now = rules.now()
+    if terms.get("depart_by") and now <= rules.ts(terms["depart_by"]):
+        return None
+    if not actions.DB.is_file():
+        return DEPARTURE_HOLD if terms.get("depart_by") else None
+    try:
+        with _action_log() as log:
+            depart_by = _effective_depart_by(terms, log)
+            if depart_by is None:
+                return "departure deadline is missing" if terms.get("revises_action_id") else None
+            if now > depart_by:
+                _, matches = _related_replies(log, action, terms, now, after_departure=True)
+                return _departure_evidence(log, terms, matches, depart_by, now)
+    except sqlite3.Error:
+        return "evidence stale or unreadable"
+    return None
+
+
 def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
     """The gate and cockpit share the same reply evidence and delivery constraints."""
     now = now or rules.now()
     terms = delivery_terms(action)
-    matches, review = {}, None
+    matches, review, departure_hold = {}, None, None
+    depart_by = (terms or {}).get("depart_by")
     if terms and terms.get("deliver_by"):
+        def evidence(db):
+            departure = _effective_depart_by(terms, db)
+            after_departure = departure is not None and now > departure
+            supplier_review, confirmations = _related_replies(db, action, terms, now, after_departure=after_departure)
+            hold = _departure_evidence(db, terms, confirmations, departure, now) if after_departure else None
+            if departure is None and terms.get("revises_action_id"):
+                hold = "departure deadline is missing"
+            return supplier_review, confirmations, hold, departure
+
         try:
             if log is None:
-                with actions.tx() as db:
-                    review, matches = _related_replies(db, action, terms, now)
+                with _action_log() as db:
+                    review, matches, departure_hold, depart_by = evidence(db)
             else:
-                review, matches = _related_replies(log, action, terms, now)
+                review, matches, departure_hold, depart_by = evidence(log)
         except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
             review = "evidence stale or unreadable"
     terms = terms or {}
@@ -771,12 +1004,14 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
         revised_reason = f"Verified ETA {eta:%a %H:%M} is after the ordered {deadline:%H:%M} arrival."
     elif deadline and (now >= deadline or (depart_for_requested and now > depart_for_requested)) and (not eta or eta < now):
         revised_reason = f"The ordered {deadline:%H:%M} arrival can no longer be met."
-    hold_reason = review or _confirmation_blocker(matches)
+    hold_reason = departure_hold or review or _confirmation_blocker(matches)
     saved_hold = (action.get("payload") or {}).get("held_reason")
-    if log is None and not hold_reason and saved_hold and not saved_hold.startswith("required condition missing"):
+    if (log is None and not hold_reason and saved_hold and saved_hold != DEPARTURE_HOLD
+            and not saved_hold.startswith("required condition missing")):
         hold_reason = saved_hold
     return {
         "action_id": action["id"], "delivery_id": terms.get("delivery_id"), "deliver_by": terms.get("deliver_by"),
+        "depart_by": depart_by.isoformat() if isinstance(depart_by, dt.datetime) else depart_by,
         "revises_action_id": terms.get("revises_action_id"),
         "terms_source": ("signed_terms" if _signed(action, fingerprint(terms)) else "proposed_terms") if terms_for(action)
                         else "sent_order" if terms else None,
@@ -983,7 +1218,7 @@ def _authorized_repeat(log, action, terms):
 
 def check(action: dict) -> tuple[bool, str | None]:
     """Verify the exact approved instruction and current evidence before each send."""
-    reason = proposal_blocker(action)
+    reason = proposal_blocker(action, check_departure=False)
     if reason:
         return False, reason
     try:
@@ -1010,6 +1245,11 @@ def check(action: dict) -> tuple[bool, str | None]:
                 log.execute("UPDATE actions SET payload=json_set(payload,'$.confirmation_evidence',json(?)) WHERE id=?",
                             (json.dumps(matches), action["id"]))
             reason = state["hold_reason"] or file_blocker
+            if not reason and terms.get("revises_action_id"):
+                original = _prior_terms(log, terms["revises_action_id"])
+                arrival = rules.ts(state["eta"])
+                if arrival and arrival <= rules.ts(original["deliver_by"]):
+                    reason = "verified ETA is outside the amendment arrival window"
             return reason is None, reason
     except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
         return False, "evidence stale or unreadable"
@@ -1018,6 +1258,8 @@ def check(action: dict) -> tuple[bool, str | None]:
 def decision_state(action: dict) -> dict:
     held = action["held_reason"]
     blocker = proposal_blocker(action) if applies(action) and not action["payload"].get("repeat_commitment") else None
+    if held == DEPARTURE_HOLD and action["status"] in {"proposed", "scheduled", "escalated"}:
+        held = blocker
     expired = action["status"] == "expired" or bool(blocker and "expired" in blocker) or bool(held and "expired" in held)
     replaced = re.search(r"duplicate of (ACT-[A-Z0-9]+)", held or "")
     if action["status"] == "superseded":
@@ -1026,10 +1268,13 @@ def decision_state(action: dict) -> dict:
         terminal = "Expired — no longer useful"
     else:
         terminal = None
-    reason = held or blocker
+    reason = blocker if blocker == DEPARTURE_HOLD else held or blocker
     terms = terms_for(action)
     matches = action["payload"].get("confirmation_evidence", {})
-    if reason and reason.startswith("evidence stale"):
+    if reason == DEPARTURE_HOLD:
+        owner, clears = ("Carrier and receiving team",
+                         "Verify the truck departed by the deadline and provide a current ETA within the delivery window and confirmed dock slot.")
+    elif reason and reason.startswith("evidence stale"):
         owner, clears = "Dockside operator", "Resolve file ingest issues and refresh the portal and mailbox evidence."
     elif reason and reason.startswith("required condition missing"):
         condition = reason.partition(": ")[2].partition(" (")[0]

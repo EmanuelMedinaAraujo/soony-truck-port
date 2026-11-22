@@ -336,6 +336,8 @@ def test_historical_release_gate_replay():
     assert result.stdout.strip() in (root / "README.md").read_text()
     assert "RELEASED WITH SYNTHETIC EVIDENCE" in result.stdout
     assert "HELD — draft quantity disagrees with the commitment" in result.stdout
+    assert "07:01 RETRY WITH CONFIRMED SLOT — HELD — departure deadline passed" in result.stdout
+    assert "07:01 REVISED TERMS RELEASED — verified departure Sun 06:40, ETA Sun 14:30" in result.stdout
 
 
 def test_new_document_disagrees_with_commitment(log, deliveries):

@@ -286,6 +286,7 @@ def run_revision(policy, sent):
         amended, = actions.list_actions(("proposed",))
         assert actions.signers(amended) == ("Paul Winter",)
         assert release.terms_for(amended)["deliver_by"] == at("15:00").isoformat()
+        assert release.terms_for(amended)["depart_by"] == at("07:00").isoformat()
         inquiries = [a for a in actions.list_actions() if a["finding_id"] == amended["finding_id"] and a["kind"] == "confirm_terms"]
         dock_action, = inquiries
         dock, = dock_action["messages"]
@@ -298,10 +299,22 @@ def run_revision(policy, sent):
         assert held["status"] == "approved" and "dock slot confirmed" in held["held_reason"]
         print(f"03:21 AMENDMENT SIGNED — HELD — {held['held_reason']}")
 
-    with rules.replay(policy, at("03:22")):
+    with rules.replay(policy, at("07:01")):
         store_reply(dock, "revised-slot", "Dock slot confirmed for Sun 14:00–15:00.")
+        for source in ("files", "mailbox"):
+            release.record_check(source)
+        before_retry = len(sent)
+        held = outbound.dispatch(amended["id"])
+        assert held["status"] == "approved" and held["held_reason"] == "departure deadline passed"
+        assert len(sent) == before_retry
+        print(f"\n07:01 RETRY WITH CONFIRMED SLOT — HELD — {held['held_reason']}")
+        print(release.decision_state(held)["hold_clears"])
+        store_reply(carrier, "departed", "Truck departed Poznań at 06:40. ETA Sun 14:30.")
         released = outbound.dispatch(amended["id"])
         assert released["status"] == "sent", released["held_reason"]
+        assert len(sent) == before_retry + 1
+        transport = released["payload"]["confirmation_evidence"]["transport_confirmed"]
+        assert transport["departed_at"] == at("06:40").isoformat() and transport["eta"] == at("14:30").isoformat()
         outbound_email = sent[-1]
         assert "Do not create another order or booking." in outbound_email.get_content()
         assert "vehicle_limit_t" in outbound_email.get_content()
@@ -309,7 +322,7 @@ def run_revision(policy, sent):
         assert not final["needsRevisedTerms"] and final["deliveryState"]["terms_source"] == "signed_terms"
         assert final["deliveryState"]["slot_confirmed_by"] == "Katrin Jansen"
         assert followup.deadline_for({"option": final, "default_route_id": FINDING}, at("16:00")) == at("15:00")
-        print("\n03:22 REVISED TERMS RELEASED — existing order, deliver by Sun 15:00")
+        print("\n07:01 REVISED TERMS RELEASED — verified departure Sun 06:40, ETA Sun 14:30")
         show_trace(final, route)
 
 
