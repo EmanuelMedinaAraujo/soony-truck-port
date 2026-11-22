@@ -30,24 +30,13 @@ eur = lambda v: f"€{round(v or 0):,}"
 
 
 def open_questions(who):
-    people = rules.cfg("people")
-    with actions.tx() as log:
-        inbox.init_schema(log)
-        rows = log.execute("""SELECT m.id, m.to_name, m.subject, m.body, a.title, a.finding_id
-            FROM messages m JOIN actions a ON a.id=m.action_id
-            WHERE m.channel='discord' AND m.status='delivered'
-              AND a.kind IN ('ask','escalate','chase_escalation')
-              AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.msg_id=m.id)
-            ORDER BY julianday(m.sent_at) DESC, m.id""").fetchall()
-    questions = {}
-    for row in rows:
-        recipient = re.split(r"\s+(?:and|\()\s*", row["to_name"] or "", maxsplit=1)[0].strip()
-        if (people.get(recipient) or recipient) == who:
-            text = " ".join((row["subject"] or row["title"] or row["body"] or "").split())
-            if part := actions.PART.search(row["finding_id"] or ""):
-                text = f"{part[0]} · {text}"
-            questions[row["id"]] = text[:100]
-    return questions
+    """The caller's answerable questions and tasks, from the same source as the dashboard (superseded ones excluded)."""
+    from core import questions
+    out = {}
+    for q in questions.current():
+        if q["person"] == who:
+            out[q["id"]] = (f"{q['part']} · " if q.get("part") else "") + q["text"][:90]
+    return out
 
 
 def answer_route():
@@ -128,13 +117,15 @@ class Bot(discord.Client):
             if not who:
                 await inter.response.send_message(f"This Discord account has no staff mapping. {answer_route()}", ephemeral=True)
                 return
-            if question not in open_questions(who):
-                await inter.response.send_message("Select an open question assigned to you.", ephemeral=True)
+            from core import questions as staff_questions
+            target = await asyncio.to_thread(staff_questions.find, question)
+            if not target or target.get("superseded") or target["person"] != who:
+                await inter.response.send_message("Select an open question assigned to you; replaced questions can't be answered.", ephemeral=True)
                 return
             if not (text := text.strip()):
                 await inter.response.send_message("Write an answer first.", ephemeral=True)
                 return
-            inbox.add_staff_answer(question, who, text[:4000])
+            await asyncio.to_thread(staff_questions.answer, target, who, text[:4000])
             await inter.response.send_message(f"Thanks {who}, Dockside will act on your answer in its next pass.", ephemeral=True)
 
         @answer.autocomplete("question")

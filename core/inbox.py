@@ -155,6 +155,23 @@ def add_staff_answer(message_id: str, person: str, text: str) -> dict:
     return get_reply(rid)
 
 
+def add_task_answer(action_id: str, source_id: str, person: str, text: str, task: str) -> dict:
+    """A verified person's answer to a task Dockside set after a conflict; bound to the action, not to a message."""
+    import uuid
+    with actions.tx() as c:
+        init_schema(c)
+        if not c.execute("SELECT 1 FROM actions WHERE id=?", (action_id,)).fetchone():
+            raise KeyError(action_id)
+        rid = "RPL-" + uuid.uuid4().hex[:6].upper()
+        stamp = rules.now().isoformat(timespec="seconds")
+        c.execute("""INSERT INTO replies(id, message_id, msg_id, action_id, from_addr, from_name, subject, received_at, body, handled)
+                     VALUES (?,?,?,?,?,?,?,?,?,0)""",
+                  (rid, f"task:{action_id}:{source_id}:{rid}", None, action_id, None, person,
+                   f"Answer to task: {task}"[:200], stamp, text))
+        c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "reply", action_id, f"{person} answered the task on the dashboard"))
+    return get_reply(rid)
+
+
 def get_reply(rid: str) -> dict | None:
     with actions.tx() as c:
         init_schema(c)

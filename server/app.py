@@ -409,18 +409,18 @@ class Answer(BaseModel):
 
 @app.post("/api/questions/{message_id}/answer")
 def answer_question(message_id: str, answer: Answer, request: Request):
-    """A staff member answers Dockside's question on the dashboard; the agent handles it like any reply."""
-    from core import inbox
+    """A staff member answers Dockside's current question or task; the agent handles it like any reply."""
+    from core import questions
     verified = verified_person(request)
     if not verified:
         raise HTTPException(403, "Sign in through the company network to answer.")
     who, source = verified
-    with actions.tx() as c:
-        row = c.execute("SELECT to_name FROM messages WHERE id=?", (message_id,)).fetchone()
-    if not row:
+    question = questions.find(message_id)
+    if not question:
         raise HTTPException(404, "That question no longer exists; reload the page.")
-    asked = re.split(r"\s+(?:and|\()\s*", row["to_name"] or "", maxsplit=1)[0].strip()
-    asked = rules.cfg("people").get(asked) or asked  # a role means its holder
+    if question.get("superseded"):
+        raise HTTPException(409, "This question was replaced after the supplier's newer reply; answer the current task instead.")
+    asked = question["person"]
     delegates = release.setting("delegates", {}).get(asked, [])
     if source == "local demo":
         who = f"{asked} (entered by the local demo operator)"
@@ -430,7 +430,7 @@ def answer_question(message_id: str, answer: Answer, request: Request):
     if not text:
         raise HTTPException(422, "Write an answer first.")
     try:
-        reply = inbox.add_staff_answer(message_id, who, text[:4000])
+        reply = questions.answer(question, who, text[:4000])
     except KeyError:
         raise HTTPException(404, "That question no longer exists; reload the page.")
     notify("staff_answer", {"reply": reply})

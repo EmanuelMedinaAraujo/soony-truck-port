@@ -630,3 +630,15 @@ def test_answer_is_refused_from_someone_else(log, monkeypatch):
     monkeypatch.setattr(server, "verified_person", lambda request: ("Katrin Jansen", "dashboard"))
     refused = TestClient(server.app).post(f"/api/questions/{mid}/answer", json={"text": "Use 4500318775"})
     assert refused.status_code == 403 and "Paul Winter" in refused.json()["detail"]
+
+
+def test_question_asked_before_a_dispute_is_superseded_and_not_answerable(log, monkeypatch):
+    from core import questions
+    snapshot = {"components": [{"id": "CMP-GAM-008", "name": "Art book", "default_route_id": "r", "routes": [{"id": "r", "steps": [
+        {"name": "Answer from Paul Winter", "state": "superseded", "detail": "Replaced", "person": "Paul Winter",
+         "message_id": None, "superseded_message_id": "MSG-OLD"},
+        {"name": "Task for Paul Winter", "state": "waiting", "detail": "Reconcile the order", "person": "Paul Winter",
+         "message_id": "task:ACT-1:RPL-1", "task": True}]}]}]}
+    assert questions.find("MSG-OLD", snapshot)["superseded"]
+    task = questions.find("task:ACT-1:RPL-1", snapshot)
+    assert task["kind"] == "task" and task["person"] == "Paul Winter"

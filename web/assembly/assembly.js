@@ -143,7 +143,7 @@ function process(currentStage) {
 const shipmentStates = {in_transit:"In transit", in_delivery:"Out for delivery", arrived_port:"At port", delayed:"Delayed",
   booked:"Booked", delivered:"Delivered", arrived_dc:"At the warehouse"};
 
-const stepStates = {confirmed: "Done", waiting: "Waiting for answer", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
+const stepStates = {confirmed: "Done", superseded: "Replaced", waiting: "Waiting for answer", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
 
 /* What Dockside does now, then the selected delivery's checkpoints on one vertical line. */
 function renderProgress(route, line) {
@@ -156,7 +156,8 @@ function renderProgress(route, line) {
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepStates[step.state] ?? "Unclear"}</span>
         <p>${html(step.detail)}</p>${step.events?.length ? `<ol class="events">${step.events.map(event =>
-          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.who)}</b> ${html(event.text)}</li>`).join("")}</ol>` : ""}</div></li>`;
+          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "note" ? "Dockside estimate" : event.who)}</b> ${html(event.text)}${
+            event.message_id && event.kind !== "sent" && event.kind !== "note" ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

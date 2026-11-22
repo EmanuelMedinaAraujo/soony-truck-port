@@ -408,3 +408,4 @@ img { display: block; max-width: 100%; }
 .clock-row b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .clears { margin: 6px 0 4px 18px; max-width: 75ch; }
 .clears li { padding: 2px 0; border: 0; }
+.progress li[data-state="superseded"] b, .progress li[data-state="superseded"] p { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent); }

@@ -460,6 +460,15 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
+def now_ts() -> dt.datetime:
+    return rules.now()
+
+
+def question_id(action_id: str, source_id: str | None) -> str:
+    """The id of a task Dockside sets a person after a conflict; answers to it are bound to the action and its evidence."""
+    return f"task:{action_id}:{source_id or 'current'}"
+
+
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
                 order: dict | None, delivery: dict):
     """Show which delivery requirements have verified evidence and which are still open."""
@@ -555,10 +564,27 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                     person = people.get(step_.get("person")) or step_.get("person")  # a role name means its holder
                     if person and person not in asked:
                         question = step_["text"].split(": ", 1)[-1]
-                        asked[person] = step(f"Answer from {person}", "waiting", question[:1].upper() + question[1:] +
+                        conflict = (delivery or {}).get("conflict")
+                        # A question asked before the supplier disputed the order rests on facts that no longer hold.
+                        stale = bool(conflict and (rules.ts(message.get("sent_at")) or now_ts()) < (rules.ts(conflict["at"]) or now_ts()))
+                        asked[person] = step(f"Answer from {person}", "superseded" if stale else "waiting",
+                                             (f"Replaced after {conflict['who']}'s {_clock(rules.ts(conflict['at']))} reply disputed the order. Earlier question: "
+                                              if stale else "") + question[:1].upper() + question[1:] +
                                              f" Asked {_clock(rules.ts(message.get('sent_at')))}.") | {
-                            "person": person, "message_id": step_.get("message_id"), "question": step_.get("question"),
-                            "answer_by": step_.get("answer_by"), "since": message.get("sent_at"), "options": step_.get("options")}
+                            "person": person, "message_id": None if stale else step_.get("message_id"),
+                            "question": step_.get("question"), "answer_by": None if stale else step_.get("answer_by"),
+                            "since": message.get("sent_at"), "options": None if stale else step_.get("options"),
+                            "superseded_message_id": step_.get("message_id") if stale else None}
+    if (conflict := (delivery or {}).get("conflict")) and delivery.get("action_id"):
+        owner = conflict.get("owner_reconcile") or "the buyer"
+        asked[f"task:{owner}"] = step(f"Task for {owner}", "waiting",
+                                      f"Reconcile the order and its dispatch instruction with {conflict['who']}, then record the outcome.") | {
+            "person": owner, "message_id": question_id(delivery["action_id"], conflict.get("message_id")), "since": conflict["at"],
+            "question": f"{conflict['who']} wrote at {_clock(rules.ts(conflict['at']))}: \"{conflict['text']}.\" "
+                        f"Confirm with the supplier whether the order and the dispatch instruction stand, and record what was agreed.",
+            "options": [{"answer": "The order stands; I confirmed the dispatch instruction with the supplier in writing.", "label": "Order stands, dispatch confirmed"},
+                        {"answer": "The order is cancelled; do not ship.", "label": "Cancel the order"}],
+            "task": True}
     unique = steps + list(asked.values())
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
     return unique
