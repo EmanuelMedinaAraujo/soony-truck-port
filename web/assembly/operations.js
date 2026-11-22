@@ -104,6 +104,62 @@ function deliveryClock(option) {
   return asked;
 }
 
+/* A supplier contradicted an earlier commitment: who acts, what conflicts (with its source), the clocks, what clears it. */
+function conflictCard(part, item, snapshot) {
+  const option = part.option;
+  const conflict = option.deliveryState.conflict;
+  const person = item.next_step.person ?? conflict.owner_reconcile;
+  const logistics = String(conflict.owner_logistics ?? "").includes("@") ? `${conflict.who} (supplier logistics)` : conflict.owner_logistics;
+  const unload = option.modeledUnloadAt ? Date.parse(option.modeledUnloadAt) : null;
+  const cutoff = Date.parse(snapshot.cutoff);
+  const late = unload && unload > cutoff ? Math.round((unload - cutoff) / 60000) : 0;
+  const lateText = late ? ` · misses it by ${late >= 60 ? `${Math.floor(late / 60)} h ${late % 60} min` : `${late} min`}` : "";
+  const q = item.question;
+  return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
+    <span class="decision-ask"><b>${html(person)}:</b> reconcile the order with ${html(conflict.who)}. The rescue is at risk.</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
+    <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
+      <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
+    <p class="clock-row">${option.modeledUnloadAt ? `<span>Earliest unload <b>${html(at(option.modeledUnloadAt))}</b></span>` : ""}
+      <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b>${html(lateText)}</span>
+      ${option.departBy ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(option.departBy))}</b></span>` : ""}</p>
+    <details class="question"><summary>What clears it, and the open question to ${html(person)}</summary>
+      <ol class="clears">
+        <li>${html(person)} confirms the order reference, quantity, price and the dispatch instruction with ${html(conflict.who)}.</li>
+        <li>${html(logistics)} confirms a carrier booking, a vehicle of the allowed size and an arrival time before the cutoff.</li>
+        <li>${html(siteName())} receiving confirms an unload slot for that arrival.</li></ol>
+      <p class="side-note">${html(option.modeledUnloadBasis ?? "")}. Until all three hold, Dockside sends no amendment and counts none of these copies.</p>
+      ${q ? questionBlock(part, {...q, person: q.person ?? person}) : ""}</details></li>`;
+}
+
+/* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */
+function questionParts(part, step) {
+  const mine = viewer.person && (viewer.person === step.person || viewer.source === "local demo");
+  const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
+  // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
+  const wanted = part.option?.quantity;
+  const match = (step.options ?? []).find(option => wanted && option.quantity === wanted);
+  const advice = step.options?.length ? (match ? `Recommended: PO ${match.po} line ${match.line}, it matches the ${number(wanted)} ordered.`
+    : `Recommended: a new emergency order reference for the ${number(wanted)} already accepted. No line named matches that quantity${(step.options ?? []).every(option => option.quantity > wanted) ? "; they are larger, later deliveries" : ""}.`) : "";
+  const choices = (step.options ?? []).map(option => `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
+      data-text="${html(option.answer)}">PO ${html(option.po)} line ${html(option.line)} · ${number(option.quantity)} · due ${html(day(option.requested))}</button>`).join("");
+  const emergency = step.options?.length ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
+      data-text="Use a new emergency order reference for the accepted delivery (not an additional order); I will send the reference.">New emergency reference (same order)</button>` : "";
+  const form = mine ? `<form class="answer-form" data-answer="${html(step.message_id)}">${choices ? `<div class="answer-choices">${choices}${emergency}</div>` : ""}
+      <label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
+      <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
+      <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
+    : `<p class="side-note">Only ${html(step.person)} can answer: here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}, or with /answer in Discord once their account is linked. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
+  const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
+      ${choices ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency reference for the same order.</p>
+      <p class="advice">${html(advice)}</p>` : ""}
+      <details><summary>Full question${step.since ? `, asked ${html(at(step.since))}` : ""}${step.answer_by ? ` (answer requested by ${html(at(step.answer_by))})` : ""}</summary><p>${html(step.question)}</p></details>${form}</div>` : "";
+  return {html: answer, advice};
+}
+
+function questionBlock(part, step) {
+  return questionParts(part, step).html;
+}
+
 /* Lead with what the person must do now, in one sentence. */
 function instruction(step, advice) {
   if (!step.person) return step.text;
@@ -120,6 +176,12 @@ function renderNextSteps(snapshot) {
     const route = part.routes?.find(candidate => candidate.id === part.default_route_id);
     for (const row of route?.steps ?? []) {
       if (!row.message_id || team.some(item => item.next_step.message_id === row.message_id || item.next_step.person === row.person)) continue;
+      const card = yours.find(item => item.component_id === part.id);
+      if (card) {  // questions on a part with a decision card belong on that card: its owner's question, or an escalation
+        if (card.next_step.person === row.person) card.question ??= row;
+        else (card.alsoAsked ??= []).push(row);
+        continue;
+      }
       const detail = row.detail.charAt(0).toLowerCase() + row.detail.slice(1);
       const first = team.find(item => item.component_id === part.id);
       if (first) (first.alsoAsked ??= []).push(row);  // the same decision escalated to someone else
@@ -127,7 +189,9 @@ function renderNextSteps(snapshot) {
     }
   }
   const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item));
-  const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled");
+  // A decision already shown as a conflict card (its order is disputed) is not listed a second time.
+  const carded = new Set((snapshot.components ?? []).map(part => part.option?.deliveryState?.conflict && part.option.deliveryState.action_id).filter(Boolean));
+  const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled" && !carded.has(decision.id));
   const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
   const key = JSON.stringify([all, [...calls.values()].map(call => [call.message_id, call.status, call.talk_url, call.result?.summary]), waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
   if (key === nextStepsKey) return;
@@ -141,6 +205,8 @@ function renderNextSteps(snapshot) {
   const opened = new Set([...needs.querySelectorAll("[data-question] details[open]")].map(node => node.closest("[data-question]").dataset.question));
   needs.innerHTML = [...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
+      const conflict = part.option?.deliveryState?.conflict;
+      if (conflict) return conflictCard(part, item, snapshot);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
         <span>${html(item.next_step.text)}</span>${callControls(item.next_step)}</li>`;
     }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
@@ -155,26 +221,7 @@ function renderNextSteps(snapshot) {
       const blockBy = option?.departBy && Date.now() < Date.parse(option.departBy) ? option.departBy : null;
       const due = blockBy ? ` <span class="clock-note">Needed before the goods leave${option.origin ? ` ${html(option.origin)}` : ""}: by ${html(at(blockBy))}.</span>`
         : step.answer_by && !overdue ? ` <span class="clock-note">Answer by ${html(at(step.answer_by))}.</span>` : "";
-      const mine = viewer.person && (viewer.person === step.person || viewer.source === "local demo");
-      const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
-      // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
-      const wanted = part.option?.quantity;
-      const match = (step.options ?? []).find(option => wanted && option.quantity === wanted);
-      const advice = step.options?.length ? (match ? `Recommended: PO ${match.po} line ${match.line}, it matches the ${number(wanted)} ordered.`
-        : `Recommended: a new emergency order reference for the ${number(wanted)} already accepted. No line named matches that quantity${(step.options ?? []).every(option => option.quantity > wanted) ? "; they are larger, later deliveries" : ""}.`) : "";
-      const choices = (step.options ?? []).map(option => `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
-          data-text="${html(option.answer)}">PO ${html(option.po)} line ${html(option.line)} · ${number(option.quantity)} · due ${html(day(option.requested))}</button>`).join("");
-      const emergency = step.options?.length ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
-          data-text="Use a new emergency order reference for the accepted delivery (not an additional order); I will send the reference.">New emergency reference (same order)</button>` : "";
-      const form = mine ? `<form class="answer-form" data-answer="${html(step.message_id)}">${choices ? `<div class="answer-choices">${choices}${emergency}</div>` : ""}
-          <label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
-          <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
-          <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
-        : `<p class="side-note">Only ${html(step.person)} can answer: here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}, or with /answer in Discord once their account is linked. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
-      const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
-          ${choices ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency reference for the same order.</p>
-          <p class="advice">${html(advice)}</p>` : ""}
-          <details><summary>Full question${step.since ? `, asked ${html(at(step.since))}` : ""}${step.answer_by ? ` (answer requested by ${html(at(step.answer_by))})` : ""}</summary><p>${html(step.question)}</p></details>${form}</div>` : "";
+      const {html: answer, advice} = questionParts(part, step);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
         <span>${html(instruction(step, advice))}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
     }),

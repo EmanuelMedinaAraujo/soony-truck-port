@@ -399,3 +399,12 @@ img { display: block; max-width: 100%; }
 .events li[data-kind="accepted"] b, .events li[data-kind="accepted"] { color: var(--covered); }
 .progress .events li { display: block; position: static; padding: 3px 0 3px 10px; }
 .progress .events li::before { display: none; }
+
+/* Decision card when a supplier contradicts an earlier commitment. */
+.decision-card .decision-ask { font-size: 1rem; }
+.conflict-line { margin-top: 6px; max-width: 80ch; }
+.conflict-line a { margin-left: 4px; font-size: .86rem; }
+.clock-row { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font-size: .9rem; color: var(--muted); }
+.clock-row b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.clears { margin: 6px 0 4px 18px; max-width: 75ch; }
+.clears li { padding: 2px 0; border: 0; }
