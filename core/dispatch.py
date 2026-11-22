@@ -66,6 +66,7 @@ INTERNAL_FOLLOWUP = {
     "dock_slot": "confirm the unload slot",
     "quality_release": "release the stock",
     "escalate": "answer",
+    "ask": "answer",
 }
 
 
@@ -82,8 +83,8 @@ def internal_followup(action: dict, message: dict) -> dict:
         return next_step("Needs you", text, message["sent_at"], action["id"]) | {"call_id": message["id"]}
     task = INTERNAL_FOLLOWUP[action["kind"]]
     if action["kind"] == "dock_slot":
-        return next_step("Booked", f"Unload slot in Hamburg is booked; {who} can move it if needed.", message["sent_at"], action["id"])
-    if action["kind"] == "escalate":
+        return next_step("Waiting for reply", f"Unload slot requested from {who}; waiting for the site to confirm it.", message["sent_at"], action["id"])
+    if action["kind"] in ("escalate", "ask"):
         title = (action["title"] or "").strip().rstrip(".")
         task = f"answer: {title[:1].lower() + title[1:]}" if title else "answer"
     return next_step("Waiting for reply", f"Waiting for {who} to {task}.", message["sent_at"], action["id"])
@@ -423,16 +424,22 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
              step("Hamburg receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
     done = {"sent", "done", "auto", "delivered"}
+    replies = sorted((r for action in related for r in action.get("replies", [])), key=lambda r: r.get("received_at") or "")
     for action in sorted(related, key=lambda a: a.get("updated_at") or ""):  # what Dockside already did moves the matching step forward
-        if action["status"] not in done:
+        if action["status"] not in {"sent", "done", "auto", "delivered"}:
+            continue
+        index = {"book_truck": 1, "dock_slot": 2, "order": 3}.get(action["kind"])
+        if index is None:
             continue
         when = rules.ts(action.get("updated_at"))
         stamp = f" {when.astimezone(rules.TZ):%a %H:%M}" if when else ""
-        index = {"dock_slot": 2, "order": 3, "book_truck": 1}.get(action["kind"])
-        if index is not None:
-            text = {2: f"Unload slot booked with Hamburg{stamp}; the site lead can move it.",
-                    3: f"Order sent to {supplier}{stamp}.", 1: f"Truck booked{stamp}."}[index]
-            steps[index] = step(steps[index]["name"], "confirmed", text)
+        answers = [r for r in replies if r.get("action_id") == action["id"] and r.get("summary_en")]
+        answer = f" {answers[-1]['from_name']} answered: {_first_sentence(answers[-1]['summary_en'])}" if answers else ""
+        # A request is not a confirmation: only the other side's answer can close a step, so it stays open here.
+        text = {1: f"Truck requested{stamp}; waiting for the carrier to confirm.",
+                2: f"Unload slot requested from the site{stamp}; waiting for the site to confirm.",
+                3: f"Order sent to {supplier}{stamp}; waiting for {supplier} to confirm it."}[index]
+        steps[index] = step(steps[index]["name"], "pending", (text.split(";")[0] + "." + answer) if answer else text)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)
