@@ -2,11 +2,13 @@
 
 ## The story in 30 seconds
 
-At the kickoff, Soony's Head of Procurement told us: *"We find out at the dock."* Hamburg books what is on the paper, and *"half of what we know is in a PDF somebody scanned."*
+Soony's Head of Procurement at the kickoff: *"We find out at the dock."* Hamburg books what is on the paper.
 
-That is what happened. A delivery note for 8,000 art books was booked as **80,000**, so the stock list looked full. In reality **5,900 numbered Collector's copies** could not be packed. Soony refunds €120 for each one, so **€708,000** was at stake, and nobody saw it until Saturday. Up to **2,500** of those copies are recoverable, if 8,000 replacement books arrive usable before the receiving cutoff.
+**Saturday:** a delivery note for 8,000 art books was booked as **80,000**. The stock list looked full; in reality **5,900 numbered Collector's copies** could not be packed, **€708,000** in refunds. Dockside caught the extra zero against the order and the scanned note, found 8,000 ready books at a Polish supplier, and ordered them: up to **2,500 copies** recoverable if they arrive usable before the cutoff (statues limit the rest).
 
-Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Then it did what a tired team cannot do at 4 a.m.: it noticed that the supplier's latest email contradicted its earlier one, recalculated that the books would now arrive after the cutoff, and put that conflict in front of the buyer instead of reporting the rescue as on track. Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give, such as the right PO reference.
+**Sunday 02:07** the supplier wrote that it treats the order as placed. **04:17** the same supplier wrote that it has no dispatch instruction and no carrier booking. Dockside put the two emails side by side, stopped counting the 2,500 copies, modeled the arrival at 17:17, after the 16:00 cutoff, and at 04:19 gave the buyer one task: reconcile the order and the dispatch instruction with the supplier, and record the outcome. A tired team at 4 a.m. reports the rescue as on track. Dockside reported the conflict.
+
+Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give.
 
 **The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers in their language, chases confirmations, requests unload slots from the site, prepares and runs calls (simulated until a phone line is connected), and escalates to the right person when only a person can help. Anything that costs money waits for the assigned approver to sign the exact terms.
 
@@ -21,7 +23,7 @@ Dockside found the extra zero by matching the receipt against the purchase order
 | Refunds avoided less purchase cost, **only if** the books arrive usable before the cutoff | €283,200 (conditional) |
 | Collector’s gap that still remains because of statues | 3,400 |
 
-The result is a conditional forecast. The supplier has accepted the order; the carrier booking, the arrival time, the unload slot and the buyer's PO reference are still open. The stock-backed view takes no credit for the offer until the books are received and counted.
+The result is a conditional upside, not a forecast. The supplier's 02:07 acceptance is disputed by its own 04:17 reply; the dispatch instruction, the carrier booking, the arrival time and the unload slot are open. The stock-backed view takes no credit for the offer until the books are received and counted.
 
 The illustrated trace can treat confirmation as a scenario input. A future handoff would pass a verified, matching supplier claim keyed by purchase order, line and supplier, with committed quantities, delivery time and evidence. Dockside can then follow the carrier, dock slot and receipt against the same commitment. [Negotiator’s confirmation model](https://github.com/ManuelLerchner/HACKLeague2026-lio/blob/main/src/supplier_chaser/domain/models.py)
 
@@ -55,6 +57,8 @@ The first three prospects, as a sales plan:
 | Kosmos | Head of supply chain / operations | Warm intro via the SPIEL Essen exhibitor network, then an email with the Soony replay | Replay of last October's fair launch; pilot if it shows at least one stock-out caught a day earlier |
 | Pegasus Spiele | Procurement lead | Direct outreach with the Kestrel replay as a sample | Same replay offer; pilot decided by their procurement lead |
 | Asmodee Germany | Logistics manager for the DACH warehouse | Through their contract packer, who serves several publishers | Replay of one Christmas launch; pilot priced per warehouse instead of per brand |
+
+**The comparison forecast.** Before the pilot starts, the buyer approves a frozen baseline: Dockside's stock-backed forecast plus every receipt already expected and every recovery action already under way without Dockside (for Soony on Saturday: the open shipments in the ERP and the tracker, at their booked arrival times). Only copies above that baseline count.
 
 **When does the pilot pay for itself?** At Soony's €120 refund per Collector's copy, **182 attributable copies** cover the €5,000 pilot and the €16,800 rush purchase (182 × €120 = €21,840). Attributable means: absent from the frozen no-intervention forecast (which already counts expected receipts and recovery actions that were under way before Dockside), and traced from a Dockside action to a verified receipt and a dispatched box.
 
