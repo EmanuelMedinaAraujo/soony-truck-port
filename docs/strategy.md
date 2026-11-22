@@ -20,6 +20,8 @@ Everything it did is in the action log. It hands a person only what needs a pers
 
 | Decision input | Soony launch scenario |
 |---|---:|
+| Collector’s Edition retail price | €199.99 |
+| Refund per missing Collector’s copy | €120 |
 | Collector’s copies at risk in the stock-backed forecast | 5,900 |
 | Extra Collector’s copies if 8,000 art books arrive usable in time | 2,500 |
 | Refunds those 2,500 copies could avoid | €300,000 |
