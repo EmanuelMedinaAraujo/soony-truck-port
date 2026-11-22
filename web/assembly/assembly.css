@@ -390,3 +390,12 @@ img { display: block; max-width: 100%; }
 .answer-choices { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }
 .answer-choices .secondary-button { font-size: .86rem; padding: 5px 10px; }
 .question .advice { font-weight: 650; color: var(--active); }
+
+/* Sourced event list under a progress row: what was sent, what the other side said. */
+.events { list-style: none; margin: 6px 0 0; padding: 0; border-left: 2px solid var(--line); }
+.events li { padding: 3px 0 3px 10px; font-size: .88rem; color: var(--muted); max-width: 72ch; }
+.events time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.events b { color: var(--ink); font-weight: 650; }
+.events li[data-kind="accepted"] b, .events li[data-kind="accepted"] { color: var(--covered); }
+.progress .events li { display: block; position: static; padding: 3px 0 3px 10px; }
+.progress .events li::before { display: none; }

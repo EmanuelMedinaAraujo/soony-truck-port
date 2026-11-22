@@ -464,6 +464,14 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
+def supplier_words(summary: str | None) -> str:
+    """A reply summary without the agent's own notes ('I resent…', 'so no…'): only what the other side said."""
+    text = re.sub(r"\s+", " ", summary or "").strip()
+    text = re.split(r"(?:;|,)\s*(?:so\s+)?(?:I|Dockside|we)\s+(?:resent|sent|asked|placed|recorded|chased|did|will|have|am)\b", text)[0]
+    text = re.split(r"(?:;|,)\s*so\s+no\b", text)[0]
+    return text.rstrip(" ,;") + ("" if text.endswith((".", "?", "!")) else ".")
+
+
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
                 order: dict | None, delivery: dict):
     """Show which delivery requirements have verified evidence and which are still open."""
@@ -483,10 +491,26 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
         entries = json.loads(entries) if isinstance(entries, str) else entries
         history = " ".join(str(entry.get("entry", "")) for entry in entries if isinstance(entry, dict))
         how = " when its stop window ran out, without a signature (the policy before the release gate)" if "unless" in history and "stop" in history.lower() else ""
-        events = [f"{label} sent {_clock(rules.ts(sent_at))}{how}."]
-        for r in replies[-3:]:
-            events.append(f"{_clock(rules.ts(r['received_at']))} {r['from_name']}: {_first_sentence(r['summary_en'], 160)}")
-        steps.append(step("Formal order", "confirmed" if accepted else "waiting", " ".join(events)))
+        # One sourced row per event: what we sent, and what the supplier said (without the agent's own notes).
+        events = [{"at": sent_at, "who": "Dockside", "kind": "sent", "text": f"{label} sent{how}."}]
+        for action in related:
+            if action["id"] == order["id"]:
+                continue
+            for m in action.get("messages", []):
+                if (m.get("channel") == "email" and m.get("to_name") in names and m.get("sent_at")
+                        and m["sent_at"] > sent_at and m.get("status") in {"sent", "delivered"}):
+                    events.append({"at": m["sent_at"], "who": "Dockside", "kind": "sent",
+                                   "text": f"Follow-up to {m['to_name']}: {(action.get('title') or 'reminder').rstrip('.')}."})
+        for r in replies:
+            said = supplier_words(r["summary_en"])
+            kind = "accepted" if r is accepted else "acknowledged" if re.search(r"\backnowledg", said, re.I) else "reply"
+            events.append({"at": r["received_at"], "who": r["from_name"], "kind": kind, "text": said})
+        events.sort(key=lambda e: rules.ts(e["at"]) or dt.datetime.min.replace(tzinfo=rules.TZ))
+        for event in events:
+            event["at"] = _clock(rules.ts(event["at"]))
+        summary = (f"Accepted by {accepted['from_name']} {_clock(rules.ts(accepted['received_at']))}." if accepted
+                   else f"Sent {_clock(rules.ts(sent_at))}; not accepted yet.")
+        steps.append(step("Formal order", "confirmed" if accepted else "waiting", summary) | {"events": events})
     else:
         steps.append(step("Formal order", "waiting" if order else "pending",
                           ("Delivery amendment" if delivery.get("revises_action_id") else "Order") +

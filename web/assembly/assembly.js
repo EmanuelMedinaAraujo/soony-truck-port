@@ -155,7 +155,8 @@ function renderProgress(route, line) {
       return `<li data-position="${position}" data-state="${html(step.state)}">
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepStates[step.state] ?? "Unclear"}</span>
-        <p>${html(step.detail)}</p></div></li>`;
+        <p>${html(step.detail)}</p>${step.events?.length ? `<ol class="events">${step.events.map(event =>
+          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.who)}</b> ${html(event.text)}</li>`).join("")}</ol>` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

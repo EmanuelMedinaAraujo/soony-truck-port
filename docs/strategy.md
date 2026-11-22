@@ -55,7 +55,7 @@ Adjacent segments follow with the same product: video game physical editions and
 3. At least 1,000 copies dispatched that would otherwise have been short, counted from verified receipts linked to Dockside's actions **and** the dispatch records of the finished boxes.
 4. Zero paid commitments sent without the assigned approver's signature on the exact terms.
 
-**How we measure it, agreed with the buyer before the pilot starts.** On day one we freeze Dockside's forecast without any intervention (the stock-backed view it already shows) and store it with the action log. Every copy counted as recovered must trace from that frozen gap through a Dockside action, a verified receipt and a finished-box dispatch record. Copies that would have shipped anyway stay out. For the next prospect we also time the onboarding itself: hours from receiving their files to the first replayed alert.
+**How we measure it (proposed for the buyer's sign-off before the pilot starts).** On day one we freeze Dockside's forecast without any intervention (the stock-backed view it already shows) and store it with the action log. Every copy counted as recovered must trace from that frozen gap through a Dockside action, a verified receipt and a finished-box dispatch record. Copies that would have shipped anyway stay out. For the next prospect we also time the onboarding itself: hours from receiving their files to the first replayed alert.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
 
