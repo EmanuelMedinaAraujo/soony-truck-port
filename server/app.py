@@ -309,10 +309,16 @@ def prepare_call(message_id: str):
 def component_graph(component_id: str):
     from core.depgraph import part_graph
 
+    from core.depgraph import annotate
+
     graph = part_graph(component_id)
     if graph is None:
         raise HTTPException(status_code=404, detail="Part not found")
-    return graph
+    snap = dispatch.snapshot(STATE["last_sync"])
+    part = next((c for c in snap["components"] if c["id"] == component_id), None)
+    if part and part.get("includedIn"):
+        part = next((c for c in snap["components"] if c["id"] == part["includedIn"].get("componentId")), part)
+    return annotate(graph, part)
 
 
 class Decision(BaseModel):

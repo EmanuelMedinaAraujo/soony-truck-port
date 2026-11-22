@@ -74,7 +74,12 @@ def internal_followup(action: dict, message: dict) -> dict:
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
     who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", "Hamburg", who)
     if message["channel"] == "phone_script":
-        return next_step("Needs you", f"Call {who} to {INTERNAL_FOLLOWUP[action['kind']]}. The call script is ready.", message["sent_at"], action["id"])
+        task = INTERNAL_FOLLOWUP[action["kind"]]
+        if str(message.get("provider_id") or "").startswith("elevenlabs:") and rules.cfg("voice").get("enabled"):
+            text = f"Dockside's voice agent will call {who} to {task}. Start the call, or send {who.split(' ')[0]} the link."
+        else:
+            text = f"Call {who} to {task}. The call script is below."
+        return next_step("Needs you", text, message["sent_at"], action["id"]) | {"call_id": message["id"]}
     task = INTERNAL_FOLLOWUP[action["kind"]]
     if action["kind"] == "dock_slot":
         return next_step("Booked", f"Unload slot in Hamburg is booked; {who} can move it if needed.", message["sent_at"], action["id"])
@@ -336,7 +341,7 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
     conn.execute("BEGIN")
     action_rows = {row["id"]: dict(row) | {"messages": [], "replies": []} for row in conn.execute(
         "SELECT id, finding_id, title, kind, status, updated_at, next_check_at FROM actions")}
-    for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at FROM messages"):
+    for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at, provider_id FROM messages"):
         if action := action_rows.get(message["action_id"]):
             action["messages"].append(dict(message))
     parent_actions = {}

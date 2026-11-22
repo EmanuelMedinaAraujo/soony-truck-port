@@ -326,7 +326,7 @@ async function refresh() {
   requestOpen = true;
   void refreshChaser();
   try {
-    const response = await fetch("/api/dispatch", {cache: "no-store"});
+    const [response] = await Promise.all([fetch("/api/dispatch", {cache: "no-store"}), refreshCalls()]);
     if (!response.ok) throw new Error(response.status);
     state = await response.json();
     $("sync").textContent = state.checkedAt ? `Checked ${time.format(new Date(state.checkedAt))}` : "Loading portal data";

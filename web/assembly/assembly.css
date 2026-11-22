@@ -354,3 +354,12 @@ img { display: block; max-width: 100%; }
 
 /* What Dockside does about a risk or delivery card in the dependency graph. */
 .depgraph-doing { fill: var(--active); }
+
+/* A step that needs a phone call: start the voice agent, copy its link, read the script. */
+.call-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.call-button { display: inline-block; padding: 5px 12px; border-radius: 6px; background: var(--active); color: var(--sheet); font-weight: 700; text-decoration: none; }
+.call-button:hover { filter: brightness(1.1); }
+.call-script { flex-basis: 100%; font-size: .9rem; }
+.call-script summary { cursor: pointer; color: var(--active); width: fit-content; }
+.call-script p { max-width: 66ch; margin-top: 4px; color: var(--ink); }
+.call-result { flex-basis: 100%; font-size: .9rem; }

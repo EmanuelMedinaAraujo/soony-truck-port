@@ -9,10 +9,41 @@ const nextStepTones = {
   "Confirmed": "ready", "Booked": "ready", "Unloaded": "ready", "After launch": "waiting"
 };
 
+let calls = new Map();  // message id -> voice call (talk link, script, result)
+
+async function refreshCalls() {
+  try {
+    const response = await fetch("/api/calls", {cache: "no-store"});
+    if (response.ok) calls = new Map((await response.json()).map(call => [call.message_id, call]));
+  } catch {
+    // Without the call service the script is still shown.
+  }
+}
+
+/* A step that needs a phone call: the voice agent's start link and the script it follows. */
+function callControls(next) {
+  const call = next?.call_id && calls.get(next.call_id);
+  if (!call) return "";
+  const result = call.result?.summary ? `<p class="call-result"><b>Call result:</b> ${html(call.result.summary)}</p>` : "";
+  const start = call.talk_url && call.status !== "done"
+    ? `<a class="call-button" href="${html(call.talk_url)}" target="_blank" rel="noreferrer">${call.status === "in_progress" ? "Call in progress" : "Start call"}</a>
+       <button class="text-button call-copy" type="button" data-copy="${html(call.talk_url)}">Copy link</button>` : "";
+  return `<span class="call-controls">${start}
+    <details class="call-script"><summary>Call script</summary><p><b>${html(call.subject)}</b></p><p>${html(call.script)}</p></details>${result}</span>`;
+}
+
+document.addEventListener("click", async event => {
+  const button = event.target.closest("[data-copy]");
+  if (!button) return;
+  try { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = "Link copied"; }
+  catch { button.textContent = "Copy failed"; }
+  setTimeout(() => { button.textContent = "Copy link"; }, 2000);
+});
+
 function nextStepLine(next) {
   if (!next) return "";
   return `<span class="state-chip" data-tone="${nextStepTones[next.state] ?? "active"}">${html(next.state)}</span>
-    <span>${html(next.text)}</span>`;
+    <span>${html(next.text)}</span>${callControls(next)}`;
 }
 
 function renderNextSteps(snapshot) {
@@ -21,7 +52,7 @@ function renderNextSteps(snapshot) {
   const yours = all.filter(item => item.next_step?.state === "Needs you");
   const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled");
   const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
-  const key = JSON.stringify([all, waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
+  const key = JSON.stringify([all, [...calls.values()].map(call => [call.message_id, call.status, call.talk_url, call.result?.summary]), waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
   if (key === nextStepsKey) return;
   nextStepsKey = key;
   const count = waiting.length + yours.length;
@@ -31,7 +62,7 @@ function renderNextSteps(snapshot) {
   needs.innerHTML = [...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(item.next_step.text)}</span></li>`;
+        <span>${html(item.next_step.text)}</span>${callControls(item.next_step)}</li>`;
     }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
