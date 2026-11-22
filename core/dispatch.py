@@ -396,10 +396,12 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
         sources = [evidence(claim["source"], f"Reports {claim['value']} units") for claim in review]
     if latest_reply:
         sources.insert(0, evidence(f"Supplier reply from {latest_reply['from_name']}", latest_reply["summary_en"]))
+    sent_email = max((rules.ts(message["sent_at"]) for action in related for message in action["messages"]
+                      if message["channel"] == "email" and message["status"] == "sent" and message["sent_at"]), default=None)
     return {"id": shipment["shipment_id"], "name": f"{mode} from {source}" if source != "Supplier shipment" else mode,
             "quantity": shipment["quantity"] if len(shipment["materials"]) == 1 else None,
             "steps": steps, "evidence": sources, "tracking": shipment_tracking(shipment, places, hold),
-            "current_stage": stage, "next_step": next_action}
+            "current_stage": stage, "next_step": next_action, "last_email_at": sent_email.isoformat() if sent_email else None}
 
 
 def linked_actions(conn: sqlite3.Connection) -> dict:

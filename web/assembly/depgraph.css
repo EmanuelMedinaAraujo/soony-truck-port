@@ -52,6 +52,9 @@
   font-size: .925rem;
 }
 
+.depgraph-verdict[data-status="ok"] { color: var(--covered); }
+.depgraph-verdict[data-status="blocked"] { color: var(--short); }
+
 .depgraph-detail {
   fill: var(--ink);
   font-size: 12.5px;
@@ -80,8 +83,11 @@
 
 .depgraph-node {
   --depgraph-status: var(--covered);
-  cursor: pointer;
   outline: none;
+}
+
+.depgraph-node[role="button"] {
+  cursor: pointer;
 }
 
 .depgraph-node[data-status="at_risk"] {
@@ -94,6 +100,10 @@
 
 .depgraph-node[data-status="info"] {
   --depgraph-status: var(--muted);
+}
+
+.depgraph-node[data-status="verify"] {
+  --depgraph-status: var(--verified);
 }
 
 .depgraph-node[data-kind="part"] {
@@ -117,7 +127,7 @@
   stroke-width: 1.75px;
 }
 
-.depgraph-node:hover .depgraph-card,
+.depgraph-node[role="button"]:hover .depgraph-card,
 .depgraph-node:focus-visible .depgraph-card {
   stroke: var(--focus);
   stroke-width: 2.5px;
@@ -170,4 +180,3 @@
 
 /* the shipment shown on the map */
 .depgraph-node[data-selected="true"] .depgraph-card{stroke-width:2.5;stroke:currentColor}
-.depgraph-node[data-kind="shipment"]{cursor:pointer}

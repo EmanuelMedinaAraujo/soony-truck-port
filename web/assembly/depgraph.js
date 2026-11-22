@@ -1,11 +1,11 @@
 /* Component dependencies within the part inspector. */
 window.PartDependencyGraph = (() => {
   const namespace = "http://www.w3.org/2000/svg";
-  const order = ["assembly", "part", "subpart", "supplier", "risk"];
-  const columnNames = {assembly: "Part of", part: "Part", subpart: "Contains", supplier: "Made by", risk: "Risks and deliveries"};
-  const kinds = {assembly: "Assembly", part: "Selected part", subpart: "Sub-part", supplier: "Supplier",
+  const order = ["assembly", "part", "stock", "subpart", "supplier", "risk"];
+  const columnNames = {assembly: "Part of", part: "Part", stock: "On hand", subpart: "Contains", supplier: "Made by", risk: "Risks and deliveries"};
+  const kinds = {assembly: "Assembly", part: "Selected part", stock: "Warehouse stock", subpart: "Sub-part", supplier: "Supplier",
     risk: "Supply risk", shipment: "Delivery"};
-  const statuses = {ok: "OK", at_risk: "At risk", blocked: "Blocked", info: "No effect on launch"};
+  const statuses = {ok: "OK", at_risk: "At risk", blocked: "Blocked", verify: "Check record", info: "No effect on launch"};
   const observers = new WeakMap();
   const expandedByPart = new Map();
   const cardHeight = 61;
@@ -59,6 +59,7 @@ window.PartDependencyGraph = (() => {
     let detail = String(node.detail ?? "").trim();
     if (meta && detail.toLowerCase().startsWith(meta.toLowerCase() + ".")) detail = detail.slice(meta.length + 1).trim();
     if (node.doing) lines.push(node.doing);
+    if (node.contact) lines.push(node.contact);
     if (detail) lines.push(detail);
     if (node.quote) lines.push(`“${node.quote}”`);
     const sources = node.sources ?? (node.evidence ? [node.evidence.split("/").at(-1)] : []);
@@ -218,10 +219,12 @@ window.PartDependencyGraph = (() => {
       const isOpen = detailLines.has(node.id);
       const meta = node.meta ?? node.subtitle ?? kinds[node.kind];
       const status = statuses[node.status] ?? "";
+      const hasDetails = detailText(node).length > 0;
+      const clickable = hasDetails || node.mapAvailable || ["assembly", "subpart"].includes(node.kind);
       const card = svgElement("g", {class: "depgraph-node", "data-node": node.id, "data-kind": node.kind,
         "data-status": node.status, "data-selected": node.selected ? "true" : "false", "data-open": isOpen ? "true" : "false",
-        transform: `translate(${x},${y})`, tabindex: "0", role: "button", "aria-expanded": String(isOpen),
-        "aria-label": [node.label, meta, node.kind !== "part" && status, node.mapAvailable && (node.selected ? "Hide map" : "Show map")]
+        transform: `translate(${x},${y})`, ...(clickable ? {tabindex: "0", role: "button", "aria-expanded": String(isOpen)} : {role: "group"}),
+        "aria-label": [node.label, meta, !["part", "stock"].includes(node.kind) && status, node.mapAvailable && (node.selected ? "Hide map" : "Show map")]
           .filter(Boolean).join(". "),
         "aria-description": [isOpen ? detailText(node).join(". ") : "", relations.get(node.id)?.join(". ")].filter(Boolean).join(". ")});
       card.append(svgElement("rect", {class: "depgraph-card", width: cardWidth, height: nodeHeight, rx: 9}));
@@ -239,11 +242,11 @@ window.PartDependencyGraph = (() => {
         card.append(svgElement("line", {class: "depgraph-rule", x1: 11, x2: cardWidth - 11, y1: cardHeight + 1, y2: cardHeight + 1}));
         detailLines.get(node.id).forEach(({line, doing}, i) => card.append(svgElement("text",
           {x: 11, y: cardHeight + 18 + i * detailLine, class: doing ? "depgraph-detail depgraph-doing" : isSourceLine(line) ? "depgraph-source" : "depgraph-detail"}, line)));
-      } else if (detailText(node).length) {
+      } else if (hasDetails) {
         card.append(svgElement("text", {x: cardWidth - 12, y: 52, "text-anchor": "end", class: "depgraph-more", "aria-hidden": "true"}, "+"));
       }
-      card.addEventListener("click", () => activate(node));
-      card.addEventListener("keydown", event => {
+      if (clickable) card.addEventListener("click", () => activate(node));
+      if (clickable) card.addEventListener("keydown", event => {
         if (event.key === "Escape" && (isOpen || node.selected)) {
           event.preventDefault();
           event.stopPropagation();
@@ -288,7 +291,8 @@ window.PartDependencyGraph = (() => {
         node.mapAvailable = node.kind === "shipment" && trackedShipments.has(node.id);
         node.selected = node.mapAvailable && node.id === selectedShipment;
       }
-      if (!graph.short && graph.verdict) verdict.textContent = graph.verdict;
+      verdict.textContent = graph.verdict ?? "";
+      if (graph.stock_status) verdict.dataset.status = graph.stock_status;
       verdict.hidden = !verdict.textContent;
 
       const expanded = expandedByPart.get(componentId) ?? new Set();

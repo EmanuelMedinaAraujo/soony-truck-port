@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from core.depgraph import part_graph
+from core.depgraph import annotate, part_graph
 from core.ingest import SCHEMA
 
 
@@ -75,7 +75,25 @@ class PartGraphTest(unittest.TestCase):
         graph = part_graph("CMP-MAG-005", self.db)
         nodes = {node["id"]: node for node in graph["nodes"]}
         self.assertEqual(nodes["CMP-GAM-007"]["kind"], "assembly")
+        self.assertTrue(any(e["source"] == "CMP-GAM-007" and e["target"] == "stock-CMP-GAM-007" for e in graph["edges"]))
         self.assertIn("later:SUP-0029", nodes)
+
+    def test_stock_and_supplier_risks_reflect_the_dispatch_plan(self):
+        plan = {"id": "stock-CMP-GAM-007", "name": "Stock in Hamburg"}
+        part = {"default_route_id": plan["id"], "routes": [plan]}
+        for usable, expected_status, expected_meta in (
+            (40, "blocked", "40 usable · 60 short"), (100, "ok", "100 usable · Covered"),
+        ):
+            with self.subTest(usable=usable), closing(sqlite3.connect(self.db)) as conn, conn:
+                conn.execute("DELETE FROM stock")
+                conn.execute("INSERT INTO stock VALUES ('2026-11-21', 'CMP-GAM-007', 'batch', ?, NULL)", (usable,))
+            graph = annotate(part_graph("CMP-GAM-007", self.db), part)
+            stock, = (node for node in graph["nodes"] if node["kind"] == "stock")
+            risk, = (node for node in graph["nodes"] if node["kind"] == "risk")
+            self.assertEqual((stock["status"], stock["meta"]), (expected_status, expected_meta))
+            self.assertEqual(graph["stock_status"], expected_status)
+            self.assertEqual(risk["status"], "info")
+            self.assertEqual(risk["meta"], "Outside the dispatch plan" if usable < 100 else "No effect: enough stock")
 
     def test_part_specific_risk_is_not_applied_to_another_part_from_same_supplier(self):
         graph = part_graph("CMP-GAM-003", self.db)

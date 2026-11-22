@@ -229,13 +229,26 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
         own = coverage.get(component_id, {})
         fitted_into = [parent for parent in upstream if children[parent][component_id]]
         holder = coverage.get(fitted_into[0], {}) if fitted_into else own
-        short = holder.get("gap", 0) < 0 and not holder.get("suspect_master_data")
+        site = rules.cfg("site_name")
+        verified = bool(holder) and not holder.get("suspect_master_data")
+        usable = max(0, holder.get("usable_now", 0))
+        required = holder.get("need_total", 0)
+        missing = max(0, required - usable)
+        short = verified and missing > 0
+        covered = verified and not short
         nodes[component_id].update(status="ok", detail=None)
-        verdict = (f"{-holder['gap']:,} short in {rules.cfg('site_name')}." if short else
-                   f"Enough usable stock in {rules.cfg('site_name')} for the launch. The issues below don't affect it.")
+        stock_status = "blocked" if short else "ok" if covered else "verify"
+        stock_meta = f"{usable:,} usable · {missing:,} short" if short else f"{usable:,} usable · Covered" if covered else "Check the stock record"
+        verdict = (f"{site} has {usable:,} usable, {required:,} needed for dispatch. "
+                   + (f"{missing:,} still needed." if short else "Stock covers dispatch.")) if verified else f"Verify usable stock in {site}."
+        if holder:
+            stock_part = fitted_into[0] if fitted_into else component_id
+            stock_id = f"stock-{stock_part}"
+            add_node(stock_id, f"Stock in {site}", "stock", stock_status, meta=stock_meta)
+            add_edge(stock_part, stock_id, "stocked at")
 
         def calm(status):
-            return status if short or status == "ok" else "info"
+            return "info" if covered and status != "ok" else status
 
         supplied_parts = defaultdict(set)
         materials = [component_id, *subparts, *fitted_into]
@@ -300,7 +313,7 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
             meta = (title if risk["upstream"] else
                     "Stops supply until solved" if risk["status"] == "blocked" else
                     "Pauses production; ready stock can still ship" if window else "May delay new supply")
-            if not short:
+            if covered:
                 meta = "No effect: enough stock"
             add_node(rid, label, "risk", calm(risk["status"]), risk["detail"], subtitle=title if risk["upstream"] else None,
                      meta=meta, evidence=risk["paths"][0], sources=[path.rsplit("/", 1)[-1] for path in risk["paths"]],
@@ -337,7 +350,8 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
                 label = f"{mode}, est. {when(arrival.isoformat())}"  # no carrier confirmation: an estimate, not a date
             add_node(shipment_id, label, "shipment", calm("blocked" if held or stuck else "at_risk" if uncertain else "ok"),
                      " ".join(text for _, text in reasons) or None, code=shipment_id, reference=shipment["reference"],
-                     meta=(problems[0] if problems else "Arrives before the cut-off") if short or not problems
+                     launch_relevant=shipment["planned_for_launch"] or status == "arrived_port",
+                     meta=(problems[0] if problems else "Arrives before the cut-off") if not covered or not problems
                      else "No effect: enough stock",
                      subtitle="Arrives before launch" if not stuck and shipment["makes_cutoff"] else "Inbound shipment")
             add_edge(parent, shipment_id, "held" if held else "stuck" if stuck else "on its way")
@@ -350,7 +364,8 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
                      subtitle="After launch", meta="Too late for the launch")
             add_edge(parent, nid, "after launch")
 
-    return {"nodes": list(nodes.values()), "edges": edges, "verdict": verdict, "short": short}
+    return {"nodes": list(nodes.values()), "edges": edges, "verdict": verdict, "short": short,
+            "covered": covered, "stock_status": stock_status}
 
 
 def open_name(step: dict, conflict: dict | None) -> str:
@@ -373,7 +388,11 @@ def annotate(graph: dict, component: dict | None) -> dict:
     suppliers = {n["id"]: n["label"] for n in graph["nodes"] if n["kind"] == "supplier"}
     supplier_of = {e["target"]: e["source"] for e in graph["edges"] if e["source"] in suppliers}
     step = component.get("next_step") or {}
-    idle = f"Not pursued: Dockside's plan uses {plan_name} instead." if plan_name else None
+    idle = f"Outside the current dispatch plan, which uses {plan_name}." if plan_name else None
+    launch_suppliers = {supplier_of[node["id"]] for node in graph["nodes"]
+                        if node.get("launch_relevant") and node["id"] in supplier_of}
+    if plan_name:
+        launch_suppliers.update(sid for sid, name in suppliers.items() if plan["name"].endswith(name))
 
     def route_doing(route: dict) -> str | None:
         if route is plan:
@@ -406,18 +425,31 @@ def annotate(graph: dict, component: dict | None) -> dict:
         if supplier_id:
             graph["edges"].append({"source": supplier_id, "target": plan["id"], "label": "rush supply"})
     for node in graph["nodes"]:
+        if node["kind"] == "supplier" and plan and node["id"] not in launch_suppliers and node["status"] != "ok":
+            node["status"] = "info"
         if node["kind"] not in {"risk", "shipment"} or node["id"].startswith("later:"):
             continue
-        if not graph.get("short"):
+        route = by_route.get(node["id"])
+        if route and route.get("last_email_at"):
+            stamp = rules.ts(route["last_email_at"]).astimezone(rules.timezone())
+            node["contact"] = f"Last email sent {stamp:%a %H:%M}."
+        if graph.get("covered"):
             node["doing"] = f"Nothing to do: {rules.cfg('site_name')} already has enough of this part."
-        elif node["id"] in by_route:
-            node["doing"] = route_doing(by_route[node["id"]])
+        elif route:
+            node["doing"] = route_doing(route)
+            route_step = route.get("next_step") or {}
+            if plan and route is not plan and not node.get("launch_relevant") and not (route_step.get("action_id") or route_step.get("reviewRequired")):
+                node.update(status="info", meta="Outside the dispatch plan")
         else:
-            name = suppliers.get(supplier_of.get(node["id"], ""))
+            supplier = supplier_of.get(node["id"])
+            name = suppliers.get(supplier)
             own = [r for r in routes if name and r["name"].endswith(name)]
             active = next((r for r in own if r is plan), None) or next(
                 (r for r in own if (r.get("next_step") or {}).get("action_id")), None)
             node["doing"] = route_doing(active) if active else idle
-            if active is plan and plan["id"].startswith("offer-") and node.get("meta", "").startswith("Pauses production"):
-                node["doing"] = "No effect on the rush order: it ships stock that is already made."
+            if plan and not active and supplier not in launch_suppliers:
+                node.update(status="info", meta="Outside the dispatch plan")
+            if plan and active is plan and plan["id"].startswith("offer-") and node.get("meta", "").startswith("Pauses production"):
+                node.update(status="info", meta="Ready stock unaffected",
+                            doing="The rush order ships stock that is already made.")
     return graph
