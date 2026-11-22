@@ -108,14 +108,14 @@ def approver_for(eur: float, category: str | None = None) -> dict:
     return {"role": "unknown"}
 
 
-def shift_hours_between(a: dt.datetime, b: dt.datetime) -> float:
-    h = 0.0
+def shift_seconds_between(a: dt.datetime, b: dt.datetime) -> float:
+    seconds = 0.0
     for s in cfg("shifts"):
         st, en = ts(s["start"]), ts(s["end"])
         lo, hi = max(a, st), min(b, en)
         if hi > lo:
-            h += (hi - lo).total_seconds() / 3600
-    return h
+            seconds += (hi - lo).total_seconds()
+    return seconds
 
 
 def facts(con, ftype: str) -> list[dict]:
@@ -156,12 +156,17 @@ def launch_state(con) -> tuple[dict, dict]:
 
     for pid, row in picture.items():
         as_of = ts(row["as_of"])
-        start = max(t_now, as_of)
-        elapsed_capacity = max(0, round(shift_hours_between(as_of, start) * row["rate"]))
+        packed_through = min(max(t_now, as_of), deadline)
+        elapsed_seconds = shift_seconds_between(as_of, packed_through)
+        shift_seconds = shift_seconds_between(as_of, deadline)
+        elapsed_capacity = math.floor(elapsed_seconds * row["rate"] / 3600)
+        dispatch_capacity = math.floor(shift_seconds * row["rate"] / 3600)
         packed_since = min(max(0, row["demand"] - row["packed"]), elapsed_capacity, *parts_by_edition[pid])
         row["packed_est_now"] += packed_since
-        row["hours_left"] = round(shift_hours_between(start, deadline), 1)
-        row["capacity_left"] = round(row["hours_left"] * row["rate"])
+        row["hours_left"] = round((shift_seconds - elapsed_seconds) / 3600, 1)
+        # Split whole-box capacity at the same packing checkpoint so a partial
+        # box does not disappear when it crosses from elapsed to remaining time.
+        row["capacity_left"] = dispatch_capacity - elapsed_capacity
         row["todo_now"] = max(0, row["demand"] - row["packed_est_now"])
         row["slack_copies"] = row["capacity_left"] - row["todo_now"]
     return picture, _component_coverage(picture, stock)
@@ -411,8 +416,8 @@ def ce_copies_short(coverage: dict, picture: dict) -> tuple[int, str | None]:
     return int(worst), comp
 
 
-def evaluate(db_path: Path = DB_PATH) -> dict:
-    with closing(sqlite3.connect(db_path)) as con:
+def evaluate(db_path: Path | None = None) -> dict:
+    with closing(sqlite3.connect(f"{(db_path or DB_PATH).resolve().as_uri()}?mode=ro", uri=True)) as con:
         return _evaluate(con)
 
 

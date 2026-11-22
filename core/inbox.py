@@ -77,7 +77,6 @@ def fetch() -> list[dict]:
     if not host:
         return []
     with actions.tx() as c:
-        init_schema(c)
         ours = c.execute("""SELECT m.id,m.action_id,m.subject,m.provider_id,m.to_address,a.kind
             FROM messages m LEFT JOIN actions a ON a.id=m.action_id WHERE m.channel='email'
             AND (a.kind IS NULL OR a.kind<>'chase_escalation')
@@ -142,8 +141,9 @@ def fetch() -> list[dict]:
 
 
 def unhandled() -> list[dict]:
-    with actions.tx() as c:
-        init_schema(c)
+    if not actions.DB.is_file():
+        return []
+    with actions.read() as c:
         return [dict(r) for r in c.execute("""SELECT r.* FROM replies r LEFT JOIN actions a ON a.id=r.action_id
             WHERE r.handled=0 AND (a.kind IS NULL OR a.kind<>'chase_supplier')
             AND instr(lower(r.subject),'[sc:')=0
@@ -178,15 +178,15 @@ def add_task_answer(c, task: dict, person: str, text: str, channel: str) -> dict
 
 
 def get_reply(rid: str) -> dict | None:
-    with actions.tx() as c:
-        init_schema(c)
+    if not actions.DB.is_file():
+        return None
+    with actions.read() as c:
         row = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
     return dict(row) if row else None
 
 
 def mark_handled(rid: str, summary_en: str) -> dict | None:
     with actions.tx() as c:
-        init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone()
         if not r:

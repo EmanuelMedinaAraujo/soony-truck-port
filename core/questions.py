@@ -148,7 +148,6 @@ def order_state(order, *, now, depart_for_requested=None):
 def reconcile():
     """Reconcile task records after the background cycle collects supplier evidence."""
     with actions.tx() as c:
-        inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         refresh(c)
 
@@ -184,8 +183,9 @@ def for_action(c, finding, delivery_id, _recipient) -> dict | None:
 
 
 def answered_replies() -> dict:
-    with actions.tx() as c:
-        inbox.init_schema(c)
+    if not actions.DB.is_file():
+        return {}
+    with actions.read() as c:
         return {row["answered_reply_id"]: public(c, row) for row in c.execute(
             "SELECT * FROM staff_tasks WHERE answered_reply_id IS NOT NULL")}
 
@@ -208,7 +208,6 @@ TASKS = """SELECT t.*, a.finding_id FROM staff_tasks t JOIN actions a ON a.id=t.
 def current() -> list[dict]:
     """Return each answerable task and delivered Discord question with its ID."""
     with actions.tx() as c:
-        inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         refresh(c)
         tasks = [_task_question(c, row) for row in c.execute(TASKS + " WHERE t.status='open' ORDER BY t.created_at DESC")]
@@ -220,7 +219,6 @@ def current() -> list[dict]:
 
 def find(question_id: str) -> dict | None:
     with actions.tx() as c:
-        inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         refresh(c)
         return _find(c, question_id)
@@ -241,7 +239,6 @@ def _find(c, question_id):
 
 def answer(question: dict, who: str, text: str, *, channel: str = "dashboard", demo_operator: bool = False) -> dict:
     with actions.tx() as c:
-        inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         refresh(c)
         target = _find(c, question["id"])

@@ -149,6 +149,7 @@ def refresh_evidence(force_rebuild: bool = False) -> list[dict]:
 def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
     """One pass of the whole pipeline. Safe to call from the loop or an API request."""
     with LOCK:
+        actions.initialize()
         STATE["busy"] = "refreshing file and supplier evidence"
         events = refresh_evidence(force_rebuild=force_plan)
         out = {"changes": len(events)}
@@ -268,6 +269,8 @@ def loop():
 @app.on_event("startup")
 def _start():
     from server import discord_bot
+
+    actions.initialize()
     STATE["discord"] = bool(discord_bot.start(listeners, decide_and_dispatch))
     if os.environ.get("NO_LOOP") != "1":
         threading.Thread(target=loop, daemon=True).start()
@@ -280,22 +283,17 @@ def _compact_state() -> dict:
     head = next(f for f in r["findings"] if f["id"] == "ce-at-risk")
     relevant = [s for s in r["inbound"] if s["planned_for_launch"] or s["arrival_at_dc"] is None or s["makes_cutoff"]]
     later = len(r["inbound"]) - len(relevant)
-    import sqlite3 as _sq
-    from contextlib import closing
-    with closing(_sq.connect(rules.DB_PATH)) as _m:
-        descs = dict(_m.execute("SELECT component_id, description FROM components").fetchall())
+    with closing(sqlite3.connect(f"{rules.DB_PATH.resolve().as_uri()}?mode=ro", uri=True)) as m:
+        descs = dict(m.execute("SELECT component_id, description FROM components").fetchall())
+        n_conf = m.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
+        n_files = m.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+        n_docs = m.execute("SELECT COUNT(DISTINCT path) FROM doc_facts").fetchone()[0]
     for s in relevant:
         s["material_names"] = [rules.plain(descs.get(m), m) for m in s["materials"]]
     bind_id = next((c["component"] for c in sorted(r["coverage"].values(), key=lambda c: c["alloc"].get(prio, 0) - c["need"].get(prio, 0))
                     if prio in c["need"] and not c["suspect_master_data"] and c["need"][prio] > c["alloc"][prio]), None)
-    with actions.tx() as c:
+    with actions.read() as c:
         ev = [dict(x) for x in c.execute("SELECT * FROM events WHERE kind<>'row_change' ORDER BY ts DESC LIMIT 40")]
-    import sqlite3
-    from contextlib import closing
-    with closing(sqlite3.connect(rules.DB_PATH)) as m:
-        n_conf = m.execute("SELECT COUNT(*) FROM conflicts").fetchone()[0]
-        n_files = m.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-        n_docs = m.execute("SELECT COUNT(DISTINCT path) FROM doc_facts").fetchone()[0]
     return {
         "now": r["now"], "deadline": rules.cfg("deadline"), "cutoff_hours": rules.cfg("receiving_buffer_hours"),
         "priority": prio, "picture": r["picture"],
@@ -327,7 +325,7 @@ def dispatch_view():
         delivery = (part["option"] or {}).get("deliveryState") or {}
         if delivery.get("conflict"):
             disputed[delivery["action_id"]] = delivery
-    with actions.tx() as c:
+    with actions.read() as c:
         ids = [row[0] for row in c.execute("""SELECT id FROM actions
             WHERE status IN ('auto','approved','scheduled','sent','superseded','expired')
             AND json_extract(payload,'$.held_reason') IS NOT NULL""")]
@@ -357,28 +355,32 @@ def dispatch_view():
 
 @app.get("/api/replies/{message_id}")
 def get_reply(message_id: str):
-    if actions.DB.is_file():
-        with closing(sqlite3.connect(f"{actions.DB.resolve().as_uri()}?mode=ro", uri=True)) as log:
-            log.row_factory = sqlite3.Row
-            if log.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replies'").fetchone():
-                row = log.execute("""SELECT subject, body, from_name AS "from", received_at
-                                     FROM replies WHERE id=?""", (message_id,)).fetchone()
-                if row:
-                    return dict(row)
+    with actions.read() as log:
+        row = log.execute("""SELECT subject, body, from_name AS "from", received_at
+                             FROM replies WHERE id=?""", (message_id,)).fetchone()
+        if row:
+            return dict(row)
     raise HTTPException(404, "Reply message not found")
+
+
+def _read_calls(filter_sql: str = "", args: tuple = ()) -> list[dict]:
+    with actions.read() as log:
+        rows = log.execute(voice.CALLS + filter_sql + " ORDER BY m.created_at, m.id", args)
+        return [voice._view(dict(row)) for row in rows]
 
 
 @app.get("/api/calls")
 def list_calls(action_id: str | None = None):
-    return voice.list_calls(action_id)
+    if action_id is None:
+        return _read_calls()
+    return _read_calls(" AND m.action_id=?", (action_id,))
 
 
 @app.get("/api/calls/{message_id}")
 def get_call(message_id: str):
-    try:
-        return voice.get(message_id)
-    except KeyError:
-        raise HTTPException(404, "Call message not found")
+    if calls := _read_calls(" AND m.id=?", (message_id,)):
+        return calls[0]
+    raise HTTPException(404, "Call message not found")
 
 
 @app.post("/api/calls/{message_id}/prepare")
@@ -395,7 +397,7 @@ def component_graph(component_id: str):
 
     from core.depgraph import annotate
 
-    graph = part_graph(component_id)
+    graph = part_graph(component_id, rules.DB_PATH)
     if graph is None:
         raise HTTPException(status_code=404, detail="Part not found")
     snap = dispatch.snapshot(STATE["last_sync"])
@@ -644,8 +646,14 @@ def tracking_view():
 def chaser_view(include_messages: bool = True):
     from core import chaser
 
-    cases, status = chaser.cases(include_messages=include_messages)
-    return {"cases": cases, "status": status}
+    with actions.read() as log:
+        cases = [{key: row[key] for key in chaser.SUMMARY} for row in chaser._rows(log)]
+    for case in cases:
+        if case["status"] in {"resolved", "cancelled"}:
+            case["status"] = "closed"
+        if not include_messages:
+            case["question"] = case["last_reply_summary"] = None
+    return {"cases": cases, "status": "ok"}
 
 
 @app.get("/api/cases")

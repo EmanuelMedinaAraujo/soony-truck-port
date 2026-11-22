@@ -8,14 +8,17 @@ import datetime as dt
 import json
 import re
 import sqlite3
+import threading
 import uuid
 from collections.abc import Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 
 from core.rules import approver_for, cfg, now, ts
 
 DB = Path(__file__).resolve().parent.parent / "data" / "actions.db"
+_SCHEMA_LOCK = threading.Lock()
+_initialized_db: tuple[Path, int, int] | None = None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS actions(
@@ -52,11 +55,42 @@ CREATE INDEX IF NOT EXISTS chase_message_cases ON chase_case_messages(message_id
 
 
 def con() -> sqlite3.Connection:
-    DB.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB)
+    path = DB.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(path)
     c.row_factory = sqlite3.Row
-    init_schema(c)
+    try:
+        _ensure_schema(c, path)
+    except BaseException:
+        c.close()
+        raise
     return c
+
+
+def read():
+    c = sqlite3.connect(f"{DB.resolve().as_uri()}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    return closing(c)
+
+
+def initialize() -> None:
+    with closing(con()):
+        pass
+
+
+def _ensure_schema(c: sqlite3.Connection, path: Path) -> None:
+    global _initialized_db
+    with _SCHEMA_LOCK:
+        identity = path.stat()
+        key = path, identity.st_dev, identity.st_ino
+        if identity.st_size and key == _initialized_db:
+            return
+        from core import release, voice
+
+        init_schema(c)
+        voice.init_schema(c)  # Includes the reply and staff task tables.
+        release.init_schema(c)
+        _initialized_db = key
 
 
 @contextmanager
@@ -254,7 +288,9 @@ def add_message(c: sqlite3.Connection, action_id: str, channel: str, to_name: st
 
 
 def get(aid: str) -> dict | None:
-    with tx() as c:
+    if not DB.is_file():
+        return None
+    with read() as c:
         return _get(c, aid)
 
 
@@ -274,10 +310,13 @@ def _get(c: sqlite3.Connection, aid: str) -> dict | None:
 
 
 def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent", "escalated", "done", "rejected", "auto", "superseded", "expired")) -> list[dict]:
-    with tx() as c:
+    if not DB.is_file():
+        return []
+    with read() as c:
+        c.execute("BEGIN")
         ids = [r[0] for r in c.execute(f"SELECT id FROM actions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY eur_protected DESC, created_at",
                                        statuses)]
-    return [get(i) for i in ids]
+        return [_get(c, aid) for aid in ids]
 
 
 def decide(aid: str, decision: str, by: str, note: str = "", *, source: str | None = None,

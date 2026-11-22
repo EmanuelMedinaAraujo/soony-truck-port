@@ -228,15 +228,17 @@ def demo_staff_address(name):
     return None
 
 
+def init_schema(log) -> None:
+    log.execute(CHECKPOINT)
+
+
 def record_check(source: str, *, valid: bool = True) -> None:
     stamp = dt.datetime.now(dt.timezone.utc).isoformat() if valid else None
     with actions.tx() as log:
-        log.execute(CHECKPOINT)
         log.execute("INSERT OR REPLACE INTO release_evidence VALUES (?,?)", (source, stamp))
 
 
 def _fresh(log) -> bool:
-    log.execute(CHECKPOINT)
     stamps = dict(log.execute("SELECT source, checked_at FROM release_evidence"))
     now = dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(minutes=setting("release_max_age_minutes", 5))
@@ -264,9 +266,7 @@ def _master():
 
 
 def _action_log():
-    log = sqlite3.connect(f"{actions.DB.resolve().as_uri()}?mode=ro", uri=True)
-    log.row_factory = sqlite3.Row
-    return closing(log)
+    return actions.read()
 
 
 def _offers(db, supplier, part):

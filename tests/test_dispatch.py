@@ -85,6 +85,33 @@ def test_dispatch_replays_fixed_stock_at_two_clocks(tmp_path, stock, early, late
         cards = next(row for row in snap["components"] if row["id"] == "cards")
         assert cards["usable"] == stock - sum(packed)
 
+
+def test_dispatch_projection_stays_fixed_through_departure(tmp_path):
+    from core import dispatch, ingest, rules
+
+    path = tmp_path / "master.db"
+    with sqlite3.connect(path) as db:
+        db.executescript(ingest.SCHEMA)
+        db.executescript("""
+            INSERT INTO launch_status VALUES ('kit', '2026-11-22T08:00:00+01:00', 100, 0, 100, 60, 'packing');
+            INSERT INTO bom(parent_id, child_id, qty_per) VALUES ('kit', 'part', 1);
+            INSERT INTO stock(material_id, quantity) VALUES ('part', 100);
+        """)
+    policy = rules.CONFIG | {
+        "priority_product": {"value": "kit"},
+        "deadline": {"value": "2026-11-22T09:00:00+01:00"},
+        "shifts": {"value": [{"start": "2026-11-22T08:00:00+01:00", "end": "2026-11-22T10:00:00+01:00"}]},
+        "missed_copy_cost_eur": {"value": {"kit": 120}},
+    }
+    for clock, packed in (("08:58:00", 58), ("08:58:30", 58), ("09:00:00", 60), ("09:30:00", 60)):
+        with rules.replay(policy, rules.ts(f"2026-11-22T{clock}+01:00")):
+            snap = dispatch.snapshot(None, db_path=path, include_activity=False)
+        edition, = snap["editions"]
+        component, = snap["components"]
+        assert (edition["packed"], edition["projected"], edition["short"]) == (packed, 60, 40)
+        assert component["usable"] == 100 - packed
+
+
 class SupplyTraceTest(unittest.TestCase):
     def test_supplier_fitted_part_attaches_to_its_documented_parent(self):
         with sqlite3.connect(":memory:") as conn:
@@ -110,10 +137,13 @@ class SupplyTraceTest(unittest.TestCase):
 
 class NextStepTest(unittest.TestCase):
     def setUp(self):
+        from core import voice
+
         self.log = sqlite3.connect(":memory:")
         self.addCleanup(self.log.close)
         self.log.row_factory = sqlite3.Row
         self.log.executescript(actions.SCHEMA + REPLY_SCHEMA)
+        voice.init_schema(self.log)
         self.log.executescript("""
             INSERT INTO actions (id, finding_id, title, kind, status, updated_at) VALUES
                 ('initial', 'offer-supplier-book', 'Reserve the stock', 'reserve', 'auto', '2026-11-21T18:00:00+01:00'),

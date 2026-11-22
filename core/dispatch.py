@@ -9,7 +9,7 @@ import sqlite3
 from collections import defaultdict
 from contextlib import closing
 
-from core import actions, rules, voice
+from core import actions, rules
 from core.rules import embedded_components
 
 
@@ -78,7 +78,7 @@ def question_options(body: str | None, finding_id: str | None) -> list[dict]:
     part = next(iter(re.findall(r"\b[A-Z]{2,4}-[A-Z0-9]{2,5}-\d{2,4}\b", finding_id or "")), None)
     if not numbers or not rules.DB_PATH.exists():
         return []
-    with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as db:
+    with closing(sqlite3.connect(f"{rules.DB_PATH.resolve().as_uri()}?mode=ro", uri=True)) as db:
         rows = db.execute(f"""SELECT po_number, po_line, quantity, requested_date, status FROM purchase_orders
                                WHERE po_number IN ({",".join("?" * len(numbers))}) AND (? IS NULL OR material_id=?)
                                ORDER BY po_number, po_line""", (*numbers, part, part)).fetchall()
@@ -384,10 +384,6 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
 
 
 def linked_actions(conn: sqlite3.Connection) -> dict:
-    if conn.in_transaction:
-        conn.commit()
-    voice.init_schema(conn)
-    conn.execute("BEGIN")
     action_rows = {row["id"]: dict(row) | {"messages": [], "replies": []} for row in conn.execute(
         "SELECT id, finding_id, title, kind, status, updated_at, next_check_at, payload, history FROM actions")}
     call_rows = {row["msg_id"]: dict(row) for row in conn.execute(
@@ -721,23 +717,28 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
 
 
 def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = True) -> dict:
+    from core import followup
+
     priority = rules.cfg("priority_product")
     deadline = rules.ts(rules.cfg("deadline"))
     cutoff = deadline - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
     now = rules.now()
 
-    action_log, decisions, activity = defaultdict(list), [], {}
-    if include_activity:
-        with closing(actions.con()) as log:
+    action_log, decisions, activity, reviews = defaultdict(list), [], {}, {}
+    if include_activity and actions.DB.is_file():
+        with actions.read() as log:
+            log.execute("BEGIN")
             action_log = linked_actions(log)
             decisions = [dict(row) for row in log.execute("""SELECT id,title,rationale,status,approver_name,next_check_at,due_at
                          FROM actions WHERE status IN ('proposed','escalated','scheduled') ORDER BY due_at, eur_protected DESC""")]
             activity = readable_activity(log)
-        for decision in decisions:
-            action = actions.get(decision["id"])
-            decision["cost"] = action["cost_eur"]
-            decision["details"] = action["payload"].get("details")
-            decision["messages"] = [{key: msg[key] for key in ("to_name", "subject", "body", "body_en")} for msg in action["messages"]]
+            review_rows = log.execute("SELECT ref, MAX(ts) FROM events WHERE kind=? GROUP BY ref", (followup.REVIEW_KIND,))
+            reviews = {ref: stamp for ref, ts in review_rows if ref and (stamp := rules.ts(ts))}
+            for decision in decisions:
+                action = actions._get(log, decision["id"])
+                decision["cost"] = action["cost_eur"]
+                decision["details"] = action["payload"].get("details")
+                decision["messages"] = [{key: msg[key] for key in ("to_name", "subject", "body", "body_en")} for msg in action["messages"]]
 
     with closing(sqlite3.connect(f"{(db_path or rules.DB_PATH).resolve().as_uri()}?mode=ro", uri=True)) as conn:
         picture, coverage = rules.launch_state(conn)
@@ -824,8 +825,6 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
                                "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" and primary_route is not review_route
                                             and not primary_route["next_step"].get("reply_id") else primary_route["next_step"]})
 
-    from core import followup
-    reviews = followup.last_reviews() if include_activity else {}
     for part in components:  # say what Dockside does next and when (only when follow-ups are switched on)
         last_useful = followup.deadline_for(part, cutoff)
         default = next((route for route in part["routes"] if route["id"] == part["default_route_id"]), None)
