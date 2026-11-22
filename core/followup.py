@@ -160,9 +160,9 @@ How to decide, per part:
 - Schedule each intervention by act_by, including the answer-by time and the approval due time. For a rush amendment, act_by is the last
   departure time. The amended deliver_by is an arrival time: it must be strictly after arrival_window.after, at or before
   arrival_window.latest, and at or after verified_eta. Use the full date, time and offset.
-- Use departure as the gate's verdict. A verified reply gives the reported departure time. A verified carrier_position shows the truck
-  had left by the observation time (departed_at). Cite evidence_id and source_label, and use existing verified evidence. If departure is
-  passed, reopening requires evidence the truck left by departure.deadline, a current ETA and a confirmed slot.
+- Use departure as the gate's verdict. When citing verified departure, quote departure.proof_text, which includes the evidence ID.
+  Use departure.evidence_kind_label and departure.source_label for context. If departure is passed, use departure.reason when available.
+  Reopening requires evidence the truck left by departure.deadline, a current ETA and a confirmed slot.
 - Rush delivery with delivery_state.conflict takes precedence. For an open task, remind owner_reconcile using task.id and the finding ID
   for this delivery. For an answered task, use task.answer and continue with the evidence still outstanding. Ask owner_logistics on a linked
   confirmation thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit and departure is still

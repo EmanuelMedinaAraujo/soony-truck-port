@@ -313,6 +313,48 @@ def run_revision(policy, sent):
         assert len(sent) == before_retry
         print(f"\n07:01 RETRY WITH CONFIRMED SLOT — HELD — {held['held_reason']}")
         print(release.decision_state(held)["hold_clears"])
+
+        # Only the tracker can establish departure while this reply contains booking and ETA alone.
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("INSERT INTO carriers(carrier_id, name) VALUES ('LSP-04', 'Warta Trans'), ('OTHER', 'Other carrier')")
+            db.execute("INSERT INTO ports(locode, name, lat, lon) VALUES ('PLPOZ', 'Poznań', 52.4064, 16.9252)")
+            db.execute("""INSERT INTO shipments(shipment_id,carrier_id,mode,reference,supplier_id,material_ids,
+                                                dest_site,status,last_lat,last_lon,updated_at)
+                          VALUES ('RPL-POS-0640','OTHER','road','WT-123',?,?,'DC-HAM','in_transit',52.5,16.9252,?)""",
+                       (SUPPLIER, PART, at("06:40").isoformat()))
+        assert release.check(held) == (False, "position source is not authorized")
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("UPDATE shipments SET carrier_id='LSP-04'")
+        assert release.check(held) == (False, "origin location unknown")
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("UPDATE shipments SET origin='PLPOZ', last_lat=52.40641")
+        held = outbound.dispatch(amended["id"])
+        near_reason = "position too close to origin"
+        assert held["status"] == "approved" and held["held_reason"] == near_reason
+        near_departure = release.delivery_state(held)["departure"]
+        assert near_departure == release.decision_state(held)["departure"]
+        assert near_departure["state"] == "passed" and near_departure["reason"] == near_reason
+        assert near_departure["proof_text"] is None
+        assert len(sent) == before_retry
+
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("UPDATE shipments SET last_lat=52.5, updated_at=?", (at("07:01").isoformat(),))
+        assert release.check(held) == (False, "departure deadline passed")
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("UPDATE shipments SET updated_at=?", (at("06:40").isoformat(),))
+        wider_geofence = policy | {"departure_geofence_km": {"value": 15}}
+        with rules.replay(wider_geofence, at("07:01")):
+            assert release.check(held) == (False, "position too close to origin")
+        assert release.check(held) == (True, None)
+        verdict = release.departure_verdict(held, rules.now())
+        decision = release.decision_state(actions.get(held["id"]))
+        assert verdict == decision["departure"] and decision["held_reason"] is None
+        assert verdict == release.departure_verdict(release.terms_for(held), rules.now())
+        assert verdict["state"] == "verified" and verdict["evidence_type"] == "carrier_position"
+        assert verdict["evidence_id"] == "RPL-POS-0640" and verdict["evidence_reply_id"] is None
+        assert verdict["departed_at"] == at("06:40").isoformat() and verdict["source_label"] == "Warta Trans"
+        assert verdict["evidence_kind_label"] == "position observed 10.41 km from Poznań at 06:40"
+        assert verdict["proof_text"] == "left by 06:40 (position RPL-POS-0640)"
         store_reply(carrier, "departed", "Truck departed Poznań at 06:40. ETA Sun 14:30.")
         released = outbound.dispatch(amended["id"])
         assert released["status"] == "sent", released["held_reason"]
@@ -329,35 +371,46 @@ def run_revision(policy, sent):
         assert departure == final["deliveryState"]["departure"] == release.departure_verdict(released, rules.now())
         assert departure["state"] == "verified" and departure["evidence_type"] == "reply"
         assert departure["evidence_id"] == departure["evidence_reply_id"] == "departed"
+        assert departure["evidence_kind_label"] == f"departure confirmed by {CARRIER_EMAIL}"
+        assert departure["proof_text"] == "left at 06:40 (reply departed)"
         assert followup.deadline_for({"option": final, "default_route_id": FINDING}, at("16:00")) == at("15:00")
-        print("\n07:01 REVISED TERMS RELEASED — verified departure Sun 06:40, ETA Sun 14:30")
+        print(f"\n07:01 REVISED TERMS RELEASED — truck {departure['proof_text']}, ETA Sun 14:30")
         show_trace(final, route)
 
-        # Use a fresh thread with booking and ETA only. The position must be the only proof of departure.
-        feed = thread("Warta Trans", CARRIER_EMAIL, "Please send the latest booking and ETA.", "book_truck", ORDER)
-        store_reply(feed, "position-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
-        with sqlite3.connect(rules.DB_PATH) as db:
-            db.execute("INSERT INTO carriers(carrier_id, name) VALUES ('WARTA', 'Warta Trans')")
-            db.execute("""INSERT INTO shipments(shipment_id,carrier_id,mode,reference,supplier_id,material_ids,
-                                                dest_site,status,last_lat,last_lon,updated_at)
-                          VALUES ('TRUCK-1','WARTA','road','WT-123',?,?,'DC-HAM','in_transit',52.4,16.8,?)""",
-                       (SUPPLIER, PART, at("06:40").isoformat()))
-        assert release.check(released) == (True, None)
-        verdict = release.departure_verdict(released, rules.now())
-        _, final = view()
-        assert verdict == final["departure"] == final["deliveryState"]["departure"]
-        assert verdict == release.decision_state(actions.get(released["id"]))["departure"]
-        assert verdict == release.departure_verdict(release.terms_for(released), rules.now())
-        assert verdict["state"] == "verified" and verdict["evidence_type"] == "carrier_position"
-        assert verdict["evidence_id"] == "TRUCK-1" and verdict["evidence_reply_id"] is None
-        assert verdict["departed_at"] == at("06:40").isoformat() and verdict["source_label"] == "Carrier position"
-        print("\n07:01 CARRIER POSITION — gate and cockpit agree: verified, carrier_position")
-        print(f"  {verdict['source_label']} {verdict['evidence_id']} confirms departure by Sun 06:40.")
+        # The latest thread now supplies booking and ETA only, so the cockpit uses the tracker proof.
+        inquiry = thread("Warta Trans", CARRIER_EMAIL, "Please send the latest booking and ETA.", "book_truck", ORDER)
+        store_reply(inquiry, "position-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
+        position_route, position_option = view()
+        assert verdict == position_option["departure"] == position_option["deliveryState"]["departure"]
+        summary = release.confirmation_summary(position_option["deliveryState"]["confirmation_evidence"], verdict)
+        assert summary[-1] == f"Truck {verdict['proof_text']}"
+        # An outstanding staff answer can still trigger follow-up after departure is verified.
+        component = snapshot["components"][0] | {
+            "option": position_option, "routes": [position_route],
+            "next_step": {"state": "Waiting for reply", "text": question, "since": at("03:20").isoformat(),
+                          "action_id": staff["id"]},
+        }
+        def cite_position(prompt, on_step=None, *, effort):
+            items, _ = json.JSONDecoder().raw_decode(prompt.split("Items:\n", 1)[1])
+            item, = items
+            assert item["departure"] == item["delivery_state"]["departure"] == verdict
+            return item["departure"]["proof_text"]
+
+        with (patch.object(agent, "run", side_effect=cite_position),
+              patch.object(llm_health, "available", return_value=True)):
+            followup_proof = followup.run(snapshot | {"components": [component]})
+        assert followup_proof == verdict["proof_text"]
+
+        print(f"\n07:01 CARRIER POSITION AT 06:40 NEAR ORIGIN — HELD — {near_reason}")
+        print("\n07:01 CARRIER POSITION OUTSIDE GEOFENCE — VERIFIED")
+        print(f"  Gate and cockpit: {summary[-1]}. {verdict['evidence_kind_label']}.")
+        print(f"  Follow-up payload: {followup_proof}.")
 
 
 def main():
     policy = customer.load(ROOT / "config" / "business.json")
     policy["release_carrier_contacts"] = {"value": {DELIVERY: CARRIER_EMAIL, ORDER: CARRIER_EMAIL}}
+    policy["release_carrier_feeds"] = {"value": {ORDER: "LSP-04"}}
     policy["staff_email"]["value"]["Katrin Jansen"] = DOCK_EMAIL
     sent = []
     with TemporaryDirectory(prefix="dockside-release-replay-") as directory:

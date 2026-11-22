@@ -47,6 +47,8 @@ DEPARTURE = re.compile(
 PROJECTED_DEPARTURE = re.compile(r"\b(?:plan\w*|expect\w*|schedul\w*|will|would|should|must|may|might|"
                                 r"estimated|forecast|ETD|soll|voraussichtlich|prawdopodobnie)\b", re.I)
 DEPARTURE_HOLD = "departure deadline passed"
+DEPARTURE_HOLDS = {DEPARTURE_HOLD, "position source is not authorized", "origin location unknown",
+                   "position too close to origin"}
 BOOKING = re.compile(r"\b(?:booking|Buchungsnummer|numer rezerwacji)"
                      r"(?:\s+(?:ref(?:erence)?\.?|number|no\.?|ID|code))?\s*[:=#]?\s*"
                      r"([A-Z0-9][A-Z0-9._/-]{2,79})(?![\w/-])", re.I)
@@ -835,11 +837,7 @@ def confirmation_summary(matches, departure=None):
             label = "Carrier booking and ETA" if condition == "transport_confirmed" else "Dock slot"
             lines.append(f"{label}: {evidence['reason']}")
     if departure and departure["state"] == "verified":
-        departed = rules.ts(departure["departed_at"])
-        if departure["evidence_type"] == "reply":
-            lines.append(f"Departure at {departed:%a %H:%M} confirmed by {departure['source_label']}")
-        elif departure["evidence_type"] == "carrier_position":
-            lines.append(f"Carrier position at {departed:%a %H:%M} confirms departure by then")
+        lines.append(f"Truck {departure['proof_text']}")
     return lines
 
 
@@ -1074,39 +1072,83 @@ def _effective_depart_by(terms, log):
     return rules.ts(_derive_depart_by(terms, terms.get("deliver_by")))
 
 
-def _carrier_departure(terms, booking, depart_by, now):
+def _position_origin(db, terms, origin_code):
     from core.dispatch import coordinates
 
+    offers = _offers(db, terms["supplier_id"], terms["part"])
+    offered = {(offer["origin_lat"], offer["origin_lon"], offer.get("origin") or "the supplier site")
+               for offer in offers if coordinates(offer.get("origin_lat"), offer.get("origin_lon"))}
+    if offered:
+        return next(iter(offered)) if len(offered) == 1 else None
+    if not origin_code:
+        codes = {offer["origin_site"] for offer in offers if offer.get("origin_site")}
+        if len(codes) != 1:
+            return None
+        origin_code = codes.pop()
+    places = set(db.execute("""SELECT lat, lon, name FROM sites WHERE site_id=?
+                               UNION SELECT lat, lon, name FROM ports WHERE locode=?""",
+                            (origin_code, origin_code)))
+    if len(places) == 1:
+        lat, lon, name = places.pop()
+        if coordinates(lat, lon):
+            return lat, lon, name or origin_code
+    return None
+
+
+def _position_departure(terms, booking, depart_by, now):
+    from core.dispatch import coordinates
+    from core.tracking import distance_km
+
     if not rules.DB_PATH.is_file():
-        return None
+        return {}
     with _master() as db:
-        rows = db.execute("""SELECT shipment_id, reference, material_ids, dest_site, last_lat, last_lon, updated_at,
-                                    ports.lat, ports.lon
-                             FROM shipments JOIN carriers USING (carrier_id)
-                             LEFT JOIN ports ON ports.locode=shipments.origin
+        rows = db.execute("""SELECT shipment_id, material_ids, dest_site, last_lat, last_lon, updated_at,
+                                    origin, carrier_id, carriers.name
+                             FROM shipments LEFT JOIN carriers USING (carrier_id)
                              WHERE (shipment_id=? OR reference=?)
                                AND supplier_id=? AND shipments.mode='road'
                                AND status IN ('in_transit', 'in_delivery', 'delayed')""",
                           (terms["delivery_id"], booking, terms["supplier_id"])).fetchall()
-    if len(rows) != 1:
-        return None
-    shipment_id, reference, materials, site, lat, lon, observed, origin_lat, origin_lon = rows[0]
-    if (terms["part"] not in (materials or "").split("|") or (site or "").casefold() not in _site_names()
-            or not coordinates(lat, lon) or (lat, lon) == (origin_lat, origin_lon) or not observed or "T" not in observed):
-        return None
-    observed_at = rules.ts(observed)
-    freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
-    if now - freshness <= observed_at <= min(depart_by, now):
-        return {"shipment_id": shipment_id, "reference": reference, "observed_at": observed_at.isoformat(),
-                "lat": lat, "lon": lon}
-    return None
+        if len(rows) != 1:
+            return {}
+        shipment_id, materials, site, lat, lon, observed, origin_code, carrier_id, carrier_name = rows[0]
+        if (terms["part"] not in (materials or "").split("|") or (site or "").casefold() not in _site_names()
+                or not coordinates(lat, lon) or not observed or "T" not in observed):
+            return {}
+        try:
+            observed_at = rules.ts(observed)
+        except ValueError:
+            return {}
+        freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
+        if not now - freshness <= observed_at <= min(depart_by, now):
+            return {}
+        # A booking reply authorizes its sender. The managed tracker uses carrier IDs.
+        feeds = setting("release_carrier_feeds", {})
+        if not carrier_name or carrier_id not in _values(feeds.get(terms["delivery_id"])):
+            return {"reason": "position source is not authorized"}
+        origin = _position_origin(db, terms, origin_code)
+    if not origin:
+        return {"reason": "origin location unknown"}
+    origin_lat, origin_lon, origin_name = origin
+    radius = setting("departure_geofence_km", 5)
+    if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
+        raise ValueError("departure_geofence_km must be positive and finite")
+    distance = distance_km((lon, lat), (origin_lon, origin_lat))
+    if distance <= radius:
+        return {"reason": "position too close to origin"}
+    local = observed_at.astimezone(rules.timezone())
+    return {"state": "verified", "evidence_type": "carrier_position", "evidence_id": shipment_id,
+            "departed_at": observed_at.isoformat(), "source_label": carrier_name,
+            "evidence_kind_label": f"position observed {distance:.2f} km from {origin_name} at {local:%H:%M}",
+            "proof_text": f"left by {local:%H:%M} (position {shipment_id})"}
 
 
 def _departure_without_evidence(depart_by, now):
     return {"deadline": depart_by.isoformat() if depart_by else None,
             "state": "passed" if depart_by and now > depart_by else "open",
             "evidence_type": "none", "evidence_id": None, "evidence_reply_id": None,
-            "departed_at": None, "source_label": None}
+            "departed_at": None, "source_label": None, "evidence_kind_label": None,
+            "proof_text": None, "reason": None}
 
 
 def departure_verdict(action_or_commitment: dict, now: dt.datetime, *, log=None, confirmations=None) -> dict:
@@ -1143,20 +1185,19 @@ def departure_verdict(action_or_commitment: dict, now: dt.datetime, *, log=None,
             return verdict
     if (departed := rules.ts(transport.get("departed_at"))) and departed <= depart_by:
         reply_id = transport["departure_reply_id"]
+        local = departed.astimezone(rules.timezone())
         return verdict | {"state": "verified", "evidence_type": "reply", "evidence_id": reply_id,
                           "evidence_reply_id": reply_id, "departed_at": departed.isoformat(),
-                          "source_label": transport["contact"]}
-    if position := _carrier_departure(terms, transport["booking_reference"], depart_by, now):
-        return verdict | {"state": "verified", "evidence_type": "carrier_position",
-                          "evidence_id": position["shipment_id"], "departed_at": position["observed_at"],
-                          "source_label": "Carrier position"}
-    return verdict
+                          "source_label": transport["contact"],
+                          "evidence_kind_label": f"departure confirmed by {transport['contact']}",
+                          "proof_text": f"left at {local:%H:%M} (reply {reply_id})"}
+    return verdict | _position_departure(terms, transport["booking_reference"], depart_by, now)
 
 
 def _departure_hold(verdict, terms):
     if verdict["deadline"] is None and terms.get("revises_action_id"):
         return "departure deadline is missing"
-    return DEPARTURE_HOLD if verdict["state"] == "passed" else None
+    return (verdict["reason"] or DEPARTURE_HOLD) if verdict["state"] == "passed" else None
 
 
 def _departure_blocker(action, terms):
@@ -1223,7 +1264,7 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
         revised_reason = f"The ordered {deadline:%H:%M} arrival can no longer be met."
     hold_reason = revised_reason if conflict else departure_hold or review or _confirmation_blocker(matches)
     saved_hold = (action.get("payload") or {}).get("held_reason")
-    if (log is None and not hold_reason and saved_hold and saved_hold != DEPARTURE_HOLD
+    if (log is None and not hold_reason and saved_hold and saved_hold not in DEPARTURE_HOLDS
             and not saved_hold.startswith("required condition missing")):
         hold_reason = saved_hold
     return {
@@ -1489,11 +1530,13 @@ def decision_state(action: dict) -> dict:
     held = action["held_reason"]
     blocker = proposal_blocker(action) if applies(action) and not action["payload"].get("repeat_commitment") else None
     departure = delivery_state(action)["departure"] if action["kind"] == "order" else None
-    if held == DEPARTURE_HOLD:
+    if held in DEPARTURE_HOLDS:
         if action["status"] in {"proposed", "scheduled", "escalated"}:
             held = blocker
         elif departure and departure["state"] == "verified":
             held = None
+        elif departure and departure["state"] == "passed":
+            held = departure["reason"] or DEPARTURE_HOLD
     expired = action["status"] == "expired" or bool(blocker and "expired" in blocker) or bool(held and "expired" in held)
     replaced = re.search(r"duplicate of (ACT-[A-Z0-9]+)", held or "")
     if action["status"] == "superseded":
@@ -1502,10 +1545,10 @@ def decision_state(action: dict) -> dict:
         terminal = "Expired — no longer useful"
     else:
         terminal = None
-    reason = blocker if blocker == DEPARTURE_HOLD else held or blocker
+    reason = blocker if blocker in DEPARTURE_HOLDS else held or blocker
     terms = terms_for(action)
     matches = action["payload"].get("confirmation_evidence", {})
-    if reason == DEPARTURE_HOLD:
+    if reason in DEPARTURE_HOLDS:
         owner, clears = ("Carrier and receiving team",
                          "Verify the truck departed by the deadline and provide a current ETA within the delivery window and confirmed dock slot.")
     elif reason and reason.startswith("evidence stale"):

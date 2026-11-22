@@ -333,14 +333,16 @@ def test_historical_release_gate_replay():
     command = [sys.executable, str(root / "examples/replay_gate.py")]
     result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
     assert result.stdout == subprocess.check_output(command, cwd=root, text=True)
-    documented, position_case = result.stdout.split("\n\n07:01 CARRIER POSITION", 1)
+    documented, new_proof = result.stdout.split("\n\n07:01 REVISED TERMS RELEASED", 1)
     assert documented.strip() in (root / "README.md").read_text()
-    assert "gate and cockpit agree: verified, carrier_position" in position_case
-    assert "Carrier position TRUCK-1 confirms departure by Sun 06:40." in position_case
+    assert "CARRIER POSITION AT 06:40 NEAR ORIGIN — HELD — position too close to origin" in new_proof
+    assert "CARRIER POSITION OUTSIDE GEOFENCE — VERIFIED" in new_proof
+    assert "Gate and cockpit: Truck left by 06:40 (position RPL-POS-0640)." in new_proof
+    assert "Follow-up payload: left by 06:40 (position RPL-POS-0640)." in new_proof
     assert "RELEASED WITH SYNTHETIC EVIDENCE" in result.stdout
     assert "HELD — draft quantity disagrees with the commitment" in result.stdout
     assert "07:01 RETRY WITH CONFIRMED SLOT — HELD — departure deadline passed" in result.stdout
-    assert "07:01 REVISED TERMS RELEASED — verified departure Sun 06:40, ETA Sun 14:30" in result.stdout
+    assert "07:01 REVISED TERMS RELEASED — truck left at 06:40 (reply departed), ETA Sun 14:30" in result.stdout
 
 
 def test_new_document_disagrees_with_commitment(log, deliveries):
