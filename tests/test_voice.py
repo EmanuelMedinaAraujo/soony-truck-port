@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi import HTTPException
 
-from core import actions, inbox, rules, voice
+from core import actions, agent, dispatch, inbox, rules, voice
 from server.app import get_call, list_calls, prepare_call
 
 
@@ -131,56 +131,84 @@ def test_draft_or_disabled_never_contacts_provider(call, provider):
         c.execute("UPDATE messages SET status='delivered' WHERE id=?", (call["id"],))
     rules.cfg("voice")["enabled"] = False
     assert voice.prepare(call["id"])["status"] == "unavailable"
+    assert not voice.prepare_open()
     assert not requests
 
 
-def test_collect_updates_progress_and_delivers_one_inbox_reply(call, provider, completed):
+def test_automatic_simulation_delivers_one_unverified_reply(call, provider, completed, monkeypatch):
     requests, responses = provider
     mid = call["id"]
-    voice.prepare_open()
-    responses["/convai/conversations"] = {"conversations": [{"conversation_id": "conv_one", "status": "processing"}]}
+    path = "/convai/agents/agent_test/simulate-conversation"
+    responses[path] = {"simulated_conversation": completed["transcript"], "analysis": completed["analysis"]}
+    monkeypatch.setattr(voice, "_shipment_records", lambda _: [{"reference": "TEST-REF", "status": "booked"}])
+    reply, = voice.prepare_open()
+    assert requests[-1][1] == path
+    prompt = requests[-1][-1]["simulation_specification"]["simulated_user_config"]["prompt"]["prompt"]
+    assert "TEST-REF" in prompt and "don't know yet" in prompt
+    assert "+491234567890" not in prompt
+    assert reply["message_id"] == f"simulation:{mid}"
+    assert reply["subject"] == "Simulated call: Pickup"
+    assert reply["msg_id"] == mid
+    assert reply["action_id"] == call["action_id"]
+    assert reply["from_name"] == f"{call['to_name']} (simulated call)"
+    assert reply["simulated"] == 1
+    assert "Zehn Uhr" in reply["body"]
+    assert '"confirmed": false' in reply["body"]
+    pending, = inbox.unhandled()
+    assert pending["id"] == reply["id"]
+    result = voice.get(mid)
+    assert result["status"] == "done"
+    assert result["talk_url"]
+    assert result["result"]["summary"] == "Simulated call: Pickup is provisional."
+    assert result["result"]["fields"]["confirmed"] is False
+    assert "Zehn Uhr" in result["result"]["transcript"]
+    inbox.mark_handled(reply["id"], "Gate availability still pending.")
+    assert voice.get(mid)["result"]["summary"] == "Simulated call: Gate availability still pending."
+    with actions.tx() as c:
+        related = dispatch.linked_actions(c)["fixture"]
+        assert dispatch.latest_summary(related) is None
+        step = dispatch.action_next_step(related)
+    assert step["state"] == "Waiting for reply"
+    assert "simulated, no phone line yet" in step["text"]
+    assert step["call_id"] == mid
+    last_count = len(requests)
+    assert voice.prepare_open() == []
     assert voice.collect() == []
-    assert voice.get(mid)["status"] == "in_progress"
-    assert inbox.unhandled() == []
+    assert len(requests) == last_count
 
-    def page(query):
-        if "cursor" in query:
-            return {"conversations": [{"conversation_id": "conv_one", "status": "done"}]}
-        return {"conversations": [{"conversation_id": "conv_empty", "status": "done", "user_message_count": 0}],
-                "next_cursor": "older", "has_more": True}
+    tool = agent.Tools(handling_replies=True)
+    args = ("Change ETA", "Rehearsal suggested a time", "", "data_fix", 0, 0, 0, None, None, 15, [])
+    assert "error" in tool.propose_action(f"reply-{reply['id']}", *args)
+    assert "error" in tool.propose_action("unlinked", *args)
 
-    responses["/convai/conversations"] = page
+
+def test_provider_failure_falls_back_to_local_mock_once(call, provider):
+    requests, responses = provider
+    responses["/convai/agents/agent_test/simulate-conversation"] = 410
+    reply, = voice.prepare_open()
+    assert reply["simulated"] == 1
+    assert voice.get(call["id"])["result"]["source"] == "mock"
+    assert voice.prepare_open() == []
+    assert sum(path.endswith("/simulate-conversation") for _, path, _, _ in requests) == 1
+
+
+def test_demo_call_only_dials_configured_number_once(call, provider, completed):
+    requests, responses = provider
+    rules.cfg("voice").update(dial_out=True, demo_number="+15555550123")
+    responses["/convai/phone-numbers"] = [{"provider": "sip_trunk", "phone_number_id": "phone_fixture"}]
+    responses["/convai/sip-trunk/outbound-call"] = {"success": True, "conversation_id": "conv_one"}
+    assert voice.prepare_open() == []
+    assert voice.prepare_open() == []
+    assert voice.get(call["id"])["status"] == "in_progress"
+    responses["/convai/conversations/conv_one"] = {"status": "processing"}
+    assert voice.collect() == []
     responses["/convai/conversations/conv_one"] = completed
     reply, = voice.collect()
     assert reply["message_id"] == "call:conv_one"
     assert reply["subject"] == "Call: Pickup"
-    assert reply["msg_id"] == mid
-    assert reply["action_id"] == call["action_id"]
-    assert reply["from_name"] == call["to_name"]
-    assert f"{call['to_name']}: Zehn Uhr" in reply["body"]
-    assert '"confirmed": false' in reply["body"]
-    pending, = inbox.unhandled()
-    assert pending["id"] == reply["id"]
-    assert pending["summary_en"] is None
-    result = voice.get(mid)
-    assert result["status"] == "done"
-    assert result["result"]["summary"] == "Pickup is provisional."
-    assert result["result"]["fields"]["confirmed"] is False
-    assert result["result"]["fields"]["booking_reference"] is None
-    inbox.mark_handled(reply["id"], "Gate availability still pending.")
-    assert voice.get(mid)["result"]["summary"] == "Gate availability still pending."
-    last_count = len(requests)
+    assert reply["simulated"] == 0
     assert voice.collect() == []
-    assert len(requests) == last_count
-
-
-def test_demo_call_only_dials_configured_number_once(call, provider):
-    requests, responses = provider
-    rules.cfg("voice").update(dial_out=True, demo_number="+15555550123")
-    responses["/convai/phone-numbers"] = [{"provider": "twilio", "phone_number_id": "phone_fixture"}]
-    responses["/convai/twilio/outbound-call"] = {"success": True, "conversation_id": "conv_fixture"}
-    assert voice.prepare(call["id"])["status"] == "in_progress"
-    assert voice.prepare(call["id"])["status"] == "in_progress"
     payloads = [r[-1] for r in requests if r[1].endswith("outbound-call")]
     assert payloads == [{"agent_id": "agent_test", "agent_phone_number_id": "phone_fixture",
                          "to_number": "+15555550123"}]
+    assert not any(r[1].endswith("simulate-conversation") for r in requests)

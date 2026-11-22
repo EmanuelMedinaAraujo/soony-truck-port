@@ -22,12 +22,16 @@ The native port is based on `integrations/supplier-chaser` at `cc0ecad`. The ref
 
 ## Voice calls
 
-Set `ELEVENLABS_API_KEY` in `.env` to enable preparation of ElevenLabs agents for released call messages. Open the call's `talk_url` and start the voice session as the recipient. Dockside polls for a finished conversation, then adds its transcript and extracted fields to the same reply queue used for email.
+Released call messages run automatically. Dockside uses ElevenLabs to rehearse the call with a simulated counterpart based on the shipment records. If the simulator is unavailable, a local mock reports the known status and leaves unanswered questions open. Both appear in Actions → Calls with their transcript and script. Simulated replies can prompt follow-up and are excluded from shipment and stock evidence.
+
+Set `ELEVENLABS_API_KEY` in `.env` to use the provider and enable **Try it live**. An optional telephone demo uses an imported ElevenLabs SIP number and requires both `voice.value.dial_out` and `voice.value.demo_number` in `config/business.json`. Dockside dials only that destination.
 
 - `GET /api/calls` lists calls. Pass `?action_id=ACT-…` to filter them.
-- `GET /api/calls/{message_id}` returns `message_id`, `to_name`, `subject`, `script`, `status`, `talk_url`, and `result`. The result is null until the call is collected, then contains `summary` and `fields`.
-- `POST /api/calls/{message_id}/prepare` prepares or reuses the agent for a released call and returns the same object.
+- `GET /api/calls/{message_id}` returns status, script, `talk_url` and the result with transcript, summary, fields and simulation label.
+- `POST /api/calls/{message_id}/prepare` prepares or reuses the optional web-call agent.
 
-Call status is `preparing`, `ready`, `in_progress`, `done`, or `unavailable`. The recipient can use the link when the call is ready.
+## Spending approvals
 
-`voice.value` in `config/business.json` controls the integration. The demo uses public ElevenLabs web sessions. Telephone dial-out requires an imported number, explicit `dial_out` enablement and a configured `demo_number` as the sole destination.
+Free actions run automatically. Paid actions email the responsible approver once. Eligible actions have a 15-minute stop window once the email is sent. Other paid actions wait for explicit approval. Each email link opens a confirmation page before recording the decision. A stop-window link expires at the end of its window. Links for actions that require approval expire after seven days.
+
+Set `PUBLIC_URL` and the SMTP settings in `.env`. Add known recipients under `staff_email.value` in `config/business.json`. The demo routes staff mail to Gmail plus-addresses derived from `MAIL_FROM`. Successful sends appear in action history and recent activity.
