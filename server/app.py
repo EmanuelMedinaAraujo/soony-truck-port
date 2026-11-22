@@ -419,7 +419,7 @@ def answer_question(message_id: str, answer: Answer, request: Request):
     if not question:
         raise HTTPException(404, "That question no longer exists; reload the page.")
     if question.get("superseded"):
-        raise HTTPException(409, "This question was replaced after the supplier's newer reply; answer the current task instead.")
+        raise HTTPException(409, f"This question is a reminder of task {question['reminder_of']}. Answer that task.")
     asked = question["person"]
     delegates = release.setting("delegates", {}).get(asked, [])
     if source == "local demo":
@@ -433,8 +433,10 @@ def answer_question(message_id: str, answer: Answer, request: Request):
         reply = questions.answer(question, who, text[:4000])
     except KeyError:
         raise HTTPException(404, "That question no longer exists; reload the page.")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     notify("staff_answer", {"reply": reply})
-    return {"ok": True, "reply_id": reply["id"]}
+    return {"ok": True, "reply_id": reply["id"], "task_id": question["id"] if question["kind"] == "task" else None}
 
 
 @app.get("/api/me")

@@ -168,8 +168,11 @@ def test_historical_order_uses_customer_part_site_and_offer(tmp_path, monkeypatc
 def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monkeypatch):
     from contextlib import closing
 
-    from core import dispatch
-    from server.app import get_reply
+    from fastapi.testclient import TestClient
+
+    from core import dispatch, questions
+    from server import app as server
+    from server.discord_bot import open_questions
 
     replay = replay_gate
     monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
@@ -178,6 +181,15 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
     policy["release_carrier_contacts"] = {"value": {replay.ORDER: replay.CARRIER_EMAIL}}
     policy["followup"]["value"].update(enabled=True)
     policy["release_supplier_logistics_contacts"] = {"value": {}}
+
+    def ask_buyer(finding):
+        draft = {"channel": "discord", "to_name": "Paul Winter", "to_address": None, "language": "en",
+                 "subject": "Name the purchase order", "body": "Please give the order reference."}
+        action = actions.propose(finding, "Name the purchase order", "", "ask", 0, 0, 0, None, None, messages=[draft])
+        mid = action["messages"][0]["id"]
+        with actions.tx() as log:
+            log.execute("UPDATE messages SET status='delivered', sent_at=? WHERE id=?", (rules.now().isoformat(), mid))
+        return mid, draft
 
     def recovery():
         with closing(actions.con()) as log:
@@ -198,6 +210,8 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         carrier = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please confirm transport.", "book_truck", replay.ORDER)
     with rules.replay(policy, replay.at("00:18")):
         replay.store_reply(supplier, "ack", "We acknowledge receipt of the order.")
+        older, _ = ask_buyer("reply-ack")
+        assert questions.find(older)["kind"] == "message"
     with rules.replay(policy, replay.at("02:07")):
         replay.store_reply(supplier, "accept", replay.ACCEPTANCE)
         route, option = recovery()
@@ -215,20 +229,28 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert formal["state"] == "waiting"
         assert formal["detail"] == "Disputed by Karton Nowak at 04:17."
         assert [(row["message_id"], row["kind"]) for row in formal["events"][1:]] == [
-            ("ack", "acknowledged"), ("accept", "accepted"), ("denial", "disputed"), ("denial", "note"),
+            ("ack", "acknowledged"), ("accept", "accepted"), ("denial", "disputed"),
+            ("denial", "estimate"), ("denial", "note"),
         ]
-        dispute, note = formal["events"][-2:]
+        dispute, estimate, note = formal["events"][-3:]
+        assert estimate["who"] == "Dockside" and "17:17" in estimate["text"]
         assert dispute["text"] == "Karton Nowak reports no dispatch instruction"
         assert note["who"] == "Dockside" and "ACT-B7B90B" in note["text"]
-        assert get_reply(dispute["message_id"])["body"] == denial
+        assert server.get_reply(dispute["message_id"])["body"] == denial
 
         delivery = option["deliveryState"]
         assert delivery["conflict"]["owner_reconcile"] == "Paul Winter"
         assert delivery["conflict"]["owner_logistics"] == replay.CARRIER_EMAIL
         assert delivery["can_propose_revision"] is False
         assert option["timingState"] == "disputed"
-        assert option["modeledUnloadAt"] == "2026-11-22T17:17+01:00"
-        assert option["modeledUnloadBasis"] == "If loading takes 4 h from the latest reply at 04:17 plus 9 h drive"
+        assert option["modeledUnloadAt"] == replay.at("17:17").isoformat()
+        assert option["modeledUnloadAnchorAt"] == replay.at("04:17").isoformat()
+        assert option["modeledUnloadReplyId"] == "denial" and option["modeledLateMinutes"] == 77
+        assert option["modeledUnloadBasis"] == "If loading takes 4 h from the dispute reply at 04:17 plus 9 h drive"
+        task_id = option["task"]["id"]
+        assert task_id == f"task:{replay.ORDER}:denial"
+        assert route["next_step"]["task"] == option["task"]
+        assert questions.find(older)["reminder_of"] == task_id
         assert "17:17 misses the 16:00" in route["next_step"]["text"]
         assert route["next_step"]["reply_id"] == "denial"
         terms = release.delivery_terms(original)
@@ -241,12 +263,70 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         )
         assert "disputes the order" in amendment["error"]
 
-    part = {"id": replay.PART, "name": "Art books", "status": "short", "usable": 0, "required": 8000,
-            "routes": [route], "default_route_id": route["id"], "next_step": route["next_step"], "option": option}
+    with rules.replay(policy, replay.at("04:19")):
+        newer, draft = ask_buyer(f"followup-{replay.FINDING}-202611220419")
+        reminder_action = agent.Tools().propose_action(
+            "reply-denial", "Ask again", "", "", "escalate", 0, 0, 0, None, "Dockside", 15, [draft],
+        )["done_automatically"]
+        reminder = actions.get(reminder_action)["messages"][0]
+        assert task_id in reminder["body"]
+
+    with rules.replay(policy, replay.at("04:25")):
+        replay.store_reply(supplier, "denial2", "We still have no dispatch instruction.",
+                           "Karton Nowak reports no dispatch instruction. Dockside escalated the conflict.")
     with rules.replay(policy, replay.at("04:47")):
+        replay.store_reply(supplier, "checking", "We are still checking.")
+        route, option = recovery()
+        assert option["task"]["id"] == task_id
+        assert option["modeledUnloadReplyId"] == "denial2"
+        assert option["modeledUnloadAnchorAt"] == replay.at("04:25").isoformat()
+        assert option["modeledUnloadAt"] == replay.at("17:25").isoformat()
+        assert option["modeledLateMinutes"] == 85 and "04:25" in option["modeledUnloadBasis"]
+        assert list(open_questions("Paul Winter")) == [task_id]
+        assert [q["id"] for q in agent.Tools().get_open_questions()] == [task_id]
+        assert questions.find(task_id)["source_reply_id"] == "denial2"
+        replaced = {older, newer, reminder["id"]}
+        assert {r["superseded_message_id"] for r in route["steps"] if r.get("reminder_of") == task_id} == replaced
+        assert all(questions.find(mid)["reminder_of"] == task_id for mid in replaced)
+        part = {"id": replay.PART, "name": "Art books", "status": "short", "usable": 0, "required": 8000,
+                "routes": [route], "default_route_id": route["id"], "next_step": route["next_step"], "option": option}
         item, = followup.stalled({"components": [part], "cutoff": replay.at("16:00").isoformat()})
-    assert item["delivery_state"]["conflict"]["message_id"] == "denial"
-    assert item["verified_eta"] is None
+        assert item["task"]["id"] == task_id
+        assert [q["id"] for q in item["open_staff_questions"]] == [task_id]
+        assert item["verified_eta"] is None
+
+        monkeypatch.setattr(server, "verified_person", lambda request: ("Paul Winter", "dashboard"))
+        client = TestClient(server.app, raise_server_exceptions=True)
+        # Context variables propagate from TestClient to the sync endpoint.
+        for mid in replaced:
+            refused = client.post(f"/api/questions/{mid}/answer", json={"text": "Use the old PO"})
+            assert refused.status_code == 409 and task_id in refused.json()["detail"]
+        recorded = client.post(f"/api/questions/{task_id}/answer", json={"text": questions.ORDER_STANDS})
+        assert recorded.status_code == 200 and recorded.json()["task_id"] == task_id
+        assert client.post(f"/api/questions/{task_id}/answer", json={"text": "duplicate"}).status_code == 409
+        reply = next(r for r in agent.Tools().get_replies() if r["reply_id"] == recorded.json()["reply_id"])
+        assert reply["staff_task"]["id"] == task_id
+        assert not open_questions("Paul Winter")
+        route, option = recovery()
+        assert option["deliveryState"]["conflict"] and not option["deliveryState"]["transport_confirmed"]
+        assert option["task"]["status"] == "answered"
+        assert option["task"]["answer"] == questions.ORDER_STANDS
+        assert option["task"]["answered_at"] == replay.at("04:47").isoformat()
+        assert route["next_step"]["state"] == "Waiting for reply"
+        assert "Answered by Paul Winter" in route["next_step"]["text"]
+        assert not any(row.get("message_id") == task_id for row in route["steps"])
+
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        inquiry = agent.Tools(handling_replies=True).propose_action(
+            f"reply-{reply['reply_id']}", "Verify the art-book van", "", "", "confirm_terms",
+            0, 0, 0, None, "Dockside", 15,
+            [replay.email("Warta Trans", replay.CARRIER_EMAIL, "Please confirm the van booking and arrival time.")],
+            delivery_id=replay.ORDER, confirmation_kind="book_truck",
+        )
+        request = actions.get(inquiry["done_automatically"])
+        assert request["messages"][0]["status"] == "outbox"
+        assert request["finding_id"].startswith(f"followup-{replay.FINDING}-")
+
     with rules.replay(policy, replay.at("05:00")):
         replay.store_reply(supplier, "reconciled", replay.ACCEPTANCE)
         assert release.delivery_state(original)["conflict"]
@@ -254,3 +334,37 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         delivery = release.delivery_state(original)
         assert delivery["conflict"] is None
         assert release.verified_eta(delivery) == replay.at("14:30").isoformat()
+        assert questions.find(task_id)["status"] == "closed"
+        assert all(questions.find(mid)["superseded"] for mid in replaced)
+
+
+def test_recorded_cancellation_queues_approval(tmp_path, monkeypatch):
+    from core import inbox, outbound, questions
+
+    replay = replay_gate
+    monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
+    monkeypatch.setattr(rules, "DB_PATH", tmp_path / "master.db")
+    policy = customer.load(replay.ROOT / "config" / "business.json")
+    with rules.replay(policy, replay.at("00:14")):
+        replay.seed_sent_order()
+        original = actions.get(replay.ORDER)
+        supplier = release.sent_order_message(original)
+    with rules.replay(policy, replay.at("04:17")):
+        replay.store_reply(supplier, "denial", "We received no dispatch instruction.")
+        task, = questions.current()
+        reply = questions.answer(task, "Paul Winter", questions.CANCEL_ORDER, channel="Discord")
+        assert inbox.get_reply(reply["id"])["handled"] == 0
+        assert not any(a["kind"] == "cancel_order" for a in actions.list_actions())
+
+        inbox.mark_handled("denial", "Supplier reports no dispatch instruction.")
+        summary = agent.handle_replies()
+        action, = [a for a in actions.list_actions() if a["kind"] == "cancel_order"]
+        assert action["id"] in summary and action["status"] == "proposed"
+        assert agent._propose_recorded_cancellation(reply["id"]) == action["id"]
+        assert action["messages"][0]["status"] == "draft"
+        assert outbound.dispatch(action["id"])["messages"][0]["status"] == "draft"
+        assert release.decision_state(action)["can_approve"]
+        signed = actions.decide(action["id"], "approve", action["approver_name"], source="dashboard",
+                                commitment_digest=release.approval_digest(action))
+        assert release.check(signed) == (True, None)
+        assert signed["messages"][0]["to_address"] == supplier["to_address"]

@@ -35,7 +35,7 @@ def open_questions(who):
     out = {}
     for q in questions.current():
         if q["person"] == who:
-            out[q["id"]] = (f"{q['part']} · " if q.get("part") else "") + q["text"][:90]
+            out[q["id"]] = ((f"{q['part']} · " if q.get("part") else "") + q["text"])[:100]
     return out
 
 
@@ -119,14 +119,19 @@ class Bot(discord.Client):
                 return
             from core import questions as staff_questions
             target = await asyncio.to_thread(staff_questions.find, question)
-            if not target or target.get("superseded") or target["person"] != who:
+            if (not target or target.get("superseded") or target.get("status", "open") != "open"
+                    or target["person"] != who):
                 await inter.response.send_message("Select an open question assigned to you; replaced questions can't be answered.", ephemeral=True)
                 return
             if not (text := text.strip()):
                 await inter.response.send_message("Write an answer first.", ephemeral=True)
                 return
-            await asyncio.to_thread(staff_questions.answer, target, who, text[:4000])
-            await inter.response.send_message(f"Thanks {who}, Dockside will act on your answer in its next pass.", ephemeral=True)
+            try:
+                await asyncio.to_thread(staff_questions.answer, target, who, text[:4000], channel="Discord")
+            except (KeyError, ValueError):
+                await inter.response.send_message("That question is no longer open. Select a current question.", ephemeral=True)
+                return
+            await inter.response.send_message(f"Thanks {who}. Dockside recorded your answer to {question}.", ephemeral=True)
 
         @answer.autocomplete("question")
         async def question_choices(inter: discord.Interaction, current: str):
@@ -243,7 +248,10 @@ def start(listeners: list, decide_fn) -> Bot | None:
                     asyncio.run_coroutine_threadsafe(post_chase_escalation(m), loop)
                     return
             to = ", ".join(sorted({m["to_name"] for m in a["messages"]})) or "logged"
-            asyncio.run_coroutine_threadsafe(bot.post_text(f"Done by Dockside: **{a['title']}** ({to}). {a['rationale']}"), loop)
+            reminders = [m["body"] for m in a["messages"]
+                         if m["channel"] == "discord" and m["subject"].startswith("Reminder of task task:")]
+            text = "\n".join(reminders) if reminders else f"Done by Dockside: **{a['title']}** ({to}). {a['rationale']}"
+            asyncio.run_coroutine_threadsafe(bot.post_text(text[:1990]), loop)
         elif ev["kind"] == "action_executed":
             a = ev["action"]
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Executed: **{a['title']}**. Nobody stopped it, so Dockside sent it."), loop)

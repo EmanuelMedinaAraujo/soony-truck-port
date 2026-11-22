@@ -10,6 +10,7 @@ import hashlib
 import imaplib
 import os
 import re
+import uuid
 from email.header import decode_header, make_header
 from email.utils import parseaddr
 
@@ -22,6 +23,18 @@ CREATE TABLE IF NOT EXISTS replies(
 """
 
 
+TASK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS staff_tasks(
+  id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES actions(id), source_reply_id TEXT NOT NULL REFERENCES replies(id),
+  person TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('open','answered','closed')),
+  created_at TEXT NOT NULL, answered_reply_id TEXT REFERENCES replies(id), answer_text TEXT, answered_at TEXT);
+"""
+TASK_INDEX = """CREATE UNIQUE INDEX IF NOT EXISTS active_staff_task_per_order
+    ON staff_tasks(action_id) WHERE status IN ('open','answered')"""
+REMINDER_SCHEMA = """CREATE TABLE IF NOT EXISTS staff_task_reminders(
+    message_id TEXT PRIMARY KEY REFERENCES messages(id), task_id TEXT NOT NULL REFERENCES staff_tasks(id))"""
+
+
 def init_schema(c) -> None:
     c.execute(REPLY_SCHEMA)
     if "simulated" not in {r[1] for r in c.execute("PRAGMA table_info(replies)")}:
@@ -29,6 +42,8 @@ def init_schema(c) -> None:
         if "simulated" not in {r[1] for r in c.execute("PRAGMA table_info(replies)")}:
             c.execute("ALTER TABLE replies ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0")
         c.commit()
+    for statement in (TASK_SCHEMA, TASK_INDEX, REMINDER_SCHEMA):
+        c.execute(statement)
 
 
 def _h(v) -> str:
@@ -137,39 +152,29 @@ def unhandled() -> list[dict]:
             ORDER BY r.received_at""", (rules.cfg("chase")["enabled"],))]
 
 
-def add_staff_answer(message_id: str, person: str, text: str) -> dict:
-    """An answer typed into the dashboard by a verified person; it joins the same reply queue as email."""
-    import uuid
-    with actions.tx() as c:
-        init_schema(c)
-        message = c.execute("SELECT id, action_id, subject, to_name FROM messages WHERE id=?", (message_id,)).fetchone()
-        if not message:
-            raise KeyError(message_id)
-        rid = "RPL-" + uuid.uuid4().hex[:6].upper()
-        stamp = rules.now().isoformat(timespec="seconds")
-        c.execute("""INSERT INTO replies(id, message_id, msg_id, action_id, from_addr, from_name, subject, received_at, body, handled)
-                     VALUES (?,?,?,?,?,?,?,?,?,0)""",
-                  (rid, f"dashboard:{rid}", message["id"], message["action_id"], None, person,
-                   f"Dashboard answer: {message['subject'] or ''}".strip(), stamp, text))
-        c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "reply", message["action_id"], f"{person} replied on the dashboard"))
-    return get_reply(rid)
+def _staff_reply(c, action_id, msg_id, person, text, subject, channel, *, task_id=None):
+    rid = "RPL-" + uuid.uuid4().hex[:6].upper()
+    stamp = rules.now().isoformat(timespec="seconds")
+    message_id = f"{task_id}:{rid}" if task_id else f"{channel}:{rid}"
+    c.execute("""INSERT INTO replies(id,message_id,msg_id,action_id,from_name,subject,received_at,body)
+                 VALUES (?,?,?,?,?,?,?,?)""", (rid, message_id, msg_id, action_id, person, subject, stamp, text))
+    c.execute("INSERT INTO events VALUES (?,?,?,?)",
+              (stamp, "reply", action_id, f"{person} answered {task_id or msg_id} via {channel}"))
+    return dict(c.execute("SELECT * FROM replies WHERE id=?", (rid,)).fetchone())
 
 
-def add_task_answer(action_id: str, source_id: str, person: str, text: str, task: str) -> dict:
-    """A verified person's answer to a task Dockside set after a conflict; bound to the action, not to a message."""
-    import uuid
-    with actions.tx() as c:
-        init_schema(c)
-        if not c.execute("SELECT 1 FROM actions WHERE id=?", (action_id,)).fetchone():
-            raise KeyError(action_id)
-        rid = "RPL-" + uuid.uuid4().hex[:6].upper()
-        stamp = rules.now().isoformat(timespec="seconds")
-        c.execute("""INSERT INTO replies(id, message_id, msg_id, action_id, from_addr, from_name, subject, received_at, body, handled)
-                     VALUES (?,?,?,?,?,?,?,?,?,0)""",
-                  (rid, f"task:{action_id}:{source_id}:{rid}", None, action_id, None, person,
-                   f"Answer to task: {task}"[:200], stamp, text))
-        c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "reply", action_id, f"{person} answered the task on the dashboard"))
-    return get_reply(rid)
+def add_staff_answer(c, question: dict, person: str, text: str, channel: str) -> dict:
+    message = c.execute("SELECT id, action_id, subject FROM messages WHERE id=?", (question["id"],)).fetchone()
+    return _staff_reply(c, message["action_id"], message["id"], person, text,
+                        f"Staff answer: {message['subject'] or ''}".strip(), channel)
+
+
+def add_task_answer(c, task: dict, person: str, text: str, channel: str) -> dict:
+    """Persist the answer and enqueue its reply atomically with the task transition."""
+    reply = _staff_reply(c, task["action_id"], None, person, text, f"Answer to {task['id']}", channel, task_id=task["id"])
+    c.execute("""UPDATE staff_tasks SET status='answered', answered_reply_id=?, answer_text=?, answered_at=? WHERE id=?""",
+              (reply["id"], text, reply["received_at"], task["id"]))
+    return reply
 
 
 def get_reply(rid: str) -> dict | None:

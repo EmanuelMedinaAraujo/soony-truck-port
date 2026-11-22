@@ -54,7 +54,8 @@ NEGATIVE_CONFIRMATION = re.compile(
     r"\b(?:cancel\w*|unavailable|cannot|can't|not|pending|tentative|provisional|if|subject to|awaiting|"
     r"storniert|nicht|vorläufig|odwołan\w*|nie|wstępn\w*)\b|[?]", re.I)
 AMBIGUOUS_DATE = re.compile(r"\b(?:today|tonight|tomorrow|yesterday|next week)\b", re.I)
-INSTRUCTIONS = {"order": "Purchase and dispatch", "dispatch": "Dispatch", "expedite": "Expedite dispatch",
+INSTRUCTIONS = {"order": "Purchase and dispatch", "cancel_order": "Cancel an existing order",
+                "dispatch": "Dispatch", "expedite": "Expedite dispatch",
                 "book_truck": "Book freight", "dock_slot": "Book a dock slot"}
 LOCAL_INSTRUCTIONS = {
     "de": {"order": "Bestellung und Versand", "dispatch": "Versand freigeben", "expedite": "Versand beschleunigen",
@@ -175,6 +176,14 @@ def terms_for(action: dict) -> dict | None:
 
 
 def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
+    if terms["instruction"] == "cancel_order":
+        ref = terms["order_reference"]
+        text = f"Cancel the existing order {ref}. Do not dispatch it. Please confirm receipt of this cancellation."
+        translation = {
+            "pl": f"Prosimy anulować zamówienie {ref} i nie wysyłać towaru. Prosimy o potwierdzenie otrzymania anulowania.",
+            "de": f"Bitte stornieren Sie die Bestellung {ref} und versenden Sie die Ware nicht. Bitte bestätigen Sie den Erhalt der Stornierung.",
+        }.get(terms["language"])
+        return f"Cancel order {ref}", "\n\n".join(filter(None, (translation, text, terms_block(terms))))
     verb = INSTRUCTIONS[terms["instruction"]]
     key = terms["commitment_id"]
     subject = f"{'Repeat · ' if repeat else ''}{verb} · {key}"
@@ -312,6 +321,8 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
     """Capture an instruction from provided terms and uniquely identifiable source data."""
     payload = action["payload"]
     saved = payload.get("commitment") or {}
+    if action["kind"] == "cancel_order":
+        return saved
     finding = (parent["finding_id"] if parent else action["finding_id"]) or ""
     messages = [m for m in action["messages"] if m["channel"] != "approval_email"]
     addresses = sorted({m["to_address"].casefold() for m in messages if m.get("to_address")})
@@ -423,6 +434,11 @@ def _number_candidates(raw: str) -> set[Decimal]:
 
 
 def _body_blocker(terms, message):
+    if terms["instruction"] == "cancel_order":
+        subject, body = render_instruction(terms)
+        if message["subject"] != subject or message["body"] != body or message.get("body_en"):
+            return "cancellation draft differs from the approved instruction"
+        return None
     qty, unit, total = (Decimal(str(terms[k])) for k in ("quantity", "unit_price", "total_price"))
     currencies = {"€": "EUR", "$": "USD", "£": "GBP", "₩": "KRW", "ZŁ": "PLN", "RMB": "CNY",
                   "元": "CNY", "원": "KRW", "¥": terms["currency"] if terms["currency"] in {"JPY", "CNY"} else ""}
@@ -442,11 +458,48 @@ def _body_blocker(terms, message):
     return None
 
 
+def cancellation_terms(order, task):
+    sent = sent_order_message(order)
+    terms = delivery_terms(order)
+    reference = terms.get("po") or terms.get("emergency_reference") or order["id"]
+    if terms.get("po") and terms.get("po_line"):
+        reference += f", line {terms['po_line']}"
+    key = "COM-" + hashlib.sha256(f"cancel:{order['id']}".encode()).hexdigest()[:20].upper()
+    return {"version": TERMS_VERSION, "commitment_id": key, "instruction": "cancel_order",
+            "recipient": sent["to_address"].casefold(), "language": (sent.get("language") or "en").split("-")[0].lower(),
+            "order_reference": reference, "order_action_id": order["id"], "task_id": task["id"],
+            "answer_reply_id": task["answered_reply_id"], "delivery_id": terms["delivery_id"], "total_price": 0}
+
+
+def _cancellation_blocker(action, terms):
+    messages = [m for m in action["messages"] if m["channel"] != "approval_email"]
+    if (action["kind"] != "cancel_order" or action["cost_eur"] != 0 or len(messages) != 1
+            or messages[0]["channel"] != "email" or not terms["recipient"]
+            or parseaddr(terms["recipient"])[1] != terms["recipient"] or "@" not in terms["recipient"]
+            or (messages[0]["to_address"] or "").casefold() != terms["recipient"]
+            or action["payload"].get("commitment_digest") != fingerprint(terms)):
+        return "cancellation needs a signed instruction for the original order and recipient"
+    return _body_blocker(terms, messages[0])
+
+
+def _cancellation_authorization(log, terms):
+    from core import questions
+    task = log.execute("SELECT * FROM staff_tasks WHERE id=? AND status='answered'", (terms["task_id"],)).fetchone()
+    order = actions._get(log, terms["order_action_id"])
+    if (not task or task["answer_text"] != questions.CANCEL_ORDER or task["action_id"] != terms["order_action_id"]
+            or not order or not sent_order_message(order) or not delivery_terms(order)
+            or cancellation_terms(order, task) != terms or not delivery_state(order, log=log)["conflict"]):
+        return "the original order or recorded cancellation outcome changed"
+    return None
+
+
 def proposal_blocker(action: dict, *, check_departure=True) -> str | None:
     terms = terms_for(action)
     if not terms:
         return "typed commitment is missing"
     try:
+        if terms["instruction"] == "cancel_order":
+            return _cancellation_blocker(action, terms)
         if _expired(terms):
             return "commitment or latest useful release time has expired"
         if terms["instruction"] not in INSTRUCTIONS:
@@ -864,7 +917,7 @@ ACCEPTED_ORDER = re.compile(
     r"\b(?:accept\w*\b.{0,65}\border|\btreat\w*\b.{0,120}\bas\s+(?:the|a)\b.{0,60}\border"
     r"|releas\w* the goods|traktuję.{0,80}jako pisemne zlecenie)", re.I)
 DISPUTED_ORDER = re.compile(
-    r"\b(?:no\s+(?:written\s+)?(?:dispatch (?:instruction|release)|booking in (?:our|the|its) (?:current )?records)"
+    r"\b(?:no\s+(?:written\s+)?(?:(?:dispatch|shipping) (?:instruction|release)|booking in (?:our|the|its) (?:current )?records)"
     r"|(?:order|goods|shipment|dispatch)\b.{0,30}\b(?:not (?:been )?(?:released|accepted|received)|was never released)"
     r"|(?:not|never|cannot|can't|won't)\s+(?:been\s+)?(?:released|accept(?:ed)? the order|received.{0,30}dispatch)"
     r"|no\b.{0,65}\bdispatch release|nie otrzymali\w*\s+(?:również\s+)?dyspozycji"
@@ -881,10 +934,12 @@ NOTE_START = re.compile(
 def _claim_rows(reply, terms):
     body = inbox._strip_quote(reply["body"] or "")
     summary = " ".join((reply["summary_en"] or "").split())
-    words, *notes = NOTE_START.split(summary, maxsplit=1)
+    words, *notes = NOTE_START.split(summary)
+    notes = [note.strip(" ,;") for note in notes]
     words = words.rstrip(" ,;")
     if re.match(r"^(?:Dockside|ACT-[A-Z0-9]+)\b", words, re.I):
-        notes, words = [summary], ""
+        notes.insert(0, words)
+        words = ""
     if not (words or body):
         return []
     content = " ".join(f"{body} {words}".split())
@@ -901,7 +956,24 @@ def _claim_rows(reply, terms):
         kind = "reported"
     event = {"message_id": reply["id"], "at": reply["received_at"]}
     claim = event | {"who": reply["from_name"] or reply["contact"], "kind": kind, "text": words or body}
-    return [claim, *(event | {"who": "Dockside", "kind": "note", "text": note} for note in notes)]
+    trace = [claim]
+    for note in filter(None, notes):
+        kind = _dockside_event_kind(note)
+        previous = trace[-1]
+        if kind == "estimate" and previous["who"] == "Dockside" and previous["text"].lower().startswith("using "):
+            previous.update(kind=kind, text=f"{previous['text']}, {note}")
+        else:
+            trace.append(event | {"who": "Dockside", "kind": kind, "text": note})
+    return trace
+
+
+def _dockside_event_kind(text):
+    # Attribute an action even when the action description mentions a calculation.
+    if re.match(r"^(?:so |and )?(?:Dockside|ACT-[A-Z0-9]+|I|we)\s+"
+                r"(?:escalated|recorded|sent|asked|placed|chased|logged|updated|resent)\b", text, re.I):
+        return "note"
+    return "estimate" if re.search(r"\b(?:model(?:ed|led)|estimat(?:e|ed)|calculat(?:ed|es))\b", text, re.I) else "note"
+
 
 
 def supplier_claims(log, action, terms, now):
@@ -1158,6 +1230,8 @@ def _amendment_blocker(log, terms):
 
 
 def preview_confirmations(action):
+    if action["kind"] == "cancel_order":
+        return {}
     return delivery_state(action)["confirmation_evidence"]
 
 
@@ -1340,6 +1414,11 @@ def check(action: dict) -> tuple[bool, str | None]:
     try:
         terms = terms_for(action)
         with actions.tx() as log:
+            if terms["instruction"] == "cancel_order":
+                if action["status"] not in {"approved", "sent"} or not _signed(action, fingerprint(terms)):
+                    return False, "verified approval for this cancellation is missing"
+                reason = _cancellation_authorization(log, terms)
+                return reason is None, reason
             if action["payload"].get("repeat_commitment"):
                 if action["status"] not in {"auto", "sent"} or not _authorized_repeat(log, action, terms):
                     return False, "repeat needs the exact terms of an explicitly approved and sent commitment"

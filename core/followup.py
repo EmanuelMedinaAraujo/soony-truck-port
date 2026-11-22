@@ -112,12 +112,18 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
         route_steps = (route or {}).get("steps", [])
         delivery = ((part.get("option") or {}).get("deliveryState") or {}) if route and route["id"].startswith("offer-") else {}
         revised = delivery.get("needs_revised_terms", False)
+        task = step.get("task") or delivery.get("task")
         staff_questions = {}
         for pending in [*route_steps, step]:
-            if pending.get("question") and pending.get("person") and pending.get("state") in {"waiting", "Waiting for reply", "Needs you"}:
-                staff_questions[pending.get("message_id") or pending["person"]] = {
+            qid = pending.get("message_id")
+            if qid and pending.get("question") and pending.get("person") and pending.get("state") in {"waiting", "Waiting for reply", "Needs you"}:
+                if task and pending["person"] == task["person"] and qid != task["id"]:
+                    continue
+                staff_questions[qid] = {
                     "who": pending["person"], "what": pending["question"], "asked_at": pending.get("since"),
                 }
+                if task and qid == task["id"]:
+                    staff_questions[qid]["id"] = qid
         out.append({"component_id": part["id"], "part": part["name"], "status": part["status"],
                     "for_collectors": any(a["editionId"] == priority for a in part.get("allocations", [])),
                     "usable": part["usable"], "required": part["required"],
@@ -132,7 +138,7 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
                     "booking_ref": delivery.get("booking_ref"), "slot_window": delivery.get("slot_window"),
                     "vehicle_limit": delivery.get("vehicle_limit"), "needs_revised_terms": revised,
                     "revised_reason": delivery.get("revised_reason"), "open_staff_questions": list(staff_questions.values()),
-                    "delivery_state": delivery or None})
+                    "task": task, "delivery_state": delivery or None})
     no_deadline = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
     out.sort(key=lambda item: (item["component_id"] not in constraints, not item["for_collectors"],
                                item["status"] != "short", rules.ts(item["act_by"]) or no_deadline))
@@ -145,14 +151,14 @@ It is {now}. Items:
 
 How to decide, per part:
 - First call get_action on action_id (if any) and check open actions in get_situation. Inspect any matching requests with get_action.
-  Read open_staff_questions for who was asked, what they were asked and when. Never repeat an identical open request, even if it has
+  Read open_staff_questions for who was asked, what they were asked and when, and the ID of any conflict task. Never repeat an identical open request, even if it has
   a different finding ID.
 - Schedule each intervention by act_by, including the answer-by time and the approval due time. For a rush amendment, act_by is the last
   departure time. The amended deliver_by is an arrival time: it must be strictly after arrival_window.after, at or before
   arrival_window.latest, and at or after verified_eta. Use the full date, time and offset.
-- Rush delivery with delivery_state.conflict takes precedence. Ask owner_reconcile to reconcile the supplier's earlier acceptance
-  and later dispute, including the order reference, quantity, price and dispatch release. Ask owner_logistics on a linked confirmation
-  thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit, request actual departure.
+- Rush delivery with delivery_state.conflict takes precedence. For an open task, remind owner_reconcile using task.id and the finding ID
+  for this delivery. For an answered task, use task.answer and continue with the evidence still outstanding. Ask owner_logistics on a linked
+  confirmation thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit, request actual departure.
   Use clears_when and cite the supplier message ID. Keep any existing request that already covers the check.
   Do not propose an amendment while the conflict is open. Skip the other rules for this delivery.
 - Rush delivery with needs_revised_terms: if delivery_state.can_propose_revision is false, escalate revised_reason to the buyer and

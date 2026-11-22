@@ -460,21 +460,12 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
-def now_ts() -> dt.datetime:
-    return rules.now()
-
-
-def question_id(action_id: str, source_id: str | None) -> str:
-    """The id of a task Dockside sets a person after a conflict; answers to it are bound to the action and its evidence."""
-    return f"task:{action_id}:{source_id or 'current'}"
-
-
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
                 order: dict | None, delivery: dict):
     """Show which delivery requirements have verified evidence and which are still open."""
     site = rules.cfg("site_name")
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units.")]
-    from core import release
+    from core import questions, release
 
     sent = release.sent_order_message(order) if order else None
     if sent:
@@ -554,40 +545,47 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                           f"Rated {delivery['vehicle_rating']:g} t gross, confirmed by {reported(transport)}. Order limit ≤{limit:g} t."))
     else:
         steps.append(step("Vehicle", waiting, f"Awaiting carrier confirmation that the vehicle is rated ≤{limit:g} t gross."))
-    people = rules.cfg("people")
-    asked = {}
-    for action in sorted(related, key=lambda a: a.get("updated_at") or "", reverse=True):  # newest question per person wins
-        if action["kind"] in ("ask", "escalate") and action["status"] in {"sent", "auto", "delivered"}:
-            for message in action.get("messages", []):
-                if message.get("channel") == "discord" and message.get("status") == "delivered" and not message_answered(message, action["replies"]):
-                    step_ = internal_followup(action, message)
-                    person = people.get(step_.get("person")) or step_.get("person")  # a role name means its holder
-                    if person and person not in asked:
-                        question = step_["text"].split(": ", 1)[-1]
-                        conflict = (delivery or {}).get("conflict")
-                        # A question asked before the supplier disputed the order rests on facts that no longer hold.
-                        stale = bool(conflict and (rules.ts(message.get("sent_at")) or now_ts()) < (rules.ts(conflict["at"]) or now_ts()))
-                        asked[person] = step(f"Answer from {person}", "superseded" if stale else "waiting",
-                                             (f"Replaced after {conflict['who']}'s {_clock(rules.ts(conflict['at']))} reply disputed the order. Earlier question: "
-                                              if stale else "") + question[:1].upper() + question[1:] +
-                                             f" Asked {_clock(rules.ts(message.get('sent_at')))}.") | {
-                            "person": person, "message_id": None if stale else step_.get("message_id"),
-                            "question": step_.get("question"), "answer_by": None if stale else step_.get("answer_by"),
-                            "since": message.get("sent_at"), "options": None if stale else step_.get("options"),
-                            "superseded_message_id": step_.get("message_id") if stale else None}
-    if (conflict := (delivery or {}).get("conflict")) and delivery.get("action_id"):
-        owner = conflict.get("owner_reconcile") or "the buyer"
-        asked[f"task:{owner}"] = step(f"Task for {owner}", "waiting",
-                                      f"Reconcile the order and its dispatch instruction with {conflict['who']}, then record the outcome.") | {
-            "person": owner, "message_id": question_id(delivery["action_id"], conflict.get("message_id")), "since": conflict["at"],
-            "question": f"{conflict['who']} wrote at {_clock(rules.ts(conflict['at']))}: \"{conflict['text']}.\" "
-                        f"Confirm with the supplier whether the order and the dispatch instruction stand, and record what was agreed.",
-            "options": [{"answer": "The order stands; I confirmed the dispatch instruction with the supplier in writing.", "label": "Order stands, dispatch confirmed"},
-                        {"answer": "The order is cancelled; do not ship.", "label": "Cancel the order"}],
-            "task": True}
-    unique = steps + list(asked.values())
+    task = delivery.get("task")
+    reminders = questions.reminders() if related else {}
+    asked, history = {}, []
+    for action in sorted(related, key=lambda a: a.get("updated_at") or "", reverse=True):
+        if action["kind"] not in {"ask", "escalate"}:
+            continue
+        for message in action["messages"]:
+            if message["channel"] != "discord" or message["status"] != "delivered":
+                continue
+            person = questions.person(message["to_name"])
+            when = _clock(rules.ts(message["sent_at"]))
+            if task_id := reminders.get(message["id"]):
+                history.append(step(f"Reminder to {person}", "superseded",
+                                    f"Reminder of task {task_id}. Sent {when}.") | {
+                    "person": person, "question": message["body"], "since": message["sent_at"],
+                    "superseded_message_id": message["id"], "reminder_of": task_id})
+            elif person not in asked and not message_answered(message, action["replies"]):
+                pending = internal_followup(action, message)
+                asked[person] = step(f"Answer from {person}", "waiting",
+                                     f"{pending['text']} Asked {when}.") | {
+                    key: pending.get(key) for key in ("message_id", "question", "answer_by", "since", "options")} | {"person": person}
+    if task:
+        owner = task["person"]
+        opened = task["status"] == "open"
+        steps.append(step(f"Task for {owner}", "waiting" if opened else "answered",
+                          "Reconcile the order and its dispatch instruction with the supplier, then record the outcome."
+                          if opened else _awaiting_task_evidence(task)) | {
+            "task": task, "person": owner, "since": delivery["task_created_at"],
+            "message_id": task["id"] if opened else None, "question": task["text"] if opened else None,
+            "options": [
+                {"answer": questions.ORDER_STANDS, "label": "Record: order stands and dispatch instruction confirmed in writing"},
+                {"answer": questions.CANCEL_ORDER, "label": "Record: cancel the order"},
+            ] if opened else []})
+    unique = steps + list(asked.values()) + history
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
     return unique
+
+
+def _awaiting_task_evidence(task):
+    at = _clock(rules.ts(task["answered_at"]))
+    return f"Answered by {task['person']} at {at} — waiting for supplier confirmation and logistics evidence."
 
 
 def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
@@ -603,7 +601,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         valid_day = dt.date.fromisoformat(valid[:10]) if valid else None
     except ValueError:
         valid_day = None
-    from core import release
+    from core import questions, release
 
     orders = [actions.get(a["id"]) for a in related if a["kind"] == "order"
               and a["status"] not in {"expired", "superseded", "rejected"}]
@@ -619,7 +617,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     requested_by = rules.ts(release.delivery_terms(order).get("deliver_by")) if order else None
     depart_requested = requested_by - dt.timedelta(hours=drive) if requested_by and drive is not None else None
     depart_cutoff = cutoff - dt.timedelta(hours=drive) if drive is not None else None
-    delivery = release.delivery_state(order, depart_for_requested=depart_requested, now=now) if order else {}
+    delivery = questions.order_state(order, depart_for_requested=depart_requested, now=now) if order else {}
     expired = now >= cutoff or (not released and ((latest_release and now > latest_release) or (valid_day and now.date() > valid_day)))
     timing = "expired" if expired else "released" if released else "open" if latest_release else "unknown"
     origin = (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1]
@@ -632,16 +630,28 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
                   and reply["from_addr"].casefold() in addresses
                   and (received := rules.ts(reply["received_at"])) and received <= now),
                  key=lambda reply: rules.ts(reply["received_at"]), default=None)
-    modeled_unload, modeled_basis = None, None
-    if load is not None and drive is not None:
-        anchor = (rules.ts(active["received_at"]) if active else now).astimezone(rules.timezone())
-        modeled_unload = anchor + dt.timedelta(hours=load + drive)
-        start = f"the latest reply at {anchor:%H:%M}" if active else f"now ({anchor:%H:%M})"
-        modeled_basis = f"If loading takes {load:g} h from {start} plus {drive:g} h drive"
     conflict = delivery.get("conflict")
+    modeled_unload = modeled_basis = anchor = anchor_reply_id = late = None
+    if load is not None and drive is not None:
+        if conflict:
+            anchor = rules.ts(conflict["at"])
+            anchor_reply_id = conflict["message_id"]
+            basis = "the dispute reply"
+        elif active:
+            anchor = rules.ts(active["received_at"])
+            anchor_reply_id = active["id"]
+            basis = "the latest supplier reply"
+        else:
+            anchor = now
+            basis = "now"
+        anchor = anchor.astimezone(rules.timezone())
+        modeled_unload = (anchor.astimezone(dt.timezone.utc) + dt.timedelta(hours=load + drive)).astimezone(rules.timezone())
+        seconds_late = (modeled_unload.astimezone(dt.timezone.utc) - cutoff.astimezone(dt.timezone.utc)).total_seconds()
+        late = max(0, round(seconds_late / 60))
+        modeled_basis = f"If loading takes {load:g} h from {basis} at {anchor:%H:%M} plus {drive:g} h drive"
     if conflict:
         timing = "disputed"
-        if modeled_unload and modeled_unload > cutoff:
+        if modeled_unload and seconds_late > 0:
             delivery["revised_reason"] += f" Modeled unload at {modeled_unload:%H:%M} misses the {cutoff:%H:%M} receiving cutoff."
     elif delivery.get("needs_revised_terms"):
         delivery["pending_revision_action_id"] = pending_revision["id"] if pending_revision else None
@@ -662,17 +672,23 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     sources = [evidence(offer["_path"].rsplit("/", 1)[-1], offer.get("summary") or "Supplier offer")]
     if price_source:
         sources.append(evidence(price_source.rsplit("/", 1)[-1], "The offer points to Annex A; estimate uses the latest EUR purchase-order unit price."))
-    if claim := next((row for row in reversed(delivery.get("claims", [])) if row["kind"] != "note"), None):
+    if claim := next((row for row in reversed(delivery.get("claims", [])) if row["kind"] not in {"estimate", "note"}), None):
         sources.insert(0, evidence(f"Supplier reply from {claim['who']}", claim["text"]) | {"message_id": claim["message_id"]})
     elif active and active["summary_en"]:
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
     steps = offer_steps(related, supplier, quantity, offer, expired, order, delivery)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
-    logged = action_next_step(related, supplier)
-    if conflict:
-        next_action = next_step("Needs you", delivery["revised_reason"], conflict["at"], delivery["action_id"]) | {
-            "urgent": True, "person": conflict["owner_reconcile"], "reply_id": conflict["message_id"]}
+    task = delivery.get("task")
+    reminder_ids = {row["superseded_message_id"] for row in steps if row.get("reminder_of")}
+    logged = action_next_step([a | {"messages": [m for m in a["messages"] if m["id"] not in reminder_ids]}
+                               for a in related], supplier) if not task else None
+    if task:
+        answered = task["status"] == "answered"
+        next_action = next_step("Waiting for reply" if answered else "Needs you",
+                                _awaiting_task_evidence(task) if answered else delivery["revised_reason"],
+                                task["answered_at"] if answered else delivery["task_created_at"], delivery["action_id"]) | {
+            "urgent": True, "person": task["person"], "reply_id": conflict["message_id"], "task": task}
     elif expired:
         next_action = next_step("Stuck", "The rush order window has passed.")
     elif delivery.get("needs_revised_terms"):
@@ -701,8 +717,10 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "departBy": depart_cutoff.isoformat(timespec="minutes") if depart_cutoff else None,
              "requestedBy": requested_by.isoformat(timespec="minutes") if requested_by else None,
              "departForRequested": depart_requested.isoformat(timespec="minutes") if depart_requested else None,
-             "modeledUnloadAt": modeled_unload.isoformat(timespec="minutes") if modeled_unload else None,
-             "modeledUnloadBasis": modeled_basis,
+             "modeledUnloadAt": modeled_unload.isoformat(timespec="seconds") if modeled_unload else None,
+             "modeledUnloadAnchorAt": anchor.isoformat(timespec="seconds") if anchor else None,
+             "modeledUnloadReplyId": anchor_reply_id, "modeledLateMinutes": late, "modeledUnloadBasis": modeled_basis,
+             "task": task,
              "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
              "origin": origin,
              "timingState": timing, "evidence": sources, "assurance": None})  # no unsourced standby-premium example
