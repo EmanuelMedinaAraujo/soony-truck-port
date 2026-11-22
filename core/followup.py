@@ -28,14 +28,16 @@ def last_reviews() -> dict[str, dt.datetime]:
 
 
 def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime | None:
-    """The moment after which following up no longer helps: the offer's last useful order time, else the receiving cutoff."""
-    marks = [cutoff]
-    if part and part.get("option") and str(part.get("default_route_id", "")).startswith("offer-"):
-        option = part["option"]
-        # Before the order: the last useful release time. After it: the time the goods must leave to make the cutoff.
-        marks.append(rules.ts(option.get("departBy") if option.get("releasedAt") else option.get("latestUsefulAt")))
-    marks = [m for m in marks if m]
-    return min(marks) if marks else None
+    """Use the delivery deadline or the cutoff when a revision can still be proposed."""
+    option = (part or {}).get("option")
+    if option and str(part.get("default_route_id", "")).startswith("offer-"):
+        delivery = option.get("deliveryState") or {}
+        if delivery.get("needs_revised_terms") and delivery.get("can_propose_revision"):
+            return cutoff
+        if deliver_by := rules.ts(delivery.get("deliver_by")):
+            return deliver_by
+        return rules.ts(option.get("latestUsefulAt")) or cutoff
+    return cutoff
 
 
 def next_check(component_id: str, step: dict, reviews: dict[str, dt.datetime], now: dt.datetime,
@@ -106,7 +108,8 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
                     "open_steps": [s["name"] + ": " + s["detail"] for s in (route or {}).get("steps", []) if s["state"] != "confirmed"],
                     "waiting_on": step.get("base_text", step["text"]), "state": step["state"], "since": step["since"],
                     "action_id": step["action_id"],
-                    "last_useful_time": deadline.isoformat(timespec="minutes") if deadline else None})
+                    "last_useful_time": deadline.isoformat(timespec="minutes") if deadline else None,
+                    "delivery_state": (part.get("option") or {}).get("deliveryState") if route and route["id"].startswith("offer-") else None})
     out.sort(key=lambda item: (item["component_id"] not in constraints, not item["for_collectors"],
                                item["status"] != "short", item["last_useful_time"] or "9999"))
     return out[: settings()["max_per_cycle"]]
@@ -118,6 +121,16 @@ It is {now}. Items:
 
 How to decide, per part:
 - First call get_action on action_id (if any) and look at the open actions in get_situation, so you do not repeat what is already under way.
+- Rush delivery with delivery_state.needs_revised_terms: if can_propose_revision is false, escalate the missed deadline to the buyer.
+  Otherwise inspect delivery_state.action_id and its delivery_terms. Propose an explicitly approved order amendment with the original action
+  as revises_action_id, the same delivery_id, commercial terms and vehicle_limit_t, and a new deliver_by no later than last_useful_time.
+  Use the same original price as cost_eur for approval. The instruction amends the existing order only. If pending_revision_action_id exists,
+  review that action and continue its open checks. After the proposal, request a new unload slot by email from an authorized receiving contact
+  and request the carrier booking reference, ETA, and gross vehicle rating by email from a listed transport contact when still unverified.
+  Send each as kind 'confirm_terms', with the same delivery_id and confirmation_kind 'dock_slot' or 'book_truck'. Ask for written confirmation
+  of the revised plan and use existing requests when they cover it. Skip the generic reminder and slot rules below for this delivery.
+- Rush delivery with signed conditions still open: use delivery_state.contacts and the same delivery_id for the missing written checks.
+  Ask about the specific missing evidence rather than repeating an unrelated reminder. Use confirmation_kind 'book_truck' or 'dock_slot'.
 - A supplier has not answered: send ONE short reminder to the same contact in their language (kind 'ask', free, goes out at once),
   referring to the earlier message. Give a concrete answer-by time before last_useful_time. If transport is the gap, ask for the carrier's
   booking reference and ETA.

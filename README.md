@@ -44,11 +44,11 @@ For a repeat, reference the original signed and sent action with `repeat_action_
 
 The cycle syncs portal files and polls the supplier mailbox before dispatch. Both checks must have succeeded within `release_max_age_minutes`. A failed refresh or rebuild invalidates that source immediately. An ingest issue tied to the supplier, part, PO or delivery also makes the evidence stale. The gate checks the current supplier, offer, PO line and latest replies.
 
-Send confirmation inquiries with the signed `delivery_id` and the relevant `confirmation_kind` (`book_truck` or `dock_slot`). The carrier or supplier logistics reply must confirm a booking reference and an ETA within the signed deadline. The site lead or deputy must confirm a dock window that covers that ETA. Use an ISO date or weekday and 24-hour times in replies, for example `Carrier confirmed booking WT-123, ETA Sun 10:30` and `Dock slot confirmed for Sun 07:00–12:00`. A clock-only ETA uses the signed delivery date. A clock-only slot uses the carrier's ETA date. Times without a zone use the configured site timezone.
+Send confirmation inquiries with the signed `delivery_id` and the relevant `confirmation_kind` (`book_truck` or `dock_slot`). The carrier or supplier logistics reply must confirm a booking reference and an ETA within the signed deadline. If the signed terms include `vehicle_limit_t`, the same reply must confirm the vehicle's gross weight rating, for example `Gross vehicle weight is 7.5 t.` The site lead or deputy must confirm a dock window that covers that ETA. Use an ISO date or weekday and 24-hour times in replies, for example `Carrier confirmed booking WT-123, ETA Sun 10:30` and `Dock slot confirmed for Sun 07:00–12:00`. A clock-only ETA uses the signed delivery date. A clock-only slot uses the carrier's ETA date. Times without a zone use the configured site timezone.
 
-Set `release_carrier_contacts.value` to a map of delivery IDs to verified carrier email addresses. Use `release_supplier_logistics_contacts.value` to map supplier IDs to verified logistics addresses that can confirm that supplier's deliveries. Each map accepts one address or a list for each key. Dockside takes site contacts from the site lead and deputy roles in `people.value` and matches their addresses in `staff_email.value`.
+Set `release_carrier_contacts.value` to a map of delivery IDs to verified carrier email addresses. Use `release_supplier_logistics_contacts.value` to map supplier IDs to verified logistics addresses that can confirm that supplier's deliveries. Each map accepts one address or a list for each key. Dockside takes site contacts from the site lead and deputy roles in `people.value`. It uses their verified addresses in `staff_email.value` or the configured single-signer Gmail demo routes. The Warta Trans master record contains no email, so the live demo uses Agnieszka Nowak at Karton Nowak for logistics confirmations.
 
-`GET /api/dispatch` exposes the signature digest, matched confirmation evidence, hold reason and the person or team responsible. Expired and superseded decisions have no approval controls.
+The rush option in `GET /api/dispatch` exposes `deliveryState` and `needsRevisedTerms`. The rush trace and follow-up agent use the release gate's verified booking, ETA, unload slot and vehicle rating. A later ETA needs a signed amendment tied to the original order and a new slot that covers the ETA. The receiving cutoff is the outer limit for an amendment. The original deadline stays in effect until the amendment goes out.
 
 Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins under `staff_accounts.value`, Discord user IDs under `staff_discord_accounts.value`, and separately controlled mailboxes under `staff_email.value`. A joint approval waits for every assigned signer. To enable local demo approval, set `demo_local_operator.value` to one assigned person's name. Paid commitments are delivered by email.
 
@@ -58,7 +58,7 @@ Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins
 .venv/bin/python examples/replay_gate.py
 ```
 
-This offline replay reconstructs the historical rush offer and the 02:07 supplier acceptance in temporary SQLite databases. It uses example email addresses, a fixed launch clock and an in-memory SMTP capture. The buyer signatures, carrier booking and receiving reply are replay inputs. The order keeps its historical emergency reference while the buyer's PO number is outstanding.
+This offline replay reconstructs the historical rush offer and the 02:07 supplier acceptance in temporary SQLite databases. It uses example email addresses, a fixed launch clock and an in-memory SMTP capture. The buyer signatures, carrier booking and receiving reply are replay inputs. The second sequence reconstructs the sent order at 03:20, verifies a post-noon ETA and shows the amendment held until the new unload slot is confirmed. The order keeps its historical emergency reference while the buyer's PO number is outstanding.
 
 ```text
 ACT-F74B32 · Karton Nowak · 8,000 art books · €16,800 DAP Hamburg
@@ -141,6 +141,29 @@ Dockside commitment
 }
 
 02:09 TAMPERED DRAFT (80,000 art books) — HELD — draft quantity disagrees with the commitment
+
+03:20 HISTORICAL ORDER BEFORE CARRIER REPLY
+The ordered 12:00 arrival can no longer be met. A later arrival (latest 16:00 receiving cutoff, leave Poznań by 07:00) needs revised terms with Karton Nowak, a carrier ETA and a new unload slot.
+  Carrier booking [waiting] Awaiting a booking reference from Warta Trans or the supplier's authorized logistics contact.
+  Arrival time [blocked] Awaiting a verified carrier ETA. Ordered arrival Sun 12:00. The ordered 12:00 arrival can no longer be met. A later arrival (latest 16:00 receiving cutoff, leave Poznań by 07:00) needs revised terms with Karton Nowak, a carrier ETA and a new unload slot.
+  Unload slot [waiting] Sun 07:00–12:00 confirmed by Katrin Jansen · Sun 00:14. Slot window is awaiting a confirmed carrier ETA.
+  Vehicle [waiting] Awaiting carrier confirmation that the vehicle is rated ≤7.5 t gross.
+  needsRevisedTerms=true
+
+03:21 AUTHORIZED CARRIER REPLY
+  Carrier booking [confirmed] Booking WT-123 confirmed by bookings@warta-trans.example · Sun 03:21.
+  Arrival time [blocked] ETA Sun 14:30 from bookings@warta-trans.example · Sun 03:21. Ordered arrival Sun 12:00. Verified ETA Sun 14:30 is after the ordered 12:00 arrival. A later arrival (latest 16:00 receiving cutoff, leave Poznań by 07:00) needs revised terms with Karton Nowak, a carrier ETA and a new unload slot.
+  Unload slot [blocked] Sun 07:00–12:00 confirmed by Katrin Jansen · Sun 00:14. Slot window does not cover the confirmed carrier ETA.
+  Vehicle [confirmed] Rated 7.5 t gross, confirmed by bookings@warta-trans.example · Sun 03:21. Order limit ≤7.5 t.
+  needsRevisedTerms=true
+03:21 AMENDMENT SIGNED — HELD — required condition missing: dock slot confirmed (no linked reply from an authorized contact)
+
+03:22 REVISED TERMS RELEASED — existing order, deliver by Sun 15:00
+  Carrier booking [confirmed] Booking WT-123 confirmed by bookings@warta-trans.example · Sun 03:21.
+  Arrival time [confirmed] ETA Sun 14:30 from bookings@warta-trans.example · Sun 03:21. Ordered arrival Sun 15:00.
+  Unload slot [confirmed] Sun 14:00–15:00 confirmed by Katrin Jansen · Sun 03:22.
+  Vehicle [confirmed] Rated 7.5 t gross, confirmed by bookings@warta-trans.example · Sun 03:21. Order limit ≤7.5 t.
+  needsRevisedTerms=false
 ```
 
 ## Second customer in a day

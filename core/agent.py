@@ -82,12 +82,13 @@ TOOLS = [
                          "description": "Evidenced terms for any shipment instruction. Supply either a PO number and line or an emergency reference. Use null for unknown fields.",
                          "required": ["supplier_id", "part", "quantity", "unit_price", "total_price", "currency", "incoterm",
                                       "delivery_place", "po", "po_line", "emergency_reference", "deliver_by", "valid_until",
-                                      "latest_useful_at", "conditions"],
+                                      "latest_useful_at", "conditions", "revises_action_id", "vehicle_limit_t"],
                          "properties": {"supplier_id": NULLSTR, "part": NULLSTR, "quantity": NULLNUM,
                                         "unit_price": NULLNUM, "total_price": NULLNUM, "currency": NULLSTR, "incoterm": NULLSTR,
                                         "delivery_place": NULLSTR, "po": NULLSTR, "po_line": {"type": ["integer", "null"]},
                                         "emergency_reference": NULLSTR, "deliver_by": NULLSTR,
                                         "valid_until": NULLSTR, "latest_useful_at": NULLSTR,
+                                        "revises_action_id": NULLSTR, "vehicle_limit_t": NULLNUM,
                                         "conditions": {"type": "array", "items": {"type": "string", "enum":
                                                        ["transport_confirmed", "dock_slot_confirmed"]}}}},
           "cost_eur": {"type": "number"}, "eur_protected": {"type": "number"}, "ce_copies": {"type": "integer"},
@@ -171,7 +172,13 @@ class Tools:
         return s
 
     def get_action(self, action_id):
-        return actions.get(action_id) or {"error": f"unknown action {action_id}"}
+        from core import release
+        action = actions.get(action_id)
+        if not action:
+            return {"error": f"unknown action {action_id}"}
+        if action["kind"] == "order" and (terms := release.delivery_terms(action)):
+            action["delivery_terms"] = terms
+        return action
 
     def get_chaser_cases(self, supplier_id=None, po_number=None):
         cases, status = chaser.cases(supplier_id=supplier_id, po_number=po_number, active_only=True)
@@ -243,11 +250,26 @@ class Tools:
         order_refs = (po for message in messages for po in message.get("po_numbers", ()))
         if reason := rules.shipment_commitment_blocker(origin["finding_id"] if origin else finding_id, kind, order_refs):
             return {"error": reason}
+        amendment = (commitment or {}).get("revises_action_id")
+        if amendment:
+            original = actions.get(amendment)
+            original_terms = release.delivery_terms(original) if original else None
+            if (kind != "order" or not original_terms or not release.sent_order_message(original)
+                    or delivery_id != original_terms["delivery_id"]):
+                return {"error": "An amendment needs the original sent order and its delivery ID."}
+            if any((release.terms_for(a) or {}).get("revises_action_id") == amendment for a in
+                   actions.list_actions(("proposed", "approved", "scheduled", "escalated", "sent", "done"))):
+                return {"error": "An amendment for this original order already exists."}
         existing = actions.open_action_for(finding_id, kind)
+        if kind == "confirm_terms" and delivery_id and confirmation_kind:
+            existing = next((a for a in actions.list_actions(("auto", "proposed", "approved", "sent", "done"))
+                             if a["finding_id"] == finding_id and a["kind"] == kind
+                             and a["payload"].get("delivery_id") == delivery_id
+                             and a["payload"].get("confirmation_kind") == confirmation_kind), None)
         if existing:
             return {"error": f"{existing['id']} already open for {finding_id} ({kind})", "action": existing["title"]}
         twin = actions.open_commitment(kind, finding_id, [m.get("to_address") or m.get("to_name") for m in messages])
-        if twin and not repeat_action_id:
+        if twin and not (repeat_action_id or amendment):
             return {"error": f"{twin['id']} already commits this ({twin['status']}): {twin['title']}. "
                              "A second paid commitment would double it; follow up on that one instead."}
         if any(m["channel"] == "email" for m in messages):
@@ -256,8 +278,14 @@ class Tools:
                 for supplier, address in c.execute("SELECT supplier_id,contact_email FROM suppliers"):
                     if address:
                         recipients.setdefault(address.casefold(), set()).add(supplier)
-            if any(m["channel"] == "email" and (m["to_address"] or "").casefold() not in recipients for m in messages):
-                return {"error": "Use a supplier contact_email from the supplier table for each email."}
+            allowed = set(recipients)
+            if kind == "confirm_terms" and delivery_id and confirmation_kind and cost_eur == 0 and not commitment:
+                condition = next((key for key, (k, _) in release.CONDITIONS.items() if k == confirmation_kind), None)
+                for action in actions.list_actions(("proposed", "approved", "sent", "done", "scheduled", "escalated")):
+                    if action["kind"] == "order" and (terms := release.delivery_terms(action)) and terms["delivery_id"] == delivery_id:
+                        allowed.update(release._confirmation_contacts(terms).get(condition, {}))
+            if any(m["channel"] == "email" and (m["to_address"] or "").casefold() not in allowed for m in messages):
+                return {"error": "Use the supplier contact or an authorized contact for this delivery check."}
             active_cases, _ = chaser.cases(include_messages=False, active_only=True)
             remaining, duplicates = [], set()
             for message in messages:

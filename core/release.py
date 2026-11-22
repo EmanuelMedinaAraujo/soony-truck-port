@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import unicodedata
@@ -101,6 +102,15 @@ TOTAL_PRICE = re.compile(rf"\b(?:total price|gesamtpreis|cena całkowita)\s*[:=]
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}")
 INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"}
 TERMS_VERSION = 1
+HISTORICAL_DEADLINE = re.compile(
+    rf"\b(?:Sunday|niedzielę)\s+(\d{{1,2}})\s+(November|listopada)\b[^.!?\n]*?"
+    rf"(?:no later than|najpóźniej do(?: godziny)?)\s+({CLOCK})", re.I)
+VEHICLE_LIMIT = re.compile(
+    r"(?:maximum permitted gross weight of|dopuszczalnej masie całkowitej maksymalnie)"
+    r"\s*(\d+(?:[.,]\d+)?)\s*(?:t|tonnes?)\b", re.I)
+VEHICLE_RATING = re.compile(
+    r"\b(?:rated(?: at| for)?|(?:maximum |permitted )?gross(?: vehicle)? weight|GVW|MAM|DMC)"
+    r"(?:\s+(?:of|is))?\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*(?:t|tonnes?)\b", re.I)
 
 
 def _normalized(value: str | None) -> str:
@@ -161,6 +171,16 @@ def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
     subject = f"{'Repeat · ' if repeat else ''}{verb} · {key}"
     opening = (f"Repeat of {key}. Carry out the existing instruction below. Do not create an additional order or booking."
                if repeat else f"{verb} according to these terms.")
+    if original := terms.get("revises_action_id"):
+        subject = f"Amend delivery terms only · {original}"
+        opening = (f"Amend delivery terms for existing instruction {original}. "
+                   "Keep the existing quantity and prices. Do not create another order or booking.")
+        amendment = {
+            "de": f"Nur Lieferbedingungen der bestehenden Bestellung {original} ändern. Keine zusätzliche Bestellung oder Buchung anlegen.",
+            "pl": f"Zmiana wyłącznie warunków dostawy dla istniejącego zamówienia {original}. Nie tworzyć dodatkowego zamówienia ani rezerwacji.",
+        }.get(terms["language"])
+        return (f"{amendment} · {subject}" if amendment else subject,
+                "\n".join(line for line in (amendment, opening, "", terms_block(terms)) if line is not None))
     if local := LOCAL_INSTRUCTIONS.get(terms["language"]):
         verb_local = local[terms["instruction"]]
         subject = f"{verb_local} · {subject}"
@@ -170,9 +190,24 @@ def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
 
 def setting(key, default):
     try:
-        return rules.cfg(key)
+        value = rules.cfg(key)
     except KeyError:
         return default
+    if key == "staff_accounts":
+        return {address: name for account, name in value.items()
+                if (address := demo_staff_address(name) if account.startswith("+") else account)}
+    return value
+
+
+def demo_staff_address(name):
+    if not setting("demo_approval_aliases", False):
+        return None
+    _, sender = parseaddr(os.environ.get("MAIL_FROM", ""))
+    local, _, domain = sender.rpartition("@")
+    tag = ".".join(re.findall(r"[a-z0-9]+", name.casefold()))
+    if local and tag and domain.casefold() in {"gmail.com", "googlemail.com"}:
+        return f"{local.split('+', 1)[0]}+{tag}@{domain}"
+    return None
 
 
 def record_check(source: str, *, valid: bool = True) -> None:
@@ -282,7 +317,8 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
                         if price is not None:
                             currency = "EUR"
                     valid = valid or offer.get("valid_until")
-                    latest = latest or _latest_offer_release(offer)
+                    if not saved.get("revises_action_id"):
+                        latest = latest or _latest_offer_release(offer)
         except (sqlite3.Error, ValueError, TypeError):
             pass
     if total is None and isinstance(price, (float, int)) and isinstance(quantity, (float, int)):
@@ -292,13 +328,18 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
     scope = (instruction, supplier or addresses, part, po or emergency or finding, po_line)
     key = "COM-" + hashlib.sha256(json.dumps(scope).encode()).hexdigest()[:20].upper()
     delivery_id = saved.get("delivery_id") or payload.get("delivery_id") or key
-    return {"version": TERMS_VERSION, "commitment_id": key, "instruction": instruction, "delivery_id": delivery_id,
+    terms = {"version": TERMS_VERSION, "commitment_id": key, "instruction": instruction, "delivery_id": delivery_id,
             "supplier_id": supplier, "recipient": addresses[0] if len(addresses) == 1 else None,
             "language": language if language in LOCAL_INSTRUCTIONS else "en",
             "part": part, "quantity": quantity, "unit_price": price, "total_price": total,
             "currency": currency, "incoterm": incoterm, "delivery_place": place, "po": po, "po_line": po_line,
             "emergency_reference": emergency, "deliver_by": deliver_by, "valid_until": valid,
-            "latest_useful_at": latest, "conditions": sorted(conditions)}
+            "latest_useful_at": None if saved.get("revises_action_id") else latest, "conditions": sorted(conditions)}
+    if saved.get("vehicle_limit_t") is not None:
+        terms["vehicle_limit_t"] = saved["vehicle_limit_t"]
+    if saved.get("revises_action_id") is not None:
+        terms["revises_action_id"] = saved["revises_action_id"]
+    return terms
 
 
 def delivery_reference(delivery_id: str) -> str | None:
@@ -362,6 +403,13 @@ def proposal_blocker(action: dict) -> str | None:
                 or not terms["deliver_by"] or not terms["valid_until"]):
             return "complete the supplier, part, currency, Incoterm, delivery place, deliver-by and expiry"
         rules.ts(terms["deliver_by"])
+        limit = terms.get("vehicle_limit_t")
+        if limit is not None and (type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0
+                                  or "transport_confirmed" not in terms["conditions"]):
+            return "a positive gross vehicle weight limit requires carrier confirmation"
+        if "revises_action_id" in terms and (terms["instruction"] != "order"
+                or not re.fullmatch(r"ACT-[A-Z0-9]+", terms["revises_action_id"])):
+            return "a delivery amendment needs the original order action ID"
         po, line, emergency = (terms.get(key) for key in ("po", "po_line", "emergency_reference"))
         if po:
             valid_ref = isinstance(po, str) and REF.fullmatch(po) and type(line) is int and line > 0 and not emergency
@@ -429,11 +477,11 @@ def _confirmation_contacts(terms):
     carriers += _values(setting("release_supplier_logistics_contacts", {}).get(terms["supplier_id"]))
     site_aliases = [rules.setting("site"), setting("site_name", ""), *setting("site_aliases", [])]
     dock = {}
-    if terms["delivery_place"].strip().casefold() in {alias.casefold() for alias in site_aliases}:
+    if (terms.get("delivery_place") or "").strip().casefold() in {alias.casefold() for alias in site_aliases}:
         people, emails = setting("people", {}), setting("staff_email", {})
         for role in SITE_ROLES:
             name = people.get(role)
-            if address := emails.get(name):
+            if name and (address := emails.get(name) or demo_staff_address(name)):
                 dock[address.casefold()] = name
     return {"transport_confirmed": {address.casefold(): address for address in carriers}, "dock_slot_confirmed": dock}
 
@@ -475,8 +523,9 @@ def _affirmed(condition, text):
     return re.search(rf"\b(?:{pattern})\b", text, re.I)
 
 
-def _confirmation_details(condition, reply, contact, deadline, eta, created):
-    details = {"reply_id": reply["id"], "contact": contact, "address": reply["from_addr"]}
+def _confirmation_details(condition, reply, contact, deadline, eta, created, vehicle_limit, now):
+    details = {"reply_id": reply["id"], "contact": contact, "address": reply["from_addr"],
+               "received_at": reply["received_at"]}
     if not reply["handled"]:
         return details, "reply needs review"
     body = _normalized(inbox._strip_quote(reply["body"] or ""))
@@ -499,10 +548,17 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created):
             if arrived:
                 arrival = _appointment(*arrived, deadline)
                 details["eta"] = arrival.isoformat()
-                if not max(created, rules.now()) <= arrival <= deadline:
+                details["eta_expired"] = arrival < max(created, now)
+                if details["eta_expired"] or arrival > deadline:
                     missing.append("ETA is outside the signed delivery deadline or has passed")
             else:
                 missing.append("ETA missing or ambiguous")
+            if vehicle_limit is not None:
+                ratings = {float(m[1].replace(",", ".")) for m in VEHICLE_RATING.finditer(body)}
+                if not ratings or any(not 0 < weight <= vehicle_limit for weight in ratings):
+                    missing.append(f"confirm vehicle gross weight rating at most {vehicle_limit:g} t")
+                else:
+                    details["vehicle_rating_t"] = max(ratings)
             return details, ", ".join(missing) or None
 
         if not (window := _single_match(WINDOW, body, summary, raw_pattern=RAW_WINDOW)):
@@ -523,7 +579,7 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created):
     return details, None
 
 
-def _related_replies(log, action, terms):
+def _related_replies(log, action, terms, now):
     inbox.init_schema(log)
     delivery_id = terms["delivery_id"]
     signed_conditions = set(terms["conditions"])
@@ -533,19 +589,23 @@ def _related_replies(log, action, terms):
     review = None
     created = rules.ts(action["created_at"])
     for reply in log.execute("SELECT * FROM replies WHERE simulated=0 ORDER BY julianday(received_at), rowid"):
+        received = rules.ts(reply["received_at"])
+        if not received or received > now:
+            continue
         sender = (reply["from_addr"] or "").casefold()
         condition = _linked_condition(log, reply, delivery_id, sender) if conditions else None
         authorized = condition in contacts and sender in contacts[condition]
         if condition in conditions:
-            if authorized:
+            if authorized and (condition != "dock_slot_confirmed" or not terms.get("revises_action_id")
+                               or received >= created):
                 eligible[condition] = (reply, contacts[condition][sender])
-            else:
+            elif not authorized:
                 unauthorized.add(condition)
         if sender != terms["recipient"]:
             continue
         if not reply["handled"]:
             review = "an unread supplier reply needs review"
-        elif not review and rules.ts(reply["received_at"]) >= created:
+        elif not review and received >= created:
             logistics_only = (authorized and condition == "transport_confirmed"
                               and _affirmed(condition, reply["body"] or "")
                               and not _body_blocker(terms, {"body": reply["body"]})
@@ -562,12 +622,12 @@ def _related_replies(log, action, terms):
         if condition in eligible:
             details, reason = _confirmation_details(condition, *eligible[condition],
                                                     rules.ts(terms["deliver_by"]).astimezone(rules.timezone()),
-                                                    eta, created)
+                                                    eta, created, terms.get("vehicle_limit_t"), now)
         else:
             details, reason = {}, ("reply sender is not authorized for this delivery" if condition in unauthorized
                                    else "no linked reply from an authorized contact")
         matches[condition] = {**details, "confirmed": reason is None, "reason": reason}
-        if reason is None and condition == "transport_confirmed":
+        if condition == "transport_confirmed" and details.get("eta") and not details.get("eta_expired"):
             eta = rules.ts(details["eta"])
     if set(setting("release_conditions", {}).get(terms["instruction"], [])) - signed_conditions:
         review = "required release conditions changed since approval"
@@ -613,15 +673,116 @@ def confirmation_summary(matches):
     return lines
 
 
-def preview_confirmations(action):
-    terms = terms_for(action)
-    if not terms or not terms.get("conditions") or proposal_blocker(action):
-        return {}
+def sent_order_message(action):
+    return next((message for message in action["messages"]
+                 if message["channel"] == "email" and message["status"] in {"sent", "delivered"}
+                 and message.get("sent_at")), None)
+
+
+def _historical_terms(action):
+    message = sent_order_message(action) if action["kind"] == "order" else None
+    if not message:
+        return None
+    sent = rules.ts(message["sent_at"]).astimezone(rules.timezone())
+    # These explicit order clauses appear in both the original Polish and its recorded translation.
+    body = "\n".join(_normalized(message.get(field)) for field in ("body", "body_en"))
+    dates = {(int(match[1]), match[3]) for match in HISTORICAL_DEADLINE.finditer(body)}
+    if len(dates) != 1:
+        return None
+    (day, clock), = dates
     try:
-        with actions.tx() as log:
-            return _related_replies(log, action, terms)[1]
-    except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
-        return {}
+        deadline = _appointment(f"{sent.year}-11-{day:02d}", clock, None, sent)
+    except ValueError:
+        return None
+    if deadline.date() < sent.date() or deadline.weekday() != 6:
+        return None
+    limits = {float(match[1].replace(",", ".")) for match in VEHICLE_LIMIT.finditer(body)}
+    if len(limits) > 1:
+        return None
+    translated = _normalized(message.get("body_en"))
+    quantity = re.search(r"\b([\d ,]+) (?:finished )?art books\b", translated, re.I)
+    total = re.search(r"\btotal price of EUR ([\d ,]+)\b", translated, re.I)
+    qty, cost = (int(re.sub(r"\D", "", match[1])) if match else None for match in (quantity, total))
+    commercial = re.search(r"\b(DAP) (?:DC )?(Hamburg)\b", body, re.I)
+    terms = describe(action)
+    return {**terms, "delivery_id": action["id"], "emergency_reference": action["id"],
+            "deliver_by": deadline.isoformat(), "vehicle_limit_t": next(iter(limits), None),
+            "quantity": qty, "total_price": cost, "unit_price": round(cost / qty, 2) if cost is not None and qty else None,
+            "currency": "EUR" if cost is not None else None, "incoterm": commercial[1].upper() if commercial else None,
+            "delivery_place": commercial[2].title() if commercial else None,
+            "conditions": sorted(set(terms["conditions"]) | {"transport_confirmed", "dock_slot_confirmed"})}
+
+
+def delivery_terms(action):
+    """Use typed terms when available, otherwise the evidence in the sent order."""
+    return terms_for(action) or _historical_terms(action)
+
+
+def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
+    """The gate and cockpit share the same reply evidence and delivery constraints."""
+    now = now or rules.now()
+    terms = delivery_terms(action)
+    matches, review = {}, None
+    if terms and terms.get("deliver_by"):
+        try:
+            if log is None:
+                with actions.tx() as db:
+                    review, matches = _related_replies(db, action, terms, now)
+            else:
+                review, matches = _related_replies(log, action, terms, now)
+        except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
+            review = "evidence stale or unreadable"
+    terms = terms or {}
+    transport = matches.get("transport_confirmed", {})
+    dock = matches.get("dock_slot_confirmed", {})
+    deadline = rules.ts(terms.get("deliver_by"))
+    eta = rules.ts(transport.get("eta"))
+    limit = terms.get("vehicle_limit_t")
+    revised_reason = None
+    if eta and deadline and eta > deadline:
+        revised_reason = f"Verified ETA {eta:%a %H:%M} is after the ordered {deadline:%H:%M} arrival."
+    elif deadline and (now >= deadline or (depart_for_requested and now > depart_for_requested)) and (not eta or eta < now):
+        revised_reason = f"The ordered {deadline:%H:%M} arrival can no longer be met."
+    hold_reason = review or _confirmation_blocker(matches)
+    saved_hold = (action.get("payload") or {}).get("held_reason")
+    if log is None and not hold_reason and saved_hold and not saved_hold.startswith("required condition missing"):
+        hold_reason = saved_hold
+    return {
+        "action_id": action["id"], "delivery_id": terms.get("delivery_id"), "deliver_by": terms.get("deliver_by"),
+        "revises_action_id": terms.get("revises_action_id"),
+        "terms_source": ("signed_terms" if _signed(action, fingerprint(terms)) else "proposed_terms") if terms_for(action)
+                        else "sent_order" if terms else None,
+        "booking_ref": transport.get("booking_reference"), "eta": transport.get("eta"),
+        "eta_source": transport.get("contact") if eta else None, "transport_confirmed": bool(transport.get("confirmed")),
+        "slot_window": {"start": dock["slot_start"], "end": dock["slot_end"]} if dock.get("slot_end") else None,
+        "slot_confirmed": bool(dock.get("confirmed")),
+        "slot_confirmed_by": dock.get("contact") if dock.get("slot_end") else None,
+        "vehicle_limit": limit, "vehicle_rating": transport.get("vehicle_rating_t"),
+        "vehicle_ok": (transport.get("vehicle_rating_t") is not None) if limit is not None else None,
+        "hold_reason": hold_reason,
+        "needs_revised_terms": bool(revised_reason), "revised_reason": revised_reason,
+        "confirmation_evidence": matches, "contacts": _confirmation_contacts(terms) if terms else {},
+    }
+
+
+def _amendment_blocker(log, terms):
+    original = actions._get(log, terms["revises_action_id"])
+    prior = delivery_terms(original) if original and sent_order_message(original) else None
+    if not prior or (terms_for(original) and not _signed(original, fingerprint(prior))):
+        return "amendment needs the original sent order"
+    preserved = ("instruction", "delivery_id", "supplier_id", "recipient", "part", "quantity", "unit_price",
+                 "total_price", "currency", "incoterm", "delivery_place", "po", "po_line", "emergency_reference",
+                 "vehicle_limit_t")
+    if any(terms.get(field) != prior.get(field) for field in preserved) or set(prior["conditions"]) - set(terms["conditions"]):
+        return "delivery amendment must preserve the original order and vehicle requirement"
+    cutoff = rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
+    if not rules.ts(prior["deliver_by"]) < rules.ts(terms["deliver_by"]) <= cutoff:
+        return "amended delivery deadline must follow the original deadline and meet the receiving cutoff"
+    return None
+
+
+def preview_confirmations(action):
+    return delivery_state(action)["confirmation_evidence"]
 
 
 def _confirmation_blocker(matches):
@@ -719,7 +880,7 @@ def _file_blocker(action: dict, terms: dict) -> str | None:
                 return f"supplier offer disagrees on price: {Path(offer['_path']).name}"
             if offer.get("po_number") and po and offer["po_number"] not in po:
                 return "supplier offer disagrees on PO"
-            if _expired({"valid_until": offer.get("valid_until"), "latest_useful_at": _latest_offer_release(offer)}):
+            if _expired({"valid_until": offer.get("valid_until"), "latest_useful_at": None if terms.get("revises_action_id") else _latest_offer_release(offer)}):
                 return "supplier offer or latest useful release time has expired"
         for kind in ("supplier_hold", "delivery_promise", "shipping_advice", "receipt_correction", "commercial_term"):
             for fact in rules.facts(db, kind):
@@ -764,6 +925,10 @@ def _duplicate(log, action, terms) -> str | None:
         if not prior_kind:
             continue
         prior = prior or describe(other)
+        if terms.get("revises_action_id"):
+            if prior.get("revises_action_id") == terms["revises_action_id"]:
+                return other["id"]
+            continue
         if (prior.get("commitment_id") or prior.get("key")) == terms["commitment_id"]:
             return other["id"]
         if prior.get("part") != terms["part"] or prior.get("supplier_id") != terms["supplier_id"]:
@@ -803,6 +968,8 @@ def check(action: dict) -> tuple[bool, str | None]:
                 if action["status"] not in {"auto", "sent"} or not _authorized_repeat(log, action, terms):
                     return False, "repeat needs the exact terms of an explicitly approved and sent commitment"
             else:
+                if terms.get("revises_action_id") and (reason := _amendment_blocker(log, terms)):
+                    return False, reason
                 if other := _duplicate(log, action, terms):
                     return False, f"duplicate of {other}; the commitment already went out or delivery is unconfirmed"
                 if action["status"] not in {"approved", "sent"} or not _signed(action, fingerprint(terms)):
@@ -812,11 +979,12 @@ def check(action: dict) -> tuple[bool, str | None]:
             file_blocker = _file_blocker(action, terms)
             if file_blocker and file_blocker.startswith("evidence stale"):
                 return False, file_blocker
-            review, matches = _related_replies(log, action, terms)
+            state = delivery_state(action, log=log)
+            matches = state["confirmation_evidence"]
             if matches and matches != action["payload"].get("confirmation_evidence"):
                 log.execute("UPDATE actions SET payload=json_set(payload,'$.confirmation_evidence',json(?)) WHERE id=?",
                             (json.dumps(matches), action["id"]))
-            reason = review or _confirmation_blocker(matches) or file_blocker
+            reason = state["hold_reason"] or file_blocker
             return reason is None, reason
     except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
         return False, "evidence stale or unreadable"

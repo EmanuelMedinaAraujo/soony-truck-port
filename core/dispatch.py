@@ -444,69 +444,74 @@ def _clock(moment: dt.datetime | None) -> str:
     return f"{moment.astimezone(rules.timezone()):%a %H:%M}" if moment else ""
 
 
-def _requested_arrival(action: dict, cutoff: dt.datetime) -> dt.datetime | None:
-    """The arrival the order or unload-slot request asked for: typed terms first, else the window written in the request."""
-    payload = json.loads(action.get("payload") or "{}")
-    typed = rules.ts(((payload.get("commitment") or {}).get("terms") or payload.get("commitment") or {}).get("deliver_by"))
-    if typed:
-        return typed
-    for message in action.get("messages", []):
-        window = re.search(r"\b(\d{1,2}):(\d{2})\s*(?:to|until|bis|–|-)\s*(\d{1,2}):(\d{2})", message.get("body") or "")
-        if window:
-            day = cutoff.astimezone(rules.timezone())
-            return day.replace(hour=int(window[3]), minute=int(window[4]), second=0, microsecond=0)
-    return None
+def _requested_arrival(delivery: dict) -> dt.datetime | None:
+    return rules.ts(delivery.get("deliver_by"))
 
 
-def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool, cutoff: dt.datetime):
-    """One row per thing that must be true before the goods count: each with its own state and the latest evidence."""
+def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
+                order: dict | None, delivery: dict):
+    """Show which delivery requirements have verified evidence and which are still open."""
     site = rules.cfg("site_name")
-    replies = sorted((r for action in related for r in action["replies"] if not r.get("simulated")),
-                     key=lambda r: r["received_at"] or "")
-    done = [a for a in sorted(related, key=lambda a: a.get("updated_at") or "")
-            if a["status"] in {"sent", "done", "auto", "delivered"}]
-
-    def latest_from(action: dict) -> dict | None:
-        when = rules.ts(action.get("updated_at"))
-        names = {m.get("to_name") for m in action.get("messages", []) if m.get("to_name")}
-        found = [r for r in replies if r.get("summary_en") and (r.get("action_id") == action["id"] or r.get("from_name") in names)
-                 and (not when or (rules.ts(r.get("received_at")) or when) >= when)]
-        return found[-1] if found else None
-
-    def said(reply: dict | None) -> str:
-        if not reply:
-            return ""
-        return f" Latest from {reply['from_name']} ({_clock(rules.ts(reply['received_at']))}): {_first_sentence(reply['summary_en'])}"
-
-    order = next((a for a in reversed(done) if a["kind"] == "order"), None)
-    slot = next((a for a in reversed(done) if a["kind"] == "dock_slot"), None)
-    truck = next((a for a in reversed(done) if a["kind"] == "book_truck"), None)
-    requested_by = next(filter(None, (_requested_arrival(a, cutoff) for a in (order, slot) if a)), None)
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units.")]
-    if order:
-        reply, sent = latest_from(order), _clock(rules.ts(order.get("updated_at")))
+    sent_at = min((m["sent_at"] for m in (order or {}).get("messages", []) if m["channel"] == "email"
+                   and m["status"] in {"sent", "delivered"} and m["sent_at"]), default=None)
+    if sent_at:
+        replies = [r for a in related if a["id"] == order["id"] for r in a["replies"]
+                   if not r.get("simulated") and r["summary_en"] and (r["received_at"] or "") >= sent_at]
+        reply = max(replies, key=lambda r: r["received_at"], default=None)
         accepted = bool(reply and ACCEPTED.search(reply["summary_en"]) and not REFUSED.search(reply["summary_en"]))
-        steps.append(step("Formal order", "confirmed" if accepted else "waiting",
-                          (f"Sent {sent}; {reply['from_name']} accepted it {_clock(rules.ts(reply['received_at']))}." if accepted
-                           else f"Sent {sent}; waiting for {supplier} to confirm it.") + ("" if accepted else said(reply))))
+        label = "Delivery amendment" if delivery.get("revises_action_id") else "Order"
+        detail = f"{label} sent {_clock(rules.ts(sent_at))}."
+        if accepted:
+            detail += f" {reply['from_name']} accepted it {_clock(rules.ts(reply['received_at']))}."
+        elif reply:
+            detail += f" Latest from {reply['from_name']} ({_clock(rules.ts(reply['received_at']))}): {_first_sentence(reply['summary_en'])}"
+        else:
+            detail += f" Waiting for {supplier} to confirm it."
+        steps.append(step("Formal order", "confirmed" if accepted else "waiting", detail))
     else:
-        steps.append(step("Formal order", "pending", "Release the order once transport and receiving conditions are met."))
-    need = f" Needed by {_clock(requested_by)}, at the latest {_clock(cutoff)}." if requested_by else f" Needed by {_clock(cutoff)}."
+        steps.append(step("Formal order", "waiting" if order else "pending",
+                          ("Delivery amendment" if delivery.get("revises_action_id") else "Order") +
+                          " awaits release." if order else "Release the order after transport and receiving are confirmed."))
+
     carrier = (offer.get("transport") or "").split(",")[0].strip() or "the carrier"
-    if truck:
-        steps.append(step("Carrier booking", "waiting", f"Truck requested {_clock(rules.ts(truck.get('updated_at')))}; no booking reference yet." + said(latest_from(truck))))
+    transport = delivery.get("confirmation_evidence", {}).get("transport_confirmed", {})
+    dock = delivery.get("confirmation_evidence", {}).get("dock_slot_confirmed", {})
+
+    def reported(match):
+        return f"{match['contact']} · {_clock(rules.ts(match['received_at']))}"
+
+    waiting = "waiting" if order else "pending"
+    booking = delivery.get("booking_ref")
+    steps.append(step("Carrier booking", "confirmed" if booking else waiting,
+                      f"Booking {booking} confirmed by {reported(transport)}." if booking else
+                      f"Awaiting a booking reference from {carrier} or the supplier's authorized logistics contact."))
+    eta = rules.ts(delivery.get("eta"))
+    requested = _requested_arrival(delivery)
+    needed = f" Ordered arrival {_clock(requested)}." if requested else ""
+    missed = delivery.get("needs_revised_terms")
+    steps.append(step("Arrival time", "blocked" if missed else "confirmed" if eta and not transport.get("eta_expired") else waiting,
+                      (f"ETA {_clock(eta)} from {reported(transport)}." if eta else "Awaiting a verified carrier ETA.") +
+                      needed + (f" {delivery['revised_reason']}" if missed else "")))
+    window = delivery.get("slot_window")
+    if window:
+        detail = f"{_clock(rules.ts(window['start']))}–{rules.ts(window['end']).astimezone(rules.timezone()):%H:%M} confirmed by {reported(dock)}."
+        if not delivery["slot_confirmed"]:
+            reason = dock["reason"]
+            detail += f" {reason[0].upper() + reason[1:]}."
     else:
-        steps.append(step("Carrier booking", "waiting" if order else "pending",
-                          f"{supplier} is booking {carrier}; no booking reference yet." if order else f"{carrier} still has to be booked."))
-    steps.append(step("Arrival time", "waiting" if order else "pending", "No confirmed arrival time yet." + need))
-    if slot:
-        window = re.search(r"\b\d{1,2}:\d{2}\s*(?:to|until|bis|–|-)\s*\d{1,2}:\d{2}", " ".join(m.get("body") or "" for m in slot.get("messages", [])))
-        who = next((m.get("to_name") for m in slot.get("messages", []) if m.get("to_name")), "the site")
-        who = re.split(r"\s+(?:and|\()\s*", who, maxsplit=1)[0]
-        steps.append(step("Unload slot", "waiting", f"Requested{' ' + window[0].replace(' to ', '–') if window else ''} from {who} "
-                          f"{_clock(rules.ts(slot.get('updated_at')))}; not confirmed yet."))
+        detail = (f"Request a new unload window with {site} for the revised arrival." if missed or delivery.get("revises_action_id")
+                  else f"Awaiting confirmation of the unload window from {site}.")
+    slot_state = "confirmed" if delivery.get("slot_confirmed") else "blocked" if window and eta else waiting
+    steps.append(step("Unload slot", slot_state, detail))
+    limit = delivery.get("vehicle_limit")
+    if limit is None:
+        steps.append(step("Vehicle", "pending", "Awaiting any vehicle requirements in the order terms."))
+    elif delivery["vehicle_ok"]:
+        steps.append(step("Vehicle", "confirmed",
+                          f"Rated {delivery['vehicle_rating']:g} t gross, confirmed by {reported(transport)}. Order limit ≤{limit:g} t."))
     else:
-        steps.append(step("Unload slot", "pending", f"Dockside requests the unload slot with {site}; the site lead can move or stop it."))
+        steps.append(step("Vehicle", waiting, f"Awaiting carrier confirmation that the vehicle is rated ≤{limit:g} t gross."))
     people = rules.cfg("people")
     asked = {}
     for action in sorted(related, key=lambda a: a.get("updated_at") or "", reverse=True):  # newest question per person wins
@@ -521,7 +526,7 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                                              f" Asked {_clock(rules.ts(message.get('sent_at')))}.")
     unique = steps + list(asked.values())
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
-    return unique, requested_by
+    return unique
 
 
 def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
@@ -537,12 +542,36 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         valid_day = dt.date.fromisoformat(valid[:10]) if valid else None
     except ValueError:
         valid_day = None
-    # Once the order left in time, the release window no longer matters; only the receiving cutoff does.
-    released = min((rules.ts(a.get("updated_at")) for a in related if a["kind"] == "order" and a["status"] in {"sent", "done"}
-                    and rules.ts(a.get("updated_at"))), default=None)
-    released_in_time = bool(released and (not latest_release or released <= latest_release))
-    expired = now >= cutoff or (not released_in_time and ((latest_release and now > latest_release) or (valid_day and now.date() > valid_day)))
-    timing = "expired" if expired else "released" if released_in_time else "open" if latest_release else "unknown"
+    from core import release
+
+    orders = [actions.get(a["id"]) for a in related if a["kind"] == "order"
+              and a["status"] not in {"expired", "superseded", "rejected"}]
+    orders = [a for a in orders if a and release.delivery_terms(a) and not a["payload"].get("repeat_commitment")]
+    sent = [rules.ts(m["sent_at"]) for a in orders for m in a["messages"]
+            if m["channel"] == "email" and m["status"] in {"sent", "delivered"} and m["sent_at"]]
+    released = min(sent, default=None)
+    pending_revision = max((a for a in orders if release.terms_for(a) and release.terms_for(a).get("revises_action_id")
+                            and not release.sent_order_message(a)), key=lambda a: a["created_at"], default=None)
+    order = max((a for a in orders if not (release.terms_for(a) or {}).get("revises_action_id")
+                 or release.sent_order_message(a)),
+                key=lambda a: (bool(release.sent_order_message(a)), a["created_at"]), default=None)
+    requested_by = rules.ts(release.delivery_terms(order).get("deliver_by")) if order else None
+    depart_requested = requested_by - dt.timedelta(hours=drive) if requested_by and drive is not None else None
+    depart_cutoff = cutoff - dt.timedelta(hours=drive) if drive is not None else None
+    delivery = release.delivery_state(order, depart_for_requested=depart_requested, now=now) if order else {}
+    expired = now >= cutoff or (not released and ((latest_release and now > latest_release) or (valid_day and now.date() > valid_day)))
+    timing = "expired" if expired else "released" if released else "open" if latest_release else "unknown"
+    origin = (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1]
+    if delivery.get("needs_revised_terms"):
+        delivery["pending_revision_action_id"] = pending_revision["id"] if pending_revision else None
+        later = f"A later arrival (latest {cutoff:%H:%M} receiving cutoff"
+        if origin and depart_cutoff:
+            later += f", leave {origin} by {depart_cutoff:%H:%M}"
+        later += f") needs revised terms with {supplier}, a carrier ETA and a new unload slot."
+        delivery["revised_reason"] += " " + later
+        eta = rules.ts(delivery.get("eta"))
+        delivery["can_propose_revision"] = bool(not expired and (
+            eta <= cutoff if eta and eta >= now else depart_cutoff and now <= depart_cutoff))
     active = latest_summary(related)
     priority = rules.cfg("priority_product")
     accounting = rules.cfg("missed_copy_cost_eur")
@@ -555,12 +584,18 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         sources.append(evidence(price_source.rsplit("/", 1)[-1], "The offer points to Annex A; estimate uses the latest EUR purchase-order unit price."))
     if active:
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
-    steps, requested_by = offer_steps(related, supplier, quantity, offer, expired, cutoff)
+    steps = offer_steps(related, supplier, quantity, offer, expired, order, delivery)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)
     if expired:
         next_action = next_step("Stuck", "The rush order window has passed.")
+    elif delivery.get("needs_revised_terms"):
+        next_action = next_step("Stuck", delivery["revised_reason"], action_id=delivery["action_id"])
+    elif delivery.get("hold_reason"):
+        next_action = next_step("Waiting for reply", delivery["hold_reason"], order["updated_at"], order["id"])
+    elif delivery.get("transport_confirmed") and delivery.get("slot_confirmed"):
+        next_action = next_step("Confirmed", "Carrier and receiving confirmed the delivery arrangements.")
     elif logged:
         next_action = logged
     else:
@@ -577,11 +612,12 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "refundsAvoided": avoided, "netIfTimely": round(avoided - cost, 2) if cost is not None else None,
              "nextConstraint": next_constraint, "editionId": target, "validUntil": valid,
              "latestUsefulAt": latest_release.isoformat(timespec="minutes") if latest_release else None,
-             "releasedAt": released.isoformat(timespec="minutes") if released_in_time else None,
-             "departBy": (cutoff - dt.timedelta(hours=drive)).isoformat(timespec="minutes") if drive is not None else None,
+             "releasedAt": released.isoformat(timespec="minutes") if released else None,
+             "departBy": depart_cutoff.isoformat(timespec="minutes") if depart_cutoff else None,
              "requestedBy": requested_by.isoformat(timespec="minutes") if requested_by else None,
-             "departForRequested": (requested_by - dt.timedelta(hours=drive)).isoformat(timespec="minutes") if requested_by and drive is not None else None,
-             "origin": (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1],
+             "departForRequested": depart_requested.isoformat(timespec="minutes") if depart_requested else None,
+             "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
+             "origin": origin,
              "timingState": timing, "evidence": sources,
              "assurance": {"examplePremium": rules.cfg("assurance_example_eur"), "coveredStep": "Transport",
                            "sharedSteps": ["Unload slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})

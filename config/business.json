@@ -124,24 +124,44 @@
     "source": "assumption per mode"
   },
   "staff_accounts": {
-    "value": {},
-    "source": "Deployment roster mapping Tailscale Serve login names to exact names in the approval policy."
+    "value": {
+      "+mei.lin": "Mei Lin",
+      "+paul.winter": "Paul Winter",
+      "+felix.brunner": "Felix Brunner",
+      "+tobias.brandt": "Tobias Brandt",
+      "+sofia.marchetti": "Sofia Marchetti",
+      "+dr.maren.vogt": "Dr. Maren Vogt",
+      "+jonas.lindqvist": "Jonas Lindqvist",
+      "+katrin.jansen": "Katrin Jansen",
+      "+raj.patel": "Raj Patel",
+      "+clara.weiss": "Clara Weiss",
+      "+daniel.okafor": "Daniel Okafor"
+    },
+    "source": "org_chart_v2.pdf names with the demo Gmail plus-address route based on MAIL_FROM. Explicit Tailscale logins can be added when verified."
   },
   "staff_discord_accounts": {
     "value": {},
-    "source": "Deployment roster mapping verified Discord user IDs to exact names in the approval policy."
+    "source": "Discord user IDs for the org chart roster are unknown. Add each verified ID when available."
   },
   "staff_email": {
     "value": {},
-    "source": "Deployment roster mapping assigned approvers to individually controlled mailboxes."
+    "source": "Optional roster of individually controlled mailboxes by staff name. In the demo, use the staff Gmail plus routes."
   },
   "demo_local_operator": {
     "value": null,
     "source": "Set to one assigned staff name for a local demo. Disabled in the default policy."
   },
   "demo_approval_aliases": {
-    "value": false,
+    "value": true,
     "source": "Opt in to the shared Gmail mailbox for single-signer demos only."
+  },
+  "release_carrier_contacts": {
+    "value": {},
+    "source": "soony/master/logistics_providers.csv lists Warta Trans (LSP-04) for road freight without an email address. Use its authorized supplier logistics contact for the demo Art Book shipment."
+  },
+  "release_supplier_logistics_contacts": {
+    "value": {"SUP-0028": "a.nowak.karton-nowak@suppliers.juliansibbing.de"},
+    "source": "SUP-0028_Karton_Nowak/profile.csv lists Agnieszka Nowak, who coordinates Warta Trans with the Karton Nowak logistics team."
   },
   "release_max_age_minutes": {
     "value": 5,
