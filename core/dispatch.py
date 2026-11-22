@@ -390,7 +390,7 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     steps = [step("Supplier release", "blocked" if hold else "confirmed" if moving else "pending",
                   hold or ("Dispatch appears in the shipment record." if moving else "The tracker shows a booking. Dispatch has yet to be confirmed."))]
     if at_port:
-        steps.extend([step("Port arrival", "confirmed", "The container is at the terminal, ready for pickup."),
+        steps.extend([step("Port arrival", "confirmed", "Discharged at the port terminal. Release for pickup is unconfirmed."),
                       step("Truck pickup", "blocked" if review else "pending", hold if review else "A carrier pickup still needs confirmation.")])
     else:
         steps.append(step("Transport", transport, hold or uncertain or "The shipment tracker records this leg."))
