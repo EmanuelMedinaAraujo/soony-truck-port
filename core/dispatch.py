@@ -620,9 +620,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "departForRequested": depart_requested.isoformat(timespec="minutes") if depart_requested else None,
              "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
              "origin": origin,
-             "timingState": timing, "evidence": sources,
-             "assurance": {"examplePremium": rules.cfg("assurance_example_eur"), "coveredStep": "Transport",
-                           "sharedSteps": ["Unload slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
+             "timingState": timing, "evidence": sources, "assurance": None})  # no unsourced standby-premium example
 
 
 def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = True) -> dict:
