@@ -136,7 +136,7 @@ function conflictCard(part, item, snapshot) {
         <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
         <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
-        ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? " (passed, no proof of departure)" : departure.state === "verified" ? ` (left ${html(at(departure.departed_at))}${departure.source_label ? `, ${html(departure.source_label)}` : ""})` : ""}</span>` : ""}</p>
+        ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? ` (passed, ${departure.reason ? html(departure.reason) : "no proof of departure"})` : departure.state === "verified" ? ` (${html(departure.proof_text ?? `left by ${at(departure.departed_at)}`)})` : ""}</span>` : ""}</p>
       <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details></li>`;
 }
 

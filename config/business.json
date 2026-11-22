@@ -12,6 +12,8 @@
     },
     "source": "Short part names and artwork from Lio's deep-dive deck, slides 17–19. Per customer; parts without an entry show their catalog name."
   },
+  "departure_geofence_km": {"value": 5, "source": "Team decision: a carrier position counts as departure only more than 5 km from the origin site."},
+  "release_carrier_feeds": {"value": {"ACT-F74B32": "LSP-04", "ART-BOOKS-20261122": "LSP-04"}, "source": "Carrier position feeds the release gate accepts as departure evidence for a delivery (Warta Trans = LSP-04 in the carrier master)."},
   "site_port": {
     "value": "DEHAM",
     "source": "UN/LOCODE of the nearest port, used to place the site on the map when the site has no coordinates"
