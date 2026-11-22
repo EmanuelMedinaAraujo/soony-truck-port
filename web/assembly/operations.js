@@ -79,17 +79,27 @@ function nextStepLine(next) {
 function deliveryClock(option) {
   if (!option) return "";
   if (!option.releasedAt) return option.latestUsefulAt ? `Order must be released by ${at(option.latestUsefulAt)}.` : "";
+  if (option.needsRevisedTerms && option.deliveryState?.revised_reason) return option.deliveryState.revised_reason;
   const from = option.origin ? ` ${option.origin}` : "";
-  const missedAsk = option.departForRequested && Date.now() > Date.parse(option.departForRequested);
-  const asked = option.requestedBy ? (missedAsk ? `Arrival asked for ${at(option.requestedBy)} is now unlikely (needed departure ${at(option.departForRequested)}). `
-    : `Arrival asked for ${at(option.requestedBy)}: leave${from} by ${at(option.departForRequested)}. `) : "";
-  return option.departBy ? `${asked}Last chance: leave${from} by ${at(option.departBy)} for the receiving cutoff.` : asked.trim();
+  const asked = option.requestedBy && option.departForRequested ? `Ordered arrival ${at(option.requestedBy)}: leave${from} by ${at(option.departForRequested)}.` : "";
+  return asked;
 }
 
 function renderNextSteps(snapshot) {
   const all = snapshot.now_next ?? [];
   const yours = all.filter(item => item.next_step?.state === "Needs you");
+  // Questions to Soony staff: a part's next step, or an open question row on its current delivery (newest per person).
   const team = all.filter(item => item.next_step?.person && item.next_step?.state !== "Needs you");
+  for (const part of snapshot.components ?? []) {
+    const route = part.routes?.find(candidate => candidate.id === part.default_route_id);
+    for (const row of route?.steps ?? []) {
+      if (!row.message_id || team.some(item => item.next_step.message_id === row.message_id || item.next_step.person === row.person)) continue;
+      const detail = row.detail.charAt(0).toLowerCase() + row.detail.slice(1);
+      const first = team.find(item => item.component_id === part.id);
+      if (first) (first.alsoAsked ??= []).push(row);  // the same decision escalated to someone else
+      else team.push({component_id: part.id, next_step: {...row, state: "Waiting for reply", text: `Waiting for ${row.person}: ${detail}`}});
+    }
+  }
   const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item));
   const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled");
   const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
@@ -98,7 +108,7 @@ function renderNextSteps(snapshot) {
   nextStepsKey = key;
   const count = waiting.length + yours.length;
   $("next-title").textContent = count ? `Action needed: ${count === 1 ? "1 thing" : `${number(count)} things`}` :
-    team.length ? `Waiting on your team: ${team.length === 1 ? "1 answer" : `${number(team.length)} answers`}` : "No spending approvals pending";
+    team.length ? `Waiting on your team: ${team.length === 1 ? "1 decision" : `${number(team.length)} decisions`}` : "No spending approvals pending";
   $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
   const needs = $("needs-you");
   const drafts = new Map([...needs.querySelectorAll("form[data-answer]")].map(form => [form.dataset.answer, form.querySelector("textarea").value]));
@@ -112,7 +122,7 @@ function renderNextSteps(snapshot) {
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const option = part.option;
-      const clock = deliveryClock(option);
+      const clock = item === team.find(entry => entry.component_id === item.component_id) ? deliveryClock(option) : "";
       const step = item.next_step;
       const overdue = step.answer_by && Date.now() > Date.parse(step.answer_by);
       const due = step.answer_by ? ` <span class="clock-note">${overdue ? `Answer was due ${html(at(step.answer_by))}.` : `Answer by ${html(at(step.answer_by))}.`}</span>` : "";
@@ -122,7 +132,7 @@ function renderNextSteps(snapshot) {
           <textarea id="answer-${html(step.message_id)}" rows="2" required placeholder="Answer as ${html(step.person)}"></textarea>
           <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form></details>` : "";
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(step.text)}</span>${due}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
+        <span>${html(step.text)}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");

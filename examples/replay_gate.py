@@ -212,7 +212,7 @@ def run_revision(policy, sent):
         assert before["departBy"] == "2026-11-22T07:00+01:00" and before["releasedAt"] == "2026-11-22T00:14+01:00"
         assert before["needsRevisedTerms"] and not before["deliveryState"]["eta"]
         assert before["deliveryState"]["vehicle_limit"] == 7.5
-        assert followup.deadline_for({"option": before, "default_route_id": FINDING}, at("16:00")) == at("16:00")
+        assert followup.deadline_for({"option": before, "default_route_id": FINDING}, at("16:00")) == at("07:00")  # a revision only helps while the goods can still leave in time
         print("\n03:20 HISTORICAL ORDER BEFORE CARRIER REPLY")
         print(before["deliveryState"]["revised_reason"])
         show_trace(before, route)

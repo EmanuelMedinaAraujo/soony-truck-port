@@ -523,7 +523,9 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                     if person and person not in asked:
                         question = step_["text"].split(": ", 1)[-1]
                         asked[person] = step(f"Answer from {person}", "waiting", question[:1].upper() + question[1:] +
-                                             f" Asked {_clock(rules.ts(message.get('sent_at')))}.")
+                                             f" Asked {_clock(rules.ts(message.get('sent_at')))}.") | {
+                            "person": person, "message_id": step_.get("message_id"), "question": step_.get("question"),
+                            "answer_by": step_.get("answer_by"), "since": message.get("sent_at")}
     unique = steps + list(asked.values())
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
     return unique
@@ -591,7 +593,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     if expired:
         next_action = next_step("Stuck", "The rush order window has passed.")
     elif delivery.get("needs_revised_terms"):
-        next_action = next_step("Stuck", delivery["revised_reason"], action_id=delivery["action_id"])
+        next_action = next_step("Stuck", delivery["revised_reason"], action_id=delivery["action_id"]) | {"urgent": True}
     elif delivery.get("hold_reason"):
         next_action = next_step("Waiting for reply", delivery["hold_reason"], order["updated_at"], order["id"])
     elif delivery.get("transport_confirmed") and delivery.get("slot_confirmed"):

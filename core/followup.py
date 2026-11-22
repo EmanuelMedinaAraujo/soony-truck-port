@@ -33,7 +33,8 @@ def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime |
     if option and str(part.get("default_route_id", "")).startswith("offer-"):
         delivery = option.get("deliveryState") or {}
         if delivery.get("needs_revised_terms") and delivery.get("can_propose_revision"):
-            return cutoff
+            # The revision only helps if the goods can still leave in time for the cutoff.
+            return rules.ts(option.get("departBy")) or cutoff
         if deliver_by := rules.ts(delivery.get("deliver_by")):
             return deliver_by
         return rules.ts(option.get("latestUsefulAt")) or cutoff
@@ -51,9 +52,15 @@ def next_check(component_id: str, step: dict, reviews: dict[str, dt.datetime], n
     marks = [stamp for stamp in (rules.ts(step.get("since")), reviews.get(component_id)) if stamp]
     if not marks:
         return now  # never looked at: look now
-    due = max(marks) + dt.timedelta(hours=conf["after_hours"])
+    last = max(marks)
+    interval = dt.timedelta(hours=conf["after_hours"])
+    if deadline and deadline > last:
+        interval = min(interval, max(dt.timedelta(minutes=15), (deadline - last) / 2))  # closer deadline, shorter wait
+    if step.get("urgent"):
+        interval = min(interval, dt.timedelta(minutes=30))
+    due = last + interval
     if deadline:
-        due = min(due, max(max(marks), deadline - dt.timedelta(hours=1)))
+        due = min(due, max(last, deadline - dt.timedelta(hours=1)))
     return due
 
 

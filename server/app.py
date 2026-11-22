@@ -175,7 +175,7 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
 
                     def progress(name, args, out):
                         steps["n"] += 1
-                        STATE["busy"] = f"agent planning: step {steps['n']}, {labels.get(name, name)}"
+                        STATE["busy"] = f"planning: {labels.get(name, name)}"
                         if name == "propose_action":
                             notify_action(out)
 
@@ -209,7 +209,7 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
 
                     def rprog(name, args, out):
                         n["k"] += 1
-                        STATE["busy"] = f"agent handling replies: step {n['k']}"
+                        STATE["busy"] = "reading supplier replies"
                         if name == "propose_action":
                             notify_action(out)
                     STATE["reply_summary"] = agent.handle_replies(rprog)
@@ -228,7 +228,7 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
 
                     def fprog(name, args, out):
                         f["k"] += 1
-                        STATE["busy"] = f"following up: step {f['k']}"
+                        STATE["busy"] = "following up on open items"
                         if name == "propose_action":
                             notify_action(out)
                     summary = followup.run(snap, fprog)
