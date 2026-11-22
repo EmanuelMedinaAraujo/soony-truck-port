@@ -1,15 +1,18 @@
 /* Component dependencies within the part inspector. */
 window.PartDependencyGraph = (() => {
   const namespace = "http://www.w3.org/2000/svg";
-  const order = ["assembly", "part", "stock", "subpart", "supplier", "risk"];
-  const columnNames = {assembly: "Part of", part: "Part", stock: "On hand", subpart: "Contains", supplier: "Made by", risk: "Risks and deliveries"};
+  const order = ["assembly", "part", "stock", "subpart", "supplier", "risk", "shipment"];
+  const columnNames = {assembly: "Part of", part: "Part", stock: "On hand", subpart: "Contains", supplier: "Made by",
+    risk: "Risks", shipment: "Deliveries"};
   const kinds = {assembly: "Assembly", part: "Selected part", stock: "Warehouse stock", subpart: "Sub-part", supplier: "Supplier",
     risk: "Supply risk", shipment: "Delivery"};
+  const icons = {assembly: "pack.png", part: "pack.png", stock: "receive.png", subpart: "pack.png",
+    supplier: "order.png", risk: "confirm.png", shipment: "ship.png"};
   const statuses = {ok: "OK", at_risk: "At risk", blocked: "Blocked", verify: "Check record", info: "No effect on launch"};
   const observers = new WeakMap();
-  const expandedByPart = new Map();
-  const cardHeight = 61;
-  const detailLine = 17;
+  const openByPart = new Map();
+  const scrollByPart = new Map();
+  const cardHeight = 53;
   let nextId = 0;
   const cache = new Map();  // componentId -> Promise<graph>, warmed in the background on page load
 
@@ -52,36 +55,26 @@ window.PartDependencyGraph = (() => {
     });
   }
 
-  function detailText(node) {
-    const lines = [];
+  function detailRows(node) {
     // The status line already shows the meta text; don't repeat it as the first sentence.
     const meta = String(node.meta ?? node.subtitle ?? "").trim().replace(/\.$/, "");
     let detail = String(node.detail ?? "").trim();
     if (meta && detail.toLowerCase().startsWith(meta.toLowerCase() + ".")) detail = detail.slice(meta.length + 1).trim();
-    if (node.doing) lines.push(node.doing);
-    if (node.contact) lines.push(node.contact);
-    if (detail) lines.push(detail);
-    if (node.quote) lines.push(`“${node.quote}”`);
     const sources = node.sources ?? (node.evidence ? [node.evidence.split("/").at(-1)] : []);
-    if (sources.length) lines.push(`Source: ${sources.join(", ")}`);
-    if (node.reference) lines.push(`Reference ${node.reference}`);
-    return lines;
+    return [
+      ["Work in progress", node.doing],
+      ["Contact", node.contact],
+      ["Details", detail],
+      ["Supplier quote", node.quote && `“${node.quote}”`],
+      ["Source", sources.join(", ")],
+      ["Reference", node.reference],
+    ].filter(([, value]) => value);
   }
 
-  function isSourceLine(text) {
-    return text.startsWith("Source:") || text.startsWith("Reference");
-  }
-
-  function columnOf(node) {
-    return node.kind === "shipment" ? "risk" : node.kind;
-  }
-
-  function layout(graph, width, heights) {
-    const layers = order.map(kind => graph.nodes.filter(node => columnOf(node) === kind)).filter(layer => layer.length);
-    const vertical = width < Math.max(700, layers.length * 160 + (layers.length - 1) * 56 + 32);
+  function layout(graph, viewportWidth) {
+    const layers = order.map(kind => graph.nodes.filter(node => node.kind === kind)).filter(layer => layer.length);
     const positions = new Map();
-    const heightOf = node => heights.get(node.id) ?? cardHeight;
-    layers.forEach((layer, column) => layer.forEach(node => positions.set(node.id, {node, column, height: heightOf(node)})));
+    layers.forEach((layer, column) => layer.forEach(node => positions.set(node.id, {node, column})));
     const connections = graph.edges.filter(edge => positions.has(edge.source) && positions.has(edge.target)).map(edge => {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -89,30 +82,13 @@ window.PartDependencyGraph = (() => {
       return {edge, from: reversed ? target : source, to: reversed ? source : target, reversed};
     });
 
-    if (vertical) {
-      const cardWidth = Math.min(width - 32, 360);
-      let y = 4;
-      const headers = [];
-      layers.forEach(layer => {
-        headers.push({x: (width - cardWidth) / 2, y: y + 12, text: columnNames[columnOf(layer[0])]});
-        y += 24;
-        for (const node of layer) {
-          const position = positions.get(node.id);
-          Object.assign(position, {x: (width - cardWidth) / 2, y, width: cardWidth});
-          y += position.height + 10;
-        }
-        y += 8;
-      });
-      return {positions, connections, height: y, vertical, headers};
-    }
-
-    const margin = 4;
-    const available = width - margin * 2;
-    const gap = 56;
-    const cardWidth = Math.min(230, Math.floor((available - (layers.length - 1) * gap) / layers.length));
-    const step = (available - cardWidth) / Math.max(layers.length - 1, 1);
-    const top = 30;
-    const rowStep = cardHeight + 14;
+    const margin = 5;
+    const gap = 24;
+    const width = Math.max(viewportWidth, layers.length * 146 + (layers.length - 1) * gap + margin * 2);
+    const cardWidth = Math.min(252, Math.floor((width - margin * 2 - (layers.length - 1) * gap) / layers.length));
+    const step = cardWidth + gap;
+    const top = 28;
+    const rowStep = cardHeight + 7;
     const rows = Math.max(...layers.map(layer => layer.length));
     const rowOf = new Map();
     layers.forEach((layer, column) => {
@@ -131,59 +107,41 @@ window.PartDependencyGraph = (() => {
     let bottom = 0;
     const headers = [];
     for (const [column, layer] of layers.entries()) {
-      const x = layers.length === 1 ? (width - cardWidth) / 2 : margin + column * step;
-      headers.push({x, y: 14, text: columnNames[columnOf(layer[0])]});
-      let extra = 0;
+      const x = margin + column * step;
+      headers.push({x, y: 13, text: columnNames[layer[0].kind]});
       layer.forEach((node, index) => {
         const position = positions.get(node.id);
-        const y = top + (index + (rows - layer.length) / 2) * rowStep + extra;
-        extra += position.height - cardHeight;
+        const y = top + (index + (rows - layer.length) / 2) * rowStep;
         Object.assign(position, {x, y, width: cardWidth});
-        bottom = Math.max(bottom, y + position.height);
+        bottom = Math.max(bottom, y + cardHeight);
       });
     }
-    return {positions, connections, height: bottom + 6, vertical, headers};
+    return {positions, connections, width, height: bottom + 5, headers};
   }
 
-  function wire(connection, vertical) {
+  function wire(connection, index) {
     const {from, to} = connection;
-    if (vertical) {
-      const x1 = from.x + 10;
-      const x2 = to.x + 10;
-      const rail = from.x - 10;
-      return `M ${x1} ${from.y + 30} H ${rail} V ${to.y + 30} H ${x2 - 10}`;
-    }
     const x1 = from.x + from.width;
     const y1 = from.y + cardHeight / 2;
     const y2 = to.y + cardHeight / 2;
+    if (to.column - from.column > 1) {
+      const rail = 19 + (index % 3) * 3;
+      return `M ${x1} ${y1} H ${x1 + 8} V ${rail} H ${to.x - 8} V ${y2} H ${to.x}`;
+    }
     const x = (x1 + to.x) / 2;
     return `M ${x1} ${y1} C ${x} ${y1} ${x} ${y2} ${to.x} ${y2}`;
   }
 
-  function render(svg, width, graph, section, activate, expanded) {
+  function render(svg, section, activate, openId, geometry) {
     const focusId = svg.contains(document.activeElement) ? document.activeElement.dataset.node : null;
-    const nameFont = `700 14px ${getComputedStyle(section).fontFamily}`;
-    const detailFont = `400 12.5px ${getComputedStyle(section).fontFamily}`;
+    const font = getComputedStyle(section).fontFamily;
+    const nameFont = `700 13.5px ${font}`;
+    const metaFont = `700 11px ${font}`;
     const context = document.createElement("canvas").getContext("2d");
-
-    // Expanded cards grow downwards; measure them before placing anything.
-    const provisional = layout(graph, width, new Map());
-    const heights = new Map();
-    const detailLines = new Map();
-    for (const id of expanded) {
-      const position = provisional.positions.get(id);
-      if (!position) continue;
-      context.font = detailFont;
-      const lines = detailText(position.node).flatMap(text =>
-        wrap(text, position.width - 22, context, isSourceLine(text) ? 1 : 9).map(line => ({line, doing: text === position.node.doing})));
-      if (!lines.length) continue;
-      detailLines.set(id, lines);
-      heights.set(id, cardHeight + 8 + lines.length * detailLine);
-    }
-    const {positions, connections, height, vertical, headers} = layout(graph, width, heights);
-    svg.dataset.direction = vertical ? "vertical" : "horizontal";
+    const {positions, connections, width, height, headers} = geometry;
+    svg.dataset.direction = "horizontal";
+    svg.style.width = `${width}px`;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    context.font = nameFont;
 
     const markerId = `${section.id}-arrow`;
     const defs = svgElement("defs");
@@ -199,7 +157,7 @@ window.PartDependencyGraph = (() => {
 
     const lines = svgElement("g", {class: "depgraph-wires", "aria-hidden": "true"});
     const relations = new Map();
-    for (const connection of connections) {
+    for (const [i, connection] of connections.entries()) {
       const {edge, reversed} = connection;
       const source = positions.get(edge.source).node;
       const target = positions.get(edge.target).node;
@@ -208,61 +166,101 @@ window.PartDependencyGraph = (() => {
         if (!relations.has(node.id)) relations.set(node.id, []);
         relations.get(node.id).push(description);
       }
-      const attributes = {d: wire(connection, vertical)};
-      if (!vertical) attributes[reversed ? "marker-start" : "marker-end"] = `url(#${markerId})`;
+      const attributes = {d: wire(connection, i), [reversed ? "marker-start" : "marker-end"]: `url(#${markerId})`};
+      if (connection.to.column - connection.from.column > 1) attributes.class = "depgraph-long-wire";
       lines.append(svgElement("path", attributes));
     }
     svg.append(lines);
 
-    const ordered = [...positions.values()].sort((a, b) => expanded.has(a.node.id) - expanded.has(b.node.id));
-    for (const {node, x, y, width: cardWidth, height: nodeHeight} of ordered) {
-      const isOpen = detailLines.has(node.id);
+    for (const {node, x, y, width: cardWidth} of positions.values()) {
+      const isOpen = openId === node.id;
       const meta = node.meta ?? node.subtitle ?? kinds[node.kind];
       const status = statuses[node.status] ?? "";
-      const hasDetails = detailText(node).length > 0;
-      const clickable = hasDetails || node.mapAvailable || ["assembly", "subpart"].includes(node.kind);
+      const hasDetails = node.rows.length > 0;
+      const followsPart = ["assembly", "subpart"].includes(node.kind);
+      const clickable = hasDetails || node.mapAvailable || followsPart;
+      const controls = hasDetails && !followsPart ? {
+        "aria-controls": `${section.id}-evidence`, "aria-expanded": String(isOpen),
+      } : {};
       const card = svgElement("g", {class: "depgraph-node", "data-node": node.id, "data-kind": node.kind,
-        "data-status": node.status, "data-selected": node.selected ? "true" : "false", "data-open": isOpen ? "true" : "false",
-        transform: `translate(${x},${y})`, ...(clickable ? {tabindex: "0", role: "button", "aria-expanded": String(isOpen)} : {role: "group"}),
-        "aria-label": [node.label, meta, !["part", "stock"].includes(node.kind) && status, node.mapAvailable && (node.selected ? "Hide map" : "Show map")]
-          .filter(Boolean).join(". "),
-        "aria-description": [isOpen ? detailText(node).join(". ") : "", relations.get(node.id)?.join(". ")].filter(Boolean).join(". ")});
-      card.append(svgElement("rect", {class: "depgraph-card", width: cardWidth, height: nodeHeight, rx: 9}));
+        "data-status": node.status, "data-selected": node.selected ? "true" : "false", "data-open": String(isOpen),
+        transform: `translate(${x},${y})`, ...(clickable ? {tabindex: "0", role: "button", ...controls} : {role: "group"}),
+        "aria-label": [node.label, meta, !["part", "stock"].includes(node.kind) && status,
+          node.mapAvailable && (node.selected ? "Hide map" : "Show map")].filter(Boolean).join(". "),
+        "aria-description": relations.get(node.id)?.join(". ") ?? ""});
+      card.append(
+        svgElement("title", {}, `${node.label} · ${meta}`),
+        svgElement("rect", {class: "depgraph-card", width: cardWidth, height: cardHeight, rx: 7}),
+        svgElement("image", {href: `/assembly/art/${node.image}`, x: 8, y: 12, width: 27, height: 29, "aria-hidden": "true"}),
+      );
+
       context.font = nameFont;
-      const nameLines = wrap(node.label, cardWidth - 22 - (node.selected ? 44 : 0), context);
+      const nameLines = wrap(node.label, cardWidth - 53, context);
       for (const [i, line] of nameLines.entries()) {
-        card.append(svgElement("text", {x: 11, y: (nameLines.length === 1 ? 25 : 19) + 16 * i, class: "depgraph-name"}, line));
+        card.append(svgElement("text", {x: 42, y: (nameLines.length === 1 ? 22 : 15) + 14 * i, class: "depgraph-name"}, line));
       }
-      if (node.selected) card.append(svgElement("text", {x: cardWidth - 10, y: 19, "text-anchor": "end", class: "depgraph-flag"}, "On map"));
-      if (node.kind !== "part") card.append(svgElement("circle", {cx: 14, cy: 48, r: 3.4}));
-      context.font = "700 11.5px sans-serif";
-      card.append(svgElement("text", {x: node.kind === "part" ? 11 : 22, y: 52, class: "depgraph-meta"},
-        wrap(meta, cardWidth - 34, context, 1)[0]));
-      if (isOpen) {
-        card.append(svgElement("line", {class: "depgraph-rule", x1: 11, x2: cardWidth - 11, y1: cardHeight + 1, y2: cardHeight + 1}));
-        detailLines.get(node.id).forEach(({line, doing}, i) => card.append(svgElement("text",
-          {x: 11, y: cardHeight + 18 + i * detailLine, class: doing ? "depgraph-detail depgraph-doing" : isSourceLine(line) ? "depgraph-source" : "depgraph-detail"}, line)));
-      } else if (hasDetails) {
-        card.append(svgElement("text", {x: cardWidth - 12, y: 52, "text-anchor": "end", class: "depgraph-more", "aria-hidden": "true"}, "+"));
-      }
-      if (clickable) card.addEventListener("click", () => activate(node));
-      if (clickable) card.addEventListener("keydown", event => {
-        if (event.key === "Escape" && (isOpen || node.selected)) {
+      context.font = metaFont;
+      card.append(svgElement("text", {x: 42, y: 44, class: "depgraph-meta"},
+        wrap(meta, cardWidth - (clickable ? 61 : 50), context, 1)[0]));
+      if (clickable) {
+        const indicator = isOpen || node.selected ? "−" : followsPart ? "›" : "+";
+        card.append(svgElement("text", {x: cardWidth - 8, y: 44, "text-anchor": "end", class: "depgraph-more", "aria-hidden": "true"}, indicator));
+        card.addEventListener("click", () => activate(node));
+        card.addEventListener("keydown", event => {
+          if (event.key === "Escape" && (isOpen || node.selected)) {
+            event.preventDefault();
+            event.stopPropagation();
+            activate(node, "close");
+          }
+          if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
-          event.stopPropagation();
-          activate(node, "close");
-        }
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        activate(node);
-      });
+          activate(node);
+        });
+      }
       svg.append(card);
       if (focusId === node.id) card.focus({preventScroll: true});
     }
   }
 
+  function renderEvidence(panel, node, close) {
+    panel.hidden = !node?.rows.length;
+    panel.replaceChildren();
+    if (panel.hidden) return;
+
+    const image = document.createElement("img");
+    image.src = `/assembly/art/${node.image}`;
+    image.alt = "";
+    const heading = document.createElement("h4");
+    heading.id = `${panel.id}-heading`;
+    heading.textContent = node.label;
+    const meta = document.createElement("p");
+    meta.className = "depgraph-evidence-meta";
+    const description = node.meta ?? node.subtitle ?? kinds[node.kind];
+    meta.textContent = node.selected ? `${description} · On map` : description;
+    const name = document.createElement("div");
+    name.append(heading, meta);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "text-button";
+    button.textContent = "Close evidence";
+    button.addEventListener("click", close);
+    const title = document.createElement("div");
+    title.className = "depgraph-evidence-title";
+    title.append(image, name, button);
+    const rows = document.createElement("dl");
+    for (const [label, value] of node.rows) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = value;
+      rows.append(term, description);
+    }
+    panel.setAttribute("aria-labelledby", heading.id);
+    panel.append(title, rows);
+  }
+
   async function mount(inspector, componentId, nameOf, selectPart, {
-    trackedShipments = new Set(), selectedShipment, selectShipment, focusShipment,
+    trackedShipments = new Set(), selectedShipment, selectShipment, focusShipment, partImage,
   } = {}) {
     observers.get(inspector)?.disconnect();
     const section = document.createElement("section");
@@ -274,20 +272,36 @@ window.PartDependencyGraph = (() => {
     section.setAttribute("aria-labelledby", heading.id);
     const verdict = document.createElement("p");
     verdict.className = "depgraph-verdict";
+    const title = document.createElement("div");
+    title.className = "depgraph-heading";
+    title.append(heading, verdict);
     const viewport = document.createElement("div");
     viewport.className = "depgraph-viewport";
+    viewport.setAttribute("aria-label", "Scrollable dependency graph");
+    const scrollHint = document.createElement("p");
+    scrollHint.className = "depgraph-scroll-hint";
+    scrollHint.textContent = "Scroll sideways for more";
+    scrollHint.hidden = true;
+    const evidence = document.createElement("section");
+    evidence.className = "depgraph-evidence";
+    evidence.id = `${section.id}-evidence`;
+    evidence.hidden = true;
     const feedback = document.createElement("p");
     feedback.className = "depgraph-feedback";
     feedback.setAttribute("role", "status");
     feedback.textContent = "Loading dependencies…";
-    section.append(heading, verdict, viewport, feedback);
+    section.append(title, viewport, scrollHint, evidence, feedback);
     inspector.querySelector(".inspector-head").after(section);
 
     try {
       const graph = structuredClone(await load(componentId));
       if (!section.isConnected) return;
       for (const node of graph.nodes) {
-        if (["assembly", "part", "subpart"].includes(node.kind)) node.label = nameOf(node.id) ?? node.label;
+        const isPart = ["assembly", "part", "subpart"].includes(node.kind);
+        if (isPart) node.label = nameOf(node.id) ?? node.label;
+        const artwork = isPart && partImage?.(node.id);
+        node.image = artwork ? `${artwork}.webp` : icons[node.kind];
+        node.rows = detailRows(node);
         node.mapAvailable = node.kind === "shipment" && trackedShipments.has(node.id);
         node.selected = node.mapAvailable && node.id === selectedShipment;
       }
@@ -295,30 +309,50 @@ window.PartDependencyGraph = (() => {
       if (graph.stock_status) verdict.dataset.status = graph.stock_status;
       verdict.hidden = !verdict.textContent;
 
-      const expanded = expandedByPart.get(componentId) ?? new Set();
-      expandedByPart.set(componentId, expanded);
       const svg = svgElement("svg", {role: "group", "aria-labelledby": heading.id});
+      let openId = openByPart.get(componentId);
       let lastWidth = 0;
+      let restoredScroll = false;
+      const nodeControl = id => svg.querySelector(`[data-node="${CSS.escape(id)}"]`);
       const redraw = () => {
-        render(svg, lastWidth, graph, section, activate, expanded);
-        if (focusShipment) {
-          if (document.activeElement === document.body) {
-            svg.querySelector(`[data-node="${CSS.escape(focusShipment)}"]`)?.focus({preventScroll: true});
-          }
-          focusShipment = null;
+        const geometry = layout(graph, lastWidth);
+        render(svg, section, activate, openId, geometry);
+        const overflows = geometry.width > lastWidth;
+        scrollHint.hidden = !overflows;
+        if (overflows) viewport.tabIndex = 0;
+        else viewport.removeAttribute("tabindex");
+        if (!restoredScroll) {
+          viewport.scrollLeft = scrollByPart.get(componentId) ?? 0;
+          restoredScroll = true;
         }
+        if (focusShipment && document.activeElement === document.body) {
+          nodeControl(focusShipment)?.focus({preventScroll: true});
+        }
+        focusShipment = null;
+      };
+      const showEvidence = () => {
+        const node = graph.nodes.find(item => item.id === openId);
+        renderEvidence(evidence, node, () => {
+          activate(node, "close");
+          nodeControl(node.id)?.focus({preventScroll: true});
+        });
       };
       function activate(node, intent) {
         if (["assembly", "subpart"].includes(node.kind) && nameOf(node.id) && !intent) {
           selectPart(node.id);
           return;
         }
-        const opening = intent !== "close" && (node.mapAvailable ? !node.selected : !expanded.has(node.id));
-        if (opening) expanded.add(node.id); else expanded.delete(node.id);
+        const opening = intent !== "close" && (node.mapAvailable ? !node.selected : openId !== node.id);
+        openId = opening && node.rows.length ? node.id : null;
+        if (openId) openByPart.set(componentId, openId);
+        else openByPart.delete(componentId);
+        scrollByPart.set(componentId, viewport.scrollLeft);
         if (node.kind === "shipment" && selectShipment?.(node.id, opening)) return;
         redraw();
+        showEvidence();
       }
       viewport.append(svg);
+      viewport.addEventListener("scroll", () => scrollByPart.set(componentId, viewport.scrollLeft), {passive: true});
       feedback.textContent = "";
       const draw = () => {
         const width = Math.floor(viewport.clientWidth);
@@ -330,6 +364,7 @@ window.PartDependencyGraph = (() => {
       observers.set(inspector, observer);
       observer.observe(viewport);
       draw();
+      showEvidence();
     } catch {
       feedback.textContent = "Can’t load part dependencies.";
     }
