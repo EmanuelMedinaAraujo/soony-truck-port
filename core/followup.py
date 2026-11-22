@@ -31,7 +31,9 @@ def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime |
     """The moment after which following up no longer helps: the offer's last useful order time, else the receiving cutoff."""
     marks = [cutoff]
     if part and part.get("option") and str(part.get("default_route_id", "")).startswith("offer-"):
-        marks.append(rules.ts(part["option"].get("latestUsefulAt")))
+        option = part["option"]
+        # Before the order: the last useful release time. After it: the time the goods must leave to make the cutoff.
+        marks.append(rules.ts(option.get("departBy") if option.get("releasedAt") else option.get("latestUsefulAt")))
     marks = [m for m in marks if m]
     return min(marks) if marks else None
 

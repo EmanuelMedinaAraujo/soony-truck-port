@@ -372,3 +372,4 @@ img { display: block; max-width: 100%; }
 .economics { margin-top: 8px; max-width: 70ch; font-size: .93rem; color: var(--ink) !important; line-height: 1.45; }
 .next-strip[data-attention="waiting"] { border-color: var(--verified); border-left-width: 4px; }
 .next-strip[data-attention="waiting"] h2 { color: var(--verified); }
+.clock-note { font-weight: 700; color: var(--short); white-space: nowrap; }

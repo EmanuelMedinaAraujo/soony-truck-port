@@ -98,8 +98,11 @@ function renderNextSteps(snapshot) {
       <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
+      const option = part.option;
+      const clock = option?.departBy && option?.releasedAt ? `Goods must leave${option.origin ? ` ${option.origin}` : ""} by ${at(option.departBy)}.`
+        : option?.latestUsefulAt ? `Order must be released by ${at(option.latestUsefulAt)}.` : "";
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(item.next_step.text)}</span></li>`;
+        <span>${html(item.next_step.text)}</span>${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}</li>`;
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");

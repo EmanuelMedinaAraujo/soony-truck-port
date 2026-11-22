@@ -422,6 +422,10 @@ def offer_price(conn: sqlite3.Connection, offer: dict) -> tuple[float | None, st
     return tuple(price) if price else (None, None)
 
 
+ACCEPTED = re.compile(r"\b(acknowledg\w*|accept\w*|treat\w*\b.{0,60}\bas the\b.{0,40}\border|released the goods)", re.I)
+REFUSED = re.compile(r"\b(not|no longer|cannot|can't|won't|declin\w*|reject\w*)\b.{0,20}\b(acknowledg|accept|treat|confirm\w* the order)", re.I)
+
+
 def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     component = offer["material_id"]
     quantity = int(offer["qty"])
@@ -429,14 +433,18 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     unit_price, price_source = offer_price(conn, offer)
     cost = round(unit_price * quantity, 2) if unit_price is not None else None
     load, drive = hours_in(offer.get("lead_time_note")), hours_in(offer.get("transport"))
-    latest = cutoff - dt.timedelta(hours=load + drive) if load is not None and drive is not None else None
+    latest_release = cutoff - dt.timedelta(hours=load + drive) if load is not None and drive is not None else None
     valid = offer.get("valid_until")
     try:
         valid_day = dt.date.fromisoformat(valid[:10]) if valid else None
     except ValueError:
         valid_day = None
-    expired = now >= cutoff or (latest and now > latest) or (valid_day and now.date() > valid_day)
-    timing = "expired" if expired else "open" if latest else "unknown"
+    # Once the order left in time, the release window no longer matters; only the receiving cutoff does.
+    released = min((rules.ts(a.get("updated_at")) for a in related if a["kind"] == "order" and a["status"] in {"sent", "done"}
+                    and rules.ts(a.get("updated_at"))), default=None)
+    released_in_time = bool(released and (not latest_release or released <= latest_release))
+    expired = now >= cutoff or (not released_in_time and ((latest_release and now > latest_release) or (valid_day and now.date() > valid_day)))
+    timing = "expired" if expired else "released" if released_in_time else "open" if latest_release else "unknown"
     active = latest_summary(related)
     priority = rules.cfg("priority_product")
     accounting = rules.cfg("missed_copy_cost_eur")
@@ -469,10 +477,17 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         recipients = {m.get("to_name") for m in action.get("messages", []) if m.get("to_name")}
         answers = [r for r in replies if r.get("summary_en") and (r.get("action_id") == action["id"] or r.get("from_name") in recipients)
                    and (not when or (rules.ts(r.get("received_at")) or when) >= when)]
-        latest = answers[-1] if answers else None
-        heard = rules.ts(latest["received_at"]) if latest else None
-        answer = (f" Latest from {latest['from_name']}" + (f" ({heard.astimezone(rules.timezone()):%a %H:%M})" if heard else "") +
-                  f": {_first_sentence(latest['summary_en'])}") if latest else ""
+        reply = answers[-1] if answers else None
+        heard = rules.ts(reply["received_at"]) if reply else None
+        answer = (f" Latest from {reply['from_name']}" + (f" ({heard.astimezone(rules.timezone()):%a %H:%M})" if heard else "") +
+                  f": {_first_sentence(reply['summary_en'])}") if reply else ""
+        if index == 3 and reply and ACCEPTED.search(reply["summary_en"]) and not REFUSED.search(reply["summary_en"]):
+            # The supplier accepted the order itself; transport, paperwork and the slot stay separate open steps.
+            steps[3] = step("Formal order", "confirmed", f"Order sent{stamp}; {reply['from_name']} accepted it" +
+                            (f" {heard.astimezone(rules.timezone()):%a %H:%M}" if heard else "") + f". {_first_sentence(reply['summary_en'])}")
+            if steps[1]["state"] == "pending":
+                steps[1] = step("Transport", "waiting", f"{supplier} is arranging it; vehicle and arrival time not confirmed yet.")
+            continue
         # A request is not a confirmation: only the other side's answer can close a step, so it stays open here.
         text = {1: f"Truck requested{stamp}; waiting for the carrier to confirm.",
                 2: f"Unload slot requested from the site{stamp}; waiting for the site to confirm.",
@@ -500,7 +515,10 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
             {"name": "Rush supply", "supplier": supplier, "quantity": quantity, "cost": cost, "copiesAdded": copies,
              "refundsAvoided": avoided, "netIfTimely": round(avoided - cost, 2) if cost is not None else None,
              "nextConstraint": next_constraint, "editionId": target, "validUntil": valid,
-             "latestUsefulAt": latest.isoformat(timespec="minutes") if latest else None,
+             "latestUsefulAt": latest_release.isoformat(timespec="minutes") if latest_release else None,
+             "releasedAt": released.isoformat(timespec="minutes") if released_in_time else None,
+             "departBy": (cutoff - dt.timedelta(hours=drive)).isoformat(timespec="minutes") if drive is not None else None,
+             "origin": (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1],
              "timingState": timing, "evidence": sources,
              "assurance": {"examplePremium": rules.cfg("assurance_example_eur"), "coveredStep": "Transport",
                            "sharedSteps": ["Dock slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
