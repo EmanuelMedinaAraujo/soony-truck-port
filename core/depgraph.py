@@ -230,7 +230,7 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
         holder = coverage.get(fitted_into[0], {}) if fitted_into else own
         short = holder.get("gap", 0) < 0 and not holder.get("suspect_master_data")
         nodes[component_id].update(status="ok", detail=None)
-        verdict = (f"{-holder['gap']:,} short in Hamburg. Every problem below can cost boxes." if short else
+        verdict = (f"{-holder['gap']:,} short in Hamburg." if short else
                    "Enough usable stock in Hamburg for the launch. The issues below don't affect it.")
 
         def calm(status):
@@ -373,6 +373,19 @@ def annotate(graph: dict, component: dict | None) -> dict:
             return None
         return f"Dockside: {route_step['text']}" if route_step.get("action_id") else idle
 
+    # A rush offer of ready stock is a delivery too: show it with what still blocks it.
+    if plan and plan["id"].startswith("offer-") and graph.get("short"):
+        supplier_id = next((sid for sid, name in suppliers.items() if plan["name"].endswith(name)), None)
+        open_steps = [s for s in plan.get("steps", []) if s["state"] != "confirmed"]
+        meta = (f"Waiting: {', '.join(s['name'].lower() for s in open_steps if s['state'] == 'waiting')}"
+                if any(s["state"] == "waiting" for s in open_steps) else "Not ordered yet")
+        node = {"id": plan["id"], "label": f"{plan['name'].split(' from ')[0]}, {plan.get('quantity', 0):,}",
+                "kind": "shipment", "status": "at_risk", "meta": meta, "subtitle": "Ready stock",
+                "detail": (f"Still open: {', '.join(s['name'].lower() for s in open_steps)}. Each step is shown under Where it stands."
+                           if open_steps else None)}
+        graph["nodes"].append(node)
+        if supplier_id:
+            graph["edges"].append({"source": supplier_id, "target": plan["id"], "label": "rush supply"})
     for node in graph["nodes"]:
         if node["kind"] not in {"risk", "shipment"} or node["id"].startswith("later:"):
             continue
@@ -386,4 +399,6 @@ def annotate(graph: dict, component: dict | None) -> dict:
             active = next((r for r in own if r is plan), None) or next(
                 (r for r in own if (r.get("next_step") or {}).get("action_id")), None)
             node["doing"] = route_doing(active) if active else idle
+            if active is plan and plan["id"].startswith("offer-") and node.get("meta", "").startswith("Pauses production"):
+                node["doing"] = "No effect on the rush order: it ships stock that is already made."
     return graph
