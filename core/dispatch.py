@@ -74,7 +74,7 @@ INTERNAL_FOLLOWUP = {
 def internal_followup(action: dict, message: dict) -> dict:
     """A message that went out by chat or as a call script: say who has to do what next."""
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
-    who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", "Hamburg", who)
+    who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", rules.cfg("site_name"), who)
     if message["channel"] == "phone_script":
         call = message.get("call")
         state = "Asking"
@@ -124,7 +124,7 @@ def readable_activity(log, limit: int = 10) -> dict:
                           ORDER BY e.ts DESC, e.rowid DESC LIMIT 60""").fetchall()
     replies = log.execute("SELECT action_id, from_name, received_at, summary_en FROM replies ORDER BY received_at").fetchall()
     sent_to = {r[0]: r[1] for r in log.execute("SELECT action_id, to_name FROM messages WHERE channel='email' ORDER BY created_at")}
-    items, counts = [], defaultdict(int)
+    items = []
     emailed = {ref for _, kind, ref, _, _ in rows if kind == "email_sent"}
     since = rules.now() - dt.timedelta(hours=24)
     for ts, kind, ref, text, title in rows:
@@ -154,13 +154,15 @@ def readable_activity(log, limit: int = 10) -> dict:
             line = f"Read {n.group(1)} new documents." if n else None
         if not line:
             continue
-        stamp = rules.ts(ts)
-        if stamp and stamp >= since:
-            counts[kind] += 1
         if len(items) < limit and (not items or items[-1]["text"] != line):
             items.append({"ts": ts, "text": line})
-    parts = [(counts["email_sent"] + counts["approval_email_sent"], "email sent", "emails sent"), (counts["reply"], "reply received", "replies received"),
-             (counts["action_done"] + counts["action_auto"] + counts["action_approved"], "step taken", "steps taken")]
+    # Count records, not log lines, over the whole window: one email is one message row, one reply one reply row.
+    def count(sql: str) -> int:
+        return sum(1 for (stamp,) in log.execute(sql) if (moment := rules.ts(stamp)) and moment >= since)
+    sent = count("SELECT sent_at FROM messages WHERE channel IN ('email','approval_email') AND status='sent'")
+    received = count("SELECT received_at FROM replies")
+    steps = count("SELECT updated_at FROM actions WHERE status IN ('auto','sent','done','approved','delivered')")
+    parts = [(sent, "email sent", "emails sent"), (received, "reply received", "replies received"), (steps, "step taken", "steps taken")]
     summary = ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in parts if n)
     return {"summary": f"Last 24 hours: {summary}" if summary else "Nothing in the last 24 hours", "items": items}
 
@@ -232,13 +234,13 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
     if status == "delivered":
         return "receive", next_step("Unloaded", "Check receipt and inspection before using the stock.", updated)
     if status == "arrived_dc":
-        return "receive", next_step("Confirmed", "The shipment reached Hamburg. Confirm unloading.", updated)
+        return "receive", next_step("Confirmed", f"The shipment reached {rules.cfg('site_name')}. Confirm unloading.", updated)
 
     logged = action_next_step(related, supplier)
     if hold:
         return "confirm", logged or next_step("Stuck", f"Confirm release terms with {supplier}.", updated)
     if status == "arrived_port":
-        return "track", logged or next_step("Stuck", "Arrange a truck from the port to Hamburg.", updated)
+        return "track", logged or next_step("Stuck", f"Arrange a truck from the port to {rules.cfg('site_name')}.", updated)
     if status == "booked":
         if logged:
             return "ship", logged
@@ -268,7 +270,7 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
             return "track", next_step("Stuck", "Get a fresh arrival estimate from the carrier.", updated)
         if shipment["makes_cutoff"] is False:
             return "track", next_step("After launch", "Arrives after Sunday's receiving cutoff, so it does not count for the launch.", updated)
-        return "track", next_step("On the way", "Track the shipment to Hamburg.", updated)
+        return "track", next_step("On the way", f"Track the shipment to {rules.cfg('site_name')}.", updated)
     return "confirm", logged or next_step("Stuck", "Check shipment status with the supplier.", updated)
 
 
@@ -331,7 +333,7 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
                       step("Truck pickup", "pending", "A carrier pickup still needs confirmation.")])
     else:
         steps.append(step("Transport", transport, hold or uncertain or "The shipment tracker records this leg."))
-    steps.append(step("Hamburg receiving", receiving, receiving_note))
+    steps.append(step("Receiving", receiving, receiving_note))
     sources = [evidence(path.rsplit("/", 1)[-1], f"Shipment {ref}") for path in shipment["evidence"]]
     if latest_reply:
         sources.insert(0, evidence(f"Supplier reply from {latest_reply['from_name']}", latest_reply["summary_en"]))
@@ -440,9 +442,9 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units."),
              step("Transport", "pending", (offer.get("transport") or "Carrier and travel time still need confirmation.").rstrip(". ")
                   + ". Vehicle size and a legal Sunday route still need confirming."),
-             step("Dock slot", "pending", "Dockside books the unload slot with Hamburg; the site lead can move or stop it."),
+             step("Dock slot", "pending", f"Dockside books the unload slot with {rules.cfg('site_name')}; the site lead can move or stop it."),
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
-             step("Hamburg receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
+             step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
     replies = sorted((r for action in related for r in action["replies"] if not r.get("simulated")),
                      key=lambda r: r["received_at"] or "")
     for action in sorted(related, key=lambda a: a.get("updated_at") or ""):  # what Dockside already did moves the matching step forward
@@ -459,7 +461,9 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         text = {1: f"Truck requested{stamp}; waiting for the carrier to confirm.",
                 2: f"Unload slot requested from the site{stamp}; waiting for the site to confirm.",
                 3: f"Order sent to {supplier}{stamp}; waiting for {supplier} to confirm it."}[index]
-        steps[index] = step(steps[index]["name"], "pending", (text.split(";")[0] + "." + answer) if answer else text)
+        steps[index] = step(steps[index]["name"], "waiting", (text.split(";")[0] + "." + answer) if answer else text)
+        if index == 3 and steps[1]["state"] == "pending":  # the order asks the supplier to arrange the agreed transport
+            steps[1] = step("Transport", "waiting", f"{supplier} is arranging it; vehicle and arrival time not confirmed yet.")
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)
@@ -483,7 +487,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "latestUsefulAt": latest.isoformat(timespec="minutes") if latest else None,
              "timingState": timing, "evidence": sources,
              "assurance": {"examplePremium": rules.cfg("assurance_example_eur"), "coveredStep": "Transport",
-                           "sharedSteps": ["Dock slot", "Formal order", "Hamburg receiving"]} if drive and avoided > 0 else None})
+                           "sharedSteps": ["Dock slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
 
 
 def snapshot(checked_at: str | None) -> dict:
@@ -528,8 +532,9 @@ def snapshot(checked_at: str | None) -> dict:
         places = {code: {"name": name, "lat": lat, "lon": lon} for code, name, lat, lon in
                   conn.execute("SELECT locode,name,lat,lon FROM ports") if coordinates(lat, lon)}
         site = rules.CONFIG["site"]
-        if site not in places and site == "DC-HAM" and "DEHAM" in places:
-            places[site] = {**places["DEHAM"], "name": "Hamburg area"}
+        port = rules.CONFIG.get("site_port", {}).get("value")
+        if site not in places and port in places:
+            places[site] = {**places[port], "name": f"{rules.cfg('site_name')} area"}
         embedded = embedded_components(conn, coverage)
         shipments = rules.inbound(conn, coverage)
         received = {"delivered", "arrived_dc"}
@@ -564,14 +569,14 @@ def snapshot(checked_at: str | None) -> dict:
             inventory = max(0, stock["usable_now"])
             gap_next = action_next_step(gap_actions)
             if status == "verify":
-                stage, stock_next = "receive", action_next_step(action_log[f"master-{cid}"]) or next_step("Stuck", "Check how Hamburg counts this part.")
+                stage, stock_next = "receive", action_next_step(action_log[f"master-{cid}"]) or next_step("Stuck", f"Check how {rules.cfg('site_name')} counts this part.")
             elif status == "short":
                 stage, stock_next = "order", gap_next or next_step("Stuck", "Find more usable stock before packing.")
             elif rows and all(picture[row["editionId"]]["packed"] >= picture[row["editionId"]]["demand"] for row in rows):
                 stage, stock_next = "dispatch", next_step("Confirmed", "The boxes are packed and ready for dispatch.")
             else:
                 stage, stock_next = "pack", next_step("Confirmed", "Use the available stock to pack boxes.")
-            stock_route = {"id": f"stock-{cid}", "name": "Stock in Hamburg", "quantity": None if status == "verify" else inventory,
+            stock_route = {"id": f"stock-{cid}", "name": f"Stock in {rules.cfg('site_name')}", "quantity": None if status == "verify" else inventory,
                            "steps": [step("Warehouse stock", "unknown" if status == "verify" else "confirmed",
                                           "Check whether this item is stocked separately." if status == "verify" else "Usable quantity after receipt corrections and quality holds.")],
                            "evidence": [evidence("stock_snapshot.csv", "Stock snapshot adjusted for estimated consumption since the snapshot.")],
@@ -625,8 +630,8 @@ def snapshot(checked_at: str | None) -> dict:
         if len(now_next) == 3:
             break
     return {"now": now.isoformat(timespec="seconds"), "deadline": deadline.isoformat(), "cutoff": cutoff.isoformat(),
-            "checkedAt": checked_at, "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
+            "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
             "components": components, "now_next": now_next, "decisions": decisions, "activity": activity,
-            "notes": ["The dispatch estimate counts modeled packed stock, usable parts in Hamburg and remaining packing capacity.",
+            "notes": ["The dispatch estimate counts modeled packed stock, usable parts on site and remaining packing capacity.",
                       "The recovery estimate assumes the parts arrive usable by the receiving cutoff and the line can pack them in time.",
                       "The receiving cutoff is a planning assumption. The standby premium is an example you can change."]}

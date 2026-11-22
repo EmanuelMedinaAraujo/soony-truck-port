@@ -35,8 +35,8 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
 -->
 <main class="shell">
   <header class="dispatch-heading">
-    <div><h1>Sunday dispatch</h1><p>Select a part to trace it to the box.</p></div>
-    <div class="deadline"><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
+    <div><h1>Sunday dispatch</h1><p id="stakes" class="stakes" aria-live="polite"></p><p>Select a part to trace it to the box.</p></div>
+    <div class="deadline"><span class="deadline-label">Trucks leave</span><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
   </header>
 
   <section id="next-strip" class="next-strip" aria-labelledby="next-title" hidden>

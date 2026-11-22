@@ -1,6 +1,8 @@
 {
   "_comment": "Business rules learned from interviews and documents. Every value carries its source so the agent can cite it. Edit here, never in code.",
   "site": "DC-HAM",
+  "site_port": {"value": "DEHAM", "source": "UN/LOCODE of the nearest port, used to place the site on the map when the site has no coordinates"},
+  "site_name": {"value": "Hamburg", "source": "org_chart_v2.pdf / onboarding notes: distribution center Hamburg (DC-HAM)"},
   "voice": {
     "value": {"enabled": true, "dial_out": false, "demo_number": null},
     "source": "Dockside automatically rehearses calls with ElevenLabs or a local mock. Telephone mode uses only a configured demo destination on an ElevenLabs SIP line."

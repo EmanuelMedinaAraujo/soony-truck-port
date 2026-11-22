@@ -204,7 +204,7 @@ function mapFigure(tracking, land, id, title = "") {
   const mode = {air: "air freight", sea: "sea freight", road: "road freight"}[tracking.mode] ?? "shipment";
   const label = title || (details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1));
   const due = arrivalPhrase(tracking.arrival ?? details.eta);
-  const arrival = due ? `, due in Hamburg ${due}` : "";
+  const arrival = due ? `, due in ${(typeof state !== "undefined" && state?.siteName) || "the site"} ${due}` : "";
   const positionLabel = primary?.simulated ? "simulated" : estimated ? "estimate" : "";
   const heading = `${label}${arrival}${location ? `, ${location}` : ""}${positionLabel ? ` (${positionLabel})` : ""}`;
   const progress = estimated ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];

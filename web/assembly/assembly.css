@@ -342,15 +342,15 @@ img { display: block; max-width: 100%; }
 .progress li[data-position="done"]::before { background: var(--covered); }
 .progress-dot { position: relative; z-index: 1; width: 14px; height: 14px; margin: 3px 0 0 4px; border-radius: 50%; border: 2px solid var(--muted); background: var(--sheet); }
 .progress li[data-position="done"] .progress-dot { border-color: var(--covered); background: var(--covered); }
-.progress li[data-position="current"] .progress-dot { width: 18px; height: 18px; margin: 1px 0 0 2px; border: 3px solid var(--active); box-shadow: 0 0 0 4px color-mix(in srgb, var(--active) 25%, transparent); }
+.progress li[data-position="waiting"] .progress-dot { border: 3px solid var(--active); box-shadow: 0 0 0 4px color-mix(in srgb, var(--active) 22%, transparent); }
 .progress li[data-state="blocked"] .progress-dot { border-color: var(--short); }
 .progress b { font-weight: 700; }
 .progress-state { margin-left: .5em; font-size: .78rem; color: var(--muted); }
 .progress li[data-position="done"] .progress-state { color: var(--covered); }
-.progress li[data-position="current"] .progress-state { color: var(--active); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.progress li[data-position="waiting"] .progress-state { color: var(--active); font-weight: 700; }
 .progress li p { color: var(--muted); font-size: .91rem; max-width: 66ch; margin-top: 2px; }
 .progress li[data-position="todo"] b { color: var(--muted); font-weight: 600; }
-.progress li[data-position="current"] .next-step-line { color: var(--ink); font-size: .95rem; margin-top: 6px; padding: 7px 10px; border-left: 3px solid var(--active); background: color-mix(in srgb, var(--active) 8%, transparent); border-radius: 0 6px 6px 0; }
+.progress-now { color: var(--ink); font-size: .95rem; margin-top: 6px; padding: 7px 10px; border-left: 3px solid var(--active); background: color-mix(in srgb, var(--active) 8%, transparent); border-radius: 0 6px 6px 0; }
 
 /* What Dockside does about a risk or delivery card in the dependency graph. */
 .depgraph-doing { fill: var(--active); }
@@ -363,3 +363,10 @@ img { display: block; max-width: 100%; }
 .call-script summary { cursor: pointer; color: var(--active); width: fit-content; }
 .call-script p { max-width: 66ch; margin-top: 4px; color: var(--ink); }
 .call-result { flex-basis: 100%; font-size: .9rem; }
+
+/* Header: what is at risk, and the two clocks with labels. */
+.stakes { color: var(--ink) !important; font-size: 1.02rem; max-width: 62ch; }
+.stakes b { color: var(--short); font-variant-numeric: tabular-nums; }
+.stakes .next-part { font: inherit; font-weight: 700; }
+.deadline-label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.economics { margin-top: 8px; max-width: 70ch; font-size: .93rem; color: var(--ink) !important; line-height: 1.45; }

@@ -22,6 +22,7 @@ const states = {covered: "Covered", short: "Short on site", verify: "Check recor
 const negotiator = "https://github.com/ManuelLerchner/HACKLeague2026-lio";
 const art = (id, className = "art", type = "webp") => id ? `<img class="${className}" src="/assembly/art/${id}.${type}" alt="">` : "";
 const nameOf = component => artwork[component.id]?.[1] ?? component.name;
+const siteName = () => state?.siteName ?? "the site";
 const editionName = id => state.editions.find(edition => edition.id === id)?.name ?? "Edition";
 
 let state;
@@ -79,6 +80,32 @@ function drawLinks() {
   }).join("");
 }
 
+/* The one line a buyer needs first: what is at risk, in copies and money, and which part decides it. */
+function renderStakes() {
+  const short = state.editions.filter(edition => edition.short > 0);
+  const lever = state.components.find(part => part.id === state.focusComponentId) ??
+    state.components.find(part => part.id === short[0]?.constraintIds?.[0]);
+  const parts = short.map(edition => `<b>${number(edition.short)}</b> ${html(edition.name)} ${edition.short === 1 ? "copy" : "copies"} short` +
+    (edition.refundsAtRisk ? ` (${money(edition.refundsAtRisk)} in refunds)` : ""));
+  const text = short.length ? `${parts.join(" · ")}${lever ? `. Biggest lever: <button class="next-part" type="button" data-stake-part="${html(lever.id)}">${html(nameOf(lever))}</button>` : ""}.`
+    : "Every edition is covered for Sunday.";
+  if ($("stakes").dataset.text !== text) { $("stakes").dataset.text = text; $("stakes").innerHTML = text; }
+}
+
+/* For a rush offer: what it costs, what it can add, and what still limits the edition afterwards. */
+function renderEconomics(part, route) {
+  const option = part.option;
+  if (!option || !route?.id?.startsWith("offer-")) return "";
+  const edition = state.editions.find(item => item.id === option.editionId);
+  if (!edition) return "";
+  const after = edition.projected + option.copiesAdded;
+  const limit = option.nextConstraint ? `${html(option.nextConstraint)} then ${edition.demand - after > 0 ? `limits it: ${number(edition.demand - after)} still short` : "is not a limit"}.` : "";
+  const ordered = route.steps?.some(step => step.name === "Formal order" && step.state !== "pending");
+  const by = option.latestUsefulAt && !ordered ? ` Order by ${html(at(option.latestUsefulAt))} at the latest.` : "";
+  return `<p class="economics"><b>If ${number(option.quantity)} arrive usable in time:</b> ${html(edition.name)} ${number(edition.projected)} → ${number(after)}
+    (+${number(option.copiesAdded)}). ${money(option.refundsAvoided)} in refunds avoided for ${money(option.cost)}. ${limit}${by}</p>`;
+}
+
 function updateOverview() {
   const next = JSON.stringify([state.components.map(c => [c.id, c.name, c.status, c.shared, c.includedIn, c.allocations.map(a => a.editionId)]),
     state.editions.map(e => [e.id, e.name, e.projected, e.demand])]);
@@ -96,7 +123,8 @@ function updateOverview() {
   $("assembly").hidden = false;
   $("legend").hidden = false;
   $("deadline").textContent = at(state.deadline);
-  $("cutoff").textContent = `Receiving cutoff ${time.format(new Date(state.cutoff))}`;
+  $("cutoff").textContent = `Last delivery into ${siteName()} ${time.format(new Date(state.cutoff))}`;
+  renderStakes();
   drawLinks();
 }
 
@@ -121,21 +149,20 @@ function process(currentStage) {
 const shipmentStates = {in_transit:"In transit", in_delivery:"Out for delivery", arrived_port:"At port", delayed:"Delayed",
   booked:"Booked", delivered:"Delivered", arrived_dc:"At the warehouse"};
 
-const stepStates = {confirmed: "Done", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
+const stepStates = {confirmed: "Done", waiting: "Waiting for answer", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
 
-/* The selected delivery's checkpoints on one vertical line: done, where Dockside is now (with what it does), still to come. */
+/* What Dockside does now, then the selected delivery's checkpoints on one vertical line. */
 function renderProgress(route, line) {
-  const now = `<p class="next-step-line" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
+  const now = `<p class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
   if (!route?.steps?.length) return now;
-  let current = route.steps.findIndex(step => step.state !== "confirmed");
-  return `<p class="progress-caption">Progress of ${html(route.name.charAt(0).toLowerCase() + route.name.slice(1))}</p>
-    <ol class="progress">${route.steps.map((step, index) => {
-      const position = step.state === "confirmed" ? "done" : index === current ? "current" : "todo";
-      return `<li data-position="${position}" data-state="${html(step.state)}"${position === "current" ? ' aria-current="step"' : ""}>
+  return `${now}<p class="progress-caption">Progress of ${html(route.name.charAt(0).toLowerCase() + route.name.slice(1))}</p>
+    <ol class="progress">${route.steps.map(step => {
+      const position = step.state === "confirmed" ? "done" : step.state === "waiting" ? "waiting" : "todo";
+      return `<li data-position="${position}" data-state="${html(step.state)}">
         <i class="progress-dot" aria-hidden="true"></i>
-        <div><b>${html(step.name)}</b> <span class="progress-state">${position === "current" ? "Now" : stepStates[step.state] ?? "Unclear"}</span>
-        <p>${html(step.detail)}</p>${position === "current" ? now : ""}</div></li>`;
-    }).join("")}</ol>${current === -1 ? now : ""}`;
+        <div><b>${html(step.name)}</b> <span class="progress-state">${stepStates[step.state] ?? "Unclear"}</span>
+        <p>${html(step.detail)}</p></div></li>`;
+    }).join("")}</ol>`;
 }
 
 function renderRouteDetails(route, showConfirmation) {
@@ -242,12 +269,12 @@ function renderInspector(force = false) {
   const parent = state.components.find(component => component.id === part.includedIn?.componentId);
   const offer = Boolean((parent ?? part).option && route?.id.startsWith("offer-"));
   const showConfirmation = offer || route?.tracking?.status === "booked";
-  const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in Hamburg, ${number(part.required)} needed`;
+  const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in ${siteName()}, ${number(part.required)} needed`;
   const partNote = parent ? `Fitted into the ${nameOf(parent)} by ${part.includedIn.supplier}.` : stockText;
   const wasOpen = new Set([...inspector.querySelectorAll("details[open]")].map(node => node.dataset.detail));
   inspector.innerHTML = `<div class="inspector-head"><div class="inspector-banner">${partArt(part)}
       <div><h2 id="part-heading" tabindex="-1">${html(nameOf(part))}</h2>
-      <p>${html(partNote)}</p></div>
+      <p>${html(partNote)}</p>${renderEconomics(parent ?? part, route)}</div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
     <div class="shipment-head"><div class="shipment-summary"><h3>Where it stands</h3>
       ${renderProgress(route, line)}</div>
@@ -259,7 +286,7 @@ function renderInspector(force = false) {
     <div class="info-grid"><div>
     ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
       `<li>${html(adjustment.detail)}${adjustment.evidence.length ? `<br><small>${adjustment.evidence.map(html).join(", ")}</small>` : ""}</li>`).join("")}</ul></details>` : ""}</div>
-    <div>${parent ? `<p class="side-note">Hamburg receives and counts this magnet as part of the ${html(nameOf(parent))}.</p>` :
+    <div>${parent ? `<p class="side-note">${html(siteName())} receives and counts this part as part of the ${html(nameOf(parent))}.</p>` :
     `<details class="detail-block" data-detail="allocation"><summary>Edition allocations</summary><ul>${part.allocations.map(allocation =>
       `<li>${html(editionName(allocation.editionId))} has ${number(allocation.allocated)} of ${number(allocation.required)} allocated</li>`).join("")}</ul></details>`}</div></div>`;
   for (const node of inspector.querySelectorAll("details")) if (wasOpen.has(node.dataset.detail)) node.open = true;
@@ -347,6 +374,10 @@ async function refresh() {
 $("next-strip").addEventListener("click", event => {
   const part = event.target.closest("[data-next-part]");
   if (part) selectPart(part.dataset.nextPart, true);
+});
+$("stakes").addEventListener("click", event => {
+  const part = event.target.closest("[data-stake-part]");
+  if (part) selectPart(part.dataset.stakePart);
 });
 $("overview").addEventListener("click", event => {
   const part = event.target.closest("[data-part]");
