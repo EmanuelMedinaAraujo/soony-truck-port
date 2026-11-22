@@ -39,7 +39,7 @@ An illustrative €3,000 standby van would break even if it improved the chance 
 | Sat 21 Nov, about 16:00 | The files reach Dockside (portal snapshot). |
 | Sat 17:59 | Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock. In the same pass it reserves Karton Nowak's 8,000 ready art books at no cost and proposes the order. |
 | Sun 00:14 | The formal order goes out after transport checks. It is released before the **Sun 03:00** limit, after which the vans could not reach Hamburg before the receiving cutoff. |
-| Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). At 900 Collector's boxes an hour, that is about five packing hours after the last 4,900 usable books, too late for a rush order. |
+| Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). The 4,900 usable books last about five and a half hours at 900 Collector's boxes an hour; then packing stops, too late for a rush order. |
 
 What we still have to measure with Soony: the hours buyers spend chasing today (the onboarding notes say "every day, by phone"), and their reaction to the €5,000 price.
 
