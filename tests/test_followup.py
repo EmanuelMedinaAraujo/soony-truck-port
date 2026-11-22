@@ -319,7 +319,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert all("See task" not in s for s in item["open_steps"])
         graph = depgraph.annotate({"nodes": [], "edges": [], "short": True}, part)
         rush = next(node for node in graph["nodes"] if node["id"] == route["id"])
-        assert "task for paul winter" in rush["detail"]
+        assert "Paul Winter's decision" in rush["detail"]
         assert "escalation to" not in rush["detail"] and "reminder to" not in rush["detail"]
 
         monkeypatch.setattr(server, "verified_person", lambda request: ("Katrin Jansen", "dashboard"))

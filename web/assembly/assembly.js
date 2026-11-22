@@ -78,7 +78,7 @@ function drawLinks() {
 function renderStakes() {
   const short = state.editions.filter(edition => edition.short > 0);
   const parts = short.map(edition => `<b>${number(edition.short)}</b> ${html(edition.name)} ${edition.short === 1 ? "copy" : "copies"} short` +
-    (edition.refundsAtRisk ? ` (${money(edition.refundsAtRisk)} in refunds)` : ""));
+    (edition.refundsAtRisk ? ` (${money(edition.refundsAtRisk)} in projected refunds)` : ""));
   // The part that limits each edition, named per edition so a reader knows which shortfall it explains.
   const limits = short.map(edition => {
     const part = state.components.find(item => item.id === edition.constraintIds?.[0]);

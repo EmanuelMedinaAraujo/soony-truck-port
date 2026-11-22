@@ -126,18 +126,18 @@ function conflictCard(part, item, snapshot) {
       ${option.copiesAdded ? `The +${number(option.copiesAdded)} copies stay a scenario until the books are received and inspected.` : ""}</p>`}
     <span class="decision-ask"><b>${html(person)}:</b> ${departed ? `reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome.`
       : `reconcile the existing order with ${html(conflict.who)} in writing. Sunday delivery reopens only with proof that the books left ${html(option.origin ?? "the supplier")} by ${html(at(departure.deadline))}.`}${departed ? (option.copiesAdded ? ` The rescue (+${number(option.copiesAdded)} copies) is at risk.` : ` No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`) : ""}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
-    <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
-      <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
-    <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${option.modeledUnloadReplyId ? ` (<a href="/api/replies/${encodeURIComponent(option.modeledUnloadReplyId)}" target="_blank" rel="noreferrer">latest reply</a>)` : ""}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
-      <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
-      ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? " (passed, no proof of departure)" : departure.state === "verified" ? ` (left ${html(at(departure.departed_at))})` : ""}</span>` : ""}</p>
-    <details class="question" open><summary>What clears it</summary>
-      <ol class="clears">
-        <li>${html(person)} confirms the order reference, quantity, price and the dispatch instruction with ${html(conflict.who)}.</li>
-        <li>${html(logistics)} confirms a carrier booking, a vehicle of the allowed size and an arrival time before the cutoff${departed ? "" : `, plus proof that the goods actually left ${html(option.origin ?? "the supplier")} in time (the ${html(at(option.departBy))} deadline has passed)`}.</li>
-        <li>${html(siteName())} receiving confirms an unload slot for that arrival.</li></ol>
-      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details>
-    ${answered || (q ? questionBlock(part, {...q, person: q.person ?? person}) : "")}</li>`;
+    <ol class="clears" aria-label="What clears it">
+      <li>${html(person)}: order reference, quantity, price and dispatch instruction confirmed with ${html(conflict.who)} in writing.</li>
+      <li>${html(logistics)}: carrier booking, allowed vehicle and arrival before ${html(at(snapshot.cutoff))}${departed ? "" : ", with proof of departure by " + html(at(departure.deadline))}.</li>
+      <li>${html(siteName())} receiving: an unload slot for that arrival.</li></ol>
+    ${answered || (q ? questionBlock(part, {...q, person: q.person ?? person}) : "")}
+    <details class="question"><summary>Evidence: ${html(conflict.who)}'s ${html(at(conflict.at))} reply and the timing</summary>
+      <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
+        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
+      <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
+        <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
+        ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? " (passed, no proof of departure)" : departure.state === "verified" ? ` (left ${html(at(departure.departed_at))}${departure.source_label ? `, ${html(departure.source_label)}` : ""})` : ""}</span>` : ""}</p>
+      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details></li>`;
 }
 
 /* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */

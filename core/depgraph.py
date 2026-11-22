@@ -110,14 +110,14 @@ def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str
             found.append((1, "Waiting at the port", f"Waiting at the port. No truck is booked to {rules.cfg('site_name')} yet."))
         elif "passed but still 'booked'" in flag:
             due = rules.ts(shipment["etd"])
-            found.append((3, "Not picked up yet", f"Not picked up yet: pickup was due {due:%a %d %b} but the carrier hasn't confirmed it, so the arrival moves later." if due else "Not picked up yet."))
+            found.append((3, "Departure not confirmed", f"ERP: still 'booked'; departure was due {due:%a %d %b} and the carrier has not confirmed it, so the arrival moves later." if due else "ERP: departure not confirmed."))
         elif "truck ban" in flag:
             found.append((4, "Truck ban", flag[:1].upper() + flag[1:] + "."))
         elif "no carrier update" in flag:
             hours = re.search(r"(\d+) h", flag)
             found.append((6, "No carrier update", f"No carrier update for {hours[1] if hours else 'many'} hours."))
         elif flag.startswith("short shipment"):
-            found.append((5, "Short shipment", plain("Short shipment: " + flag.split(":", 1)[1].strip() + ".")))
+            found.append((5, "Short shipment", plain("Supplier shipping advice: " + flag.split(":", 1)[1].strip() + ". The carrier has not confirmed this load either.")))
         elif flag.startswith("ETA assumes"):
             days = re.search(r"standard is ([\d.]+) d", flag)
             found.append((7, "ETA too optimistic", f"The carrier's arrival date is too optimistic: this route usually takes {days[1] if days else 'longer'} days."))
@@ -353,6 +353,15 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
     return {"nodes": list(nodes.values()), "edges": edges, "verdict": verdict, "short": short}
 
 
+def open_name(step: dict, conflict: dict | None) -> str:
+    """How an open step reads in a list: under a supplier dispute the order is not 'to place' but to reconcile."""
+    if conflict and step["name"] == "Formal order":
+        return "reconcile the existing order in writing"
+    if step["name"].startswith("Task for "):
+        return f"{step['name'][len('Task for '):]}'s decision"
+    return step["name"].lower()
+
+
 def annotate(graph: dict, component: dict | None) -> dict:
     """Add what Dockside is doing about each risk and delivery, so no card leaves the reader guessing."""
     if not component:
@@ -391,7 +400,7 @@ def annotate(graph: dict, component: dict | None) -> dict:
                     if any(s["state"] == "waiting" for s in open_steps) else "Not ordered yet")
         node = {"id": plan["id"], "label": f"{plan['name'].split(' from ')[0]}, {plan.get('quantity', 0):,}",
                 "kind": "shipment", "status": "at_risk", "meta": meta, "subtitle": "Ready stock",
-                "detail": (f"Still open: {', '.join(s['name'].lower() for s in open_steps)}. Each step is shown under Where it stands."
+                "detail": (f"Still open: {', '.join(open_name(s, conflict) for s in open_steps)}. Each step is shown under Where it stands."
                            if open_steps else None)}
         graph["nodes"].append(node)
         if supplier_id:
