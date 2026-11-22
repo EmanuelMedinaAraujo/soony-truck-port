@@ -27,9 +27,21 @@ The illustrated trace can treat confirmation as a scenario input. A future hando
 
 An illustrative €3,000 standby van would break even if it improved the chance of getting those copies onto the trucks by at least **one percentage point**. Both options still need a dock slot, an authorized order and usable receipt. The buyer supplies a real premium or sees the threshold for the example. Dockside shows the latest viable release time from the offer lead times and displays the evidence the estimate uses.
 
-**Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**: less than one hour of the exposure above, priced below the level that needs a tender. After the pilot comes a fee per critical period (launch, ramp-up, peak season) plus a share of the losses avoided, which the backtest below measures. This is a hypothesis to test with Soony. We have not yet seen a price reaction.
+**Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**, under 1% of the €708,000 at stake in this launch. After the pilot comes a fee per critical period (launch, ramp-up, peak season) plus a share of the losses avoided, which the backtest below measures. This is a hypothesis to test with Soony. We have not yet seen a price reaction.
 
 **Proof before the pitch: the backtest.** Dockside keeps every file version and event, so it can replay a launch. For a prospect we replay their last launch and report when Dockside would have flagged each problem, how many buyer hours of chasing it would have replaced, and the value of the actions that were still possible at that moment. For Soony, the rush offer stayed useful only until Sunday 03:00, so every hour of earlier warning counted.
+
+**Backtest on Soony, from the timestamps in the data and the action log.**
+
+| When | What the evidence shows |
+|---|---|
+| Wed 18 Nov | Goods receipt 5000413065 books **80,000** art books against an order line of **8,000** ("over delivery accepted"). From here the stock list overstates art books by 72,000. |
+| Sat 21 Nov, about 16:00 | The files reach Dockside (portal snapshot). |
+| Sat 17:59 | Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock. In the same pass it reserves Karton Nowak's 8,000 ready art books at no cost and proposes the order. |
+| Sun 00:14 | The formal order goes out after transport checks. It is released before the **Sun 03:00** limit, after which the vans could not reach Hamburg before the receiving cutoff. |
+| Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). At 900 Collector's boxes an hour, that is about five packing hours after the last 4,900 usable books, too late for a rush order. |
+
+What we still have to measure with Soony: the hours buyers spend chasing today (the onboarding notes say "every day, by phone"), and their reaction to the €5,000 price.
 
 **The next ten customers** share three traits: a fixed date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages.
 - Game publishers and their packing partners: special and collector's editions every quarter.
@@ -75,7 +87,7 @@ Kestrel Toys packs the Robot Builder Set in two editions at Rotterdam. The same 
 | Drop 2 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | 30 motors by cutoff |
 | Drop 3 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | Held for review. Truck board says 30, carrier manifest says 12. |
 
-Drop 2 changes three files and the verified receipt adds 100 motors to the forecast. Drop 3 changes one file and changes the next step from “On the way” to “Needs you”. Both source claims stay visible and the unsettled quantity stays out of the plan. Every drop ingests with zero issues. The original Soony rebuild still matches the saved typed rows and the dispatch forecast of 5,900 Collector's and 34,800 Standard copies short, with the rush offer adding at most 2,500 Collector's copies and avoiding €300,000 in refunds.
+Drop 2 changes three files and the verified receipt adds 100 motors to the forecast. Drop 3 changes one file and changes the next step from “On the way” to “Needs you”. Both source claims stay visible and the unsettled quantity stays out of the plan. Every drop ingests with zero issues. The original Soony rebuild still matches the saved typed rows and the offline forecast of 5,900 Collector's and 34,800 Standard copies short (the live service, which also applies the corrections in its action log, shows 32,000 Standard), with the rush offer adding at most 2,500 Collector's copies and avoiding €300,000 in refunds.
 
 ## The three-minute demo
 
