@@ -8,7 +8,7 @@ That is what happened. A delivery note for 8,000 art books was booked as **80,00
 
 Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Everything it did is in the action log. The only decisions it hands to a person are the ones that cost money.
 
-**The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers, chases confirmations, places calls, books unload slots, and escalates when only a person can help.
+**The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers in their language, chases confirmations, requests unload slots from the site, prepares and runs calls (simulated until a phone line is connected), and escalates to the right person when only a person can help. Anything that costs money waits for the assigned approver to sign the exact terms.
 
 ## The case for paying
 
@@ -18,14 +18,14 @@ Dockside found the extra zero by matching the receipt against the purchase order
 | Extra Collector’s copies if 8,000 art books arrive usable in time | 2,500 |
 | Refunds those 2,500 copies could avoid | €300,000 |
 | Cost of the rush offer | €16,800 |
-| Refunds avoided less purchase cost if the plan lands in time | €283,200 |
+| Refunds avoided less purchase cost, **only if** the books arrive usable before the cutoff | €283,200 (conditional) |
 | Collector’s gap that still remains because of statues | 3,400 |
 
-The result is a conditional forecast. The supplier is holding stock while it checks transport. A receiving slot and formal order are still open. The stock-backed view takes no credit for the offer while these steps are open.
+The result is a conditional forecast. The supplier has accepted the order; the carrier booking, the arrival time, the unload slot and the buyer's PO reference are still open. The stock-backed view takes no credit for the offer until the books are received and counted.
 
 The illustrated trace can treat confirmation as a scenario input. A future handoff would pass a verified, matching supplier claim keyed by purchase order, line and supplier, with committed quantities, delivery time and evidence. Dockside can then follow the carrier, dock slot and receipt against the same commitment. [Negotiator’s confirmation model](https://github.com/ManuelLerchner/HACKLeague2026-lio/blob/main/src/supplier_chaser/domain/models.py)
 
-An illustrative €3,000 standby van would break even if it improved the chance of getting those copies onto the trucks by at least **one percentage point**. Both options still need a dock slot, an authorized order and usable receipt. The buyer supplies a real premium or sees the threshold for the example. Dockside shows the latest viable release time from the offer lead times and displays the evidence the estimate uses.
+Dockside shows the clocks that decide the outcome next to the person who has to act: the latest useful release of the order (Sun 03:00, met at 00:14), the arrival the order asked for (Sun 12:00, now unlikely), and the last departure from Poznań that still makes the 16:00 receiving cutoff (Sun 07:00).
 
 **Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**, under 1% of the €708,000 at stake in this launch. After the pilot comes a fee per critical period (launch, ramp-up, peak season) plus a share of the losses avoided, which the backtest below measures. This is a hypothesis to test with Soony. We have not yet seen a price reaction.
 
@@ -47,6 +47,12 @@ An illustrative €3,000 standby van would break even if it improved the chance 
 Target list: Kosmos, Pegasus Spiele, Ravensburger, Schmidt Spiele, HABA, Asmodee Germany, Hutter Trade, Feuerland Spiele, Frosted Games and Queen Games. The offer to each is the same: send us the files from your last fair or Christmas launch, and within a day we replay it and show which problems Dockside would have caught, when, and what was still possible at that moment. That replay is what the Kestrel example already does offline. After that comes the €5,000 pilot on the next launch.
 
 Adjacent segments follow with the same product: video game physical editions and their packing partners, toy kits before Christmas, and contract packers serving several brands, where one onboarding serves many launches.
+
+**What the pilot must prove (acceptance criteria).**
+1. Time from a file or email becoming available to an actionable alert: under 15 minutes (measured in the action log; at Soony, 2 minutes from the first pass).
+2. Buyer minutes spent chasing suppliers per open issue: at least halved, measured against a one-week baseline the buyers log before the pilot.
+3. Copies dispatched that would otherwise have been short, counted from verified receipts linked to Dockside's actions.
+4. Zero paid commitments sent without the assigned approver's signature on the exact terms.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
 
@@ -92,7 +98,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 ## The three-minute demo
 
 1. Open the dependency overview and select Art Book. The buyer sees the active path from supplier stock through transport and receiving into Collector’s dispatch. The shared game card appears once across both editions.
-2. Open the evidence and show the corrected goods receipt, the real supplier reply and the checks still open. Then compare the rush offer and standby premium. The art books unlock at most 2,500 copies under the current model because statues become the next constraint.
+2. Open the evidence and show the corrected goods receipt, the real supplier reply and the checks still open. Then show the cost against the copies gained and the clocks beside the buyer's open question. The art books unlock at most 2,500 copies under the current model because statues become the next constraint.
 3. Show the action already taken and the live decision queue. An email records that Dockside asked. A reply records what the supplier actually confirmed. A verified receiving record changes the supply picture. When a real approval is required, show who can act and by when.
 
 ## What the jury can verify
