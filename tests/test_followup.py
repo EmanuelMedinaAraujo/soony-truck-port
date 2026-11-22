@@ -163,3 +163,94 @@ def test_historical_order_uses_customer_part_site_and_offer(tmp_path, monkeypatc
         assert terms["delivery_place"] == "Rotterdam" and terms["incoterm"] == "FCA"
         assert terms["deliver_by"] == "2026-12-11T22:00:00+01:00"
         assert terms["depart_by"] == "2026-12-12T01:00:00+01:00"
+
+
+def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from core import dispatch
+    from server.app import get_reply
+
+    replay = replay_gate
+    monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
+    monkeypatch.setattr(rules, "DB_PATH", tmp_path / "master.db")
+    policy = customer.load(replay.ROOT / "config" / "business.json")
+    policy["release_carrier_contacts"] = {"value": {replay.ORDER: replay.CARRIER_EMAIL}}
+    policy["followup"]["value"].update(enabled=True)
+    policy["release_supplier_logistics_contacts"] = {"value": {}}
+
+    def recovery():
+        with closing(actions.con()) as log:
+            related = dispatch.linked_actions(log)[replay.FINDING]
+        with closing(sqlite3.connect(rules.DB_PATH)) as db:
+            offer, = rules.facts(db, "offer")
+            edition = "FG-GH6-CE"
+            return dispatch.recovery(
+                db, offer, {replay.SUPPLIER: "Karton Nowak"}, related,
+                {edition: {"projected": 2500, "constraintIds": [], "capacityLimited": False}},
+                {edition: {"projected": 0}}, replay.at("16:00"), rules.now(),
+            )
+
+    with rules.replay(policy, replay.at("00:14")):
+        replay.seed_sent_order()
+        original = actions.get(replay.ORDER)
+        supplier = release.sent_order_message(original)
+        carrier = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please confirm transport.", "book_truck", replay.ORDER)
+    with rules.replay(policy, replay.at("00:18")):
+        replay.store_reply(supplier, "ack", "We acknowledge receipt of the order.")
+    with rules.replay(policy, replay.at("02:07")):
+        replay.store_reply(supplier, "accept", replay.ACCEPTANCE)
+        route, option = recovery()
+        formal = next(row for row in route["steps"] if row["name"] == "Formal order")
+        assert formal["state"] == "confirmed"
+        assert option["deliveryState"]["conflict"] is None
+
+    denial = "We received no dispatch instruction. We can load within four hours."
+    with rules.replay(policy, replay.at("04:17")):
+        replay.store_reply(supplier, "denial", denial,
+                           "Karton Nowak reports no dispatch instruction; using the 04:17 reply the earliest modeled "
+                           "unload is 17:17, so ACT-B7B90B recorded the delivery as unconfirmed.")
+        route, option = recovery()
+        formal = next(row for row in route["steps"] if row["name"] == "Formal order")
+        assert formal["state"] == "waiting"
+        assert formal["detail"] == "Disputed by Karton Nowak at 04:17."
+        assert [(row["message_id"], row["kind"]) for row in formal["events"][1:]] == [
+            ("ack", "acknowledged"), ("accept", "accepted"), ("denial", "disputed"), ("denial", "note"),
+        ]
+        dispute, note = formal["events"][-2:]
+        assert dispute["text"] == "Karton Nowak reports no dispatch instruction"
+        assert note["who"] == "Dockside" and "ACT-B7B90B" in note["text"]
+        assert get_reply(dispute["message_id"])["body"] == denial
+
+        delivery = option["deliveryState"]
+        assert delivery["conflict"]["owner_reconcile"] == "Paul Winter"
+        assert delivery["conflict"]["owner_logistics"] == replay.CARRIER_EMAIL
+        assert delivery["can_propose_revision"] is False
+        assert option["timingState"] == "disputed"
+        assert option["modeledUnloadAt"] == "2026-11-22T17:17+01:00"
+        assert option["modeledUnloadBasis"] == "If loading takes 4 h from the latest reply at 04:17 plus 9 h drive"
+        assert "17:17 misses the 16:00" in route["next_step"]["text"]
+        assert route["next_step"]["reply_id"] == "denial"
+        terms = release.delivery_terms(original)
+        amendment = agent.Tools().propose_action(
+            f"followup-{replay.FINDING}-202611220417", "Amend the art book delivery deadline", "", "", "order",
+            16800, 708000, 5900, "Print & Packaging", "Dockside", 15,
+            [replay.email("Karton Nowak", replay.SUPPLIER_EMAIL, "Change the arrival time on the existing order.")],
+            commitment={**terms, "deliver_by": replay.at("15:00").isoformat(), "revises_action_id": replay.ORDER},
+            delivery_id=replay.ORDER,
+        )
+        assert "disputes the order" in amendment["error"]
+
+    part = {"id": replay.PART, "name": "Art books", "status": "short", "usable": 0, "required": 8000,
+            "routes": [route], "default_route_id": route["id"], "next_step": route["next_step"], "option": option}
+    with rules.replay(policy, replay.at("04:47")):
+        item, = followup.stalled({"components": [part], "cutoff": replay.at("16:00").isoformat()})
+    assert item["delivery_state"]["conflict"]["message_id"] == "denial"
+    assert item["verified_eta"] is None
+    with rules.replay(policy, replay.at("05:00")):
+        replay.store_reply(supplier, "reconciled", replay.ACCEPTANCE)
+        assert release.delivery_state(original)["conflict"]
+        replay.store_reply(carrier, "booking", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
+        delivery = release.delivery_state(original)
+        assert delivery["conflict"] is None
+        assert release.verified_eta(delivery) == replay.at("14:30").isoformat()

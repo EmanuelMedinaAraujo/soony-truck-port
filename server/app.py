@@ -8,10 +8,12 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
 import traceback
+from contextlib import closing
 from html import escape
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -318,16 +320,26 @@ def state():
 def dispatch_view():
     snapshot = dispatch.snapshot(STATE["last_sync"])
     decisions = {decision["id"]: decision for decision in snapshot["decisions"]}
+    disputed = {}
+    for part in snapshot.get("components", []):
+        delivery = (part["option"] or {}).get("deliveryState") or {}
+        if delivery.get("conflict"):
+            disputed[delivery["action_id"]] = delivery
     with actions.tx() as c:
         ids = [row[0] for row in c.execute("""SELECT id FROM actions
             WHERE status IN ('auto','approved','scheduled','sent','superseded','expired')
             AND json_extract(payload,'$.held_reason') IS NOT NULL""")]
-    for aid in list(dict.fromkeys([*decisions, *ids])):
+    for aid in list(dict.fromkeys([*decisions, *ids, *disputed])):
         a = actions.get(aid)
         if aid not in decisions:
             decisions[aid] = {key: a[key] for key in ("id", "title", "rationale", "status", "approver_name", "next_check_at", "due_at")}
         terms = release.terms_for(a)
         decision = release.decision_state(a)
+        if delivery := disputed.get(aid):
+            conflict = delivery["conflict"]
+            decision.update(can_approve=False, held_reason=delivery["revised_reason"],
+                            hold_owner=conflict["owner_reconcile"], hold_clears=conflict["clears_when"],
+                            conflict=conflict, confirmation_evidence=delivery["confirmation_evidence"])
         if decision["can_approve"] and terms:
             decision["confirmation_evidence"] = release.preview_confirmations(a)
         instruction = None
@@ -339,6 +351,19 @@ def dispatch_view():
                               instruction=instruction, signatures=a["signatures"], **decision)
     snapshot["decisions"] = list(decisions.values())
     return snapshot
+
+
+@app.get("/api/replies/{message_id}")
+def get_reply(message_id: str):
+    if actions.DB.is_file():
+        with closing(sqlite3.connect(f"{actions.DB.resolve().as_uri()}?mode=ro", uri=True)) as log:
+            log.row_factory = sqlite3.Row
+            if log.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replies'").fetchone():
+                row = log.execute("""SELECT subject, body, from_name AS "from", received_at
+                                     FROM replies WHERE id=?""", (message_id,)).fetchone()
+                if row:
+                    return dict(row)
+    raise HTTPException(404, "Reply message not found")
 
 
 @app.get("/api/calls")

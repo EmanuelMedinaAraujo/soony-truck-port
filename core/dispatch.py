@@ -408,7 +408,7 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
         if action := action_rows.get(message["action_id"]):
             action["messages"].append(dict(message) | {"call": call_rows.get(message["id"])})
     parent_actions = {}
-    for reply in conn.execute("""SELECT id, msg_id, action_id, from_name, summary_en, received_at, handled, simulated
+    for reply in conn.execute("""SELECT id, msg_id, action_id, from_addr, from_name, summary_en, received_at, handled, simulated
                                 FROM replies ORDER BY received_at DESC"""):
         if action := action_rows.get(reply["action_id"]):
             action["replies"].append(dict(reply))
@@ -452,10 +452,6 @@ def offer_price(conn: sqlite3.Connection, offer: dict) -> tuple[float | None, st
     return tuple(price) if price else (None, None)
 
 
-ACCEPTED = re.compile(r"\b(accept\w*|treat\w*\b.{0,60}\bas the\b.{0,40}\border|released the goods)", re.I)
-REFUSED = re.compile(r"\b(not|no longer|cannot|can't|won't|declin\w*|reject\w*)\b.{0,20}\b(acknowledg|accept|treat|confirm\w* the order)", re.I)
-
-
 def _clock(moment: dt.datetime | None) -> str:
     return f"{moment.astimezone(rules.timezone()):%a %H:%M}" if moment else ""
 
@@ -464,53 +460,48 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
-def supplier_words(summary: str | None) -> str:
-    """A reply summary without the agent's own notes ('I resent…', 'so no…'): only what the other side said."""
-    text = re.sub(r"\s+", " ", summary or "").strip()
-    text = re.split(r"(?:;|,)\s*(?:so\s+)?(?:I|Dockside|we)\s+(?:resent|sent|asked|placed|recorded|chased|did|will|have|am)\b", text)[0]
-    text = re.split(r"(?:;|,)\s*so\s+no\b", text)[0]
-    return text.rstrip(" ,;") + ("" if text.endswith((".", "?", "!")) else ".")
-
-
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
                 order: dict | None, delivery: dict):
     """Show which delivery requirements have verified evidence and which are still open."""
     site = rules.cfg("site_name")
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units.")]
-    sent_at = min((m["sent_at"] for m in (order or {}).get("messages", []) if m["channel"] == "email"
-                   and m["status"] in {"sent", "delivered"} and m["sent_at"]), default=None)
-    if sent_at:
-        # Every answer from the same person after the order, wherever in the thread it arrived, in time order.
-        names = {m.get("to_name") for m in order.get("messages", []) if m.get("to_name")}
-        replies = sorted((r for a in related for r in a["replies"]
-                          if not r.get("simulated") and r["summary_en"] and (r["received_at"] or "") >= sent_at
-                          and (a["id"] == order["id"] or r.get("from_name") in names)), key=lambda r: r["received_at"])
-        accepted = next((r for r in replies if ACCEPTED.search(r["summary_en"]) and not REFUSED.search(r["summary_en"])), None)
+    from core import release
+
+    sent = release.sent_order_message(order) if order else None
+    if sent:
+        sent_at = sent["sent_at"]
+        names = {m.get("to_name") for m in order["messages"] if m.get("to_name")}
+        claims = delivery["claims"]
+        accepted = next((row for row in reversed(claims) if row["kind"] == "accepted"), None)
+        conflict = delivery["conflict"]
         label = "Delivery amendment" if delivery.get("revises_action_id") else "Order"
         entries = order.get("history") or []
         entries = json.loads(entries) if isinstance(entries, str) else entries
         history = " ".join(str(entry.get("entry", "")) for entry in entries if isinstance(entry, dict))
         how = " when its stop window ran out, without a signature (the policy before the release gate)" if "unless" in history and "stop" in history.lower() else ""
         # One sourced row per event: what we sent, and what the supplier said (without the agent's own notes).
-        events = [{"at": sent_at, "who": "Dockside", "kind": "sent", "text": f"{label} sent{how}."}]
+        events = [{"message_id": sent["id"], "at": sent_at, "who": "Dockside", "kind": "sent",
+                   "text": f"{label} sent{how}."}]
         for action in related:
             if action["id"] == order["id"]:
                 continue
             for m in action.get("messages", []):
                 if (m.get("channel") == "email" and m.get("to_name") in names and m.get("sent_at")
                         and m["sent_at"] > sent_at and m.get("status") in {"sent", "delivered"}):
-                    events.append({"at": m["sent_at"], "who": "Dockside", "kind": "sent",
+                    events.append({"message_id": m["id"], "at": m["sent_at"], "who": "Dockside", "kind": "sent",
                                    "text": f"Follow-up to {m['to_name']}: {(action.get('title') or 'reminder').rstrip('.')}."})
-        for r in replies:
-            said = supplier_words(r["summary_en"])
-            kind = "accepted" if r is accepted else "acknowledged" if re.search(r"\backnowledg", said, re.I) else "reply"
-            events.append({"at": r["received_at"], "who": r["from_name"], "kind": kind, "text": said})
-        events.sort(key=lambda e: rules.ts(e["at"]) or dt.datetime.min.replace(tzinfo=rules.TZ))
+        events.extend(dict(claim) for claim in claims)
+        events.sort(key=lambda event: rules.ts(event["at"]))
         for event in events:
             event["at"] = _clock(rules.ts(event["at"]))
-        summary = (f"Accepted by {accepted['from_name']} {_clock(rules.ts(accepted['received_at']))}." if accepted
-                   else f"Sent {_clock(rules.ts(sent_at))}; not accepted yet.")
-        steps.append(step("Formal order", "confirmed" if accepted else "waiting", summary) | {"events": events})
+        if conflict:
+            at = rules.ts(conflict["at"]).astimezone(rules.timezone())
+            summary = f"Disputed by {conflict['who']} at {at:%H:%M}."
+        elif accepted:
+            summary = f"Accepted by {accepted['who']} {_clock(rules.ts(accepted['at']))}."
+        else:
+            summary = f"Sent {_clock(rules.ts(sent_at))}. Awaiting acceptance."
+        steps.append(step("Formal order", "confirmed" if accepted and not conflict else "waiting", summary) | {"events": events})
     else:
         steps.append(step("Formal order", "waiting" if order else "pending",
                           ("Delivery amendment" if delivery.get("revises_action_id") else "Order") +
@@ -539,7 +530,7 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
     if window:
         detail = f"{_clock(rules.ts(window['start']))}–{rules.ts(window['end']).astimezone(rules.timezone()):%H:%M} confirmed by {reported(dock)}."
         if not delivery["slot_confirmed"]:
-            reason = dock["reason"]
+            reason = dock["reason"] or "verify a slot against the reconciled ETA"
             detail += f" {reason[0].upper() + reason[1:]}."
     else:
         detail = (f"Request a new unload window with {site} for the revised arrival." if missed or delivery.get("revises_action_id")
@@ -606,7 +597,27 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     expired = now >= cutoff or (not released and ((latest_release and now > latest_release) or (valid_day and now.date() > valid_day)))
     timing = "expired" if expired else "released" if released else "open" if latest_release else "unknown"
     origin = (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1]
-    if delivery.get("needs_revised_terms"):
+    contact = conn.execute("SELECT contact_email FROM suppliers WHERE supplier_id=?", (offer["supplier_id"],)).fetchone()
+    addresses = {(contact[0] or "").casefold()} if contact else set()
+    if order:
+        addresses.add(release.delivery_terms(order)["recipient"])
+    active = max((reply for a in related for reply in a["replies"]
+                  if not reply.get("simulated") and reply.get("from_addr")
+                  and reply["from_addr"].casefold() in addresses
+                  and (received := rules.ts(reply["received_at"])) and received <= now),
+                 key=lambda reply: rules.ts(reply["received_at"]), default=None)
+    modeled_unload, modeled_basis = None, None
+    if load is not None and drive is not None:
+        anchor = (rules.ts(active["received_at"]) if active else now).astimezone(rules.timezone())
+        modeled_unload = anchor + dt.timedelta(hours=load + drive)
+        start = f"the latest reply at {anchor:%H:%M}" if active else f"now ({anchor:%H:%M})"
+        modeled_basis = f"If loading takes {load:g} h from {start} plus {drive:g} h drive"
+    conflict = delivery.get("conflict")
+    if conflict:
+        timing = "disputed"
+        if modeled_unload and modeled_unload > cutoff:
+            delivery["revised_reason"] += f" Modeled unload at {modeled_unload:%H:%M} misses the {cutoff:%H:%M} receiving cutoff."
+    elif delivery.get("needs_revised_terms"):
         delivery["pending_revision_action_id"] = pending_revision["id"] if pending_revision else None
         later = f"A later arrival (latest {cutoff:%H:%M} receiving cutoff"
         if origin and depart_cutoff:
@@ -616,7 +627,6 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         eta = rules.ts(delivery.get("eta"))
         delivery["can_propose_revision"] = bool(not expired and (
             eta <= cutoff if eta and eta >= now else depart_cutoff and now <= depart_cutoff))
-    active = latest_summary(related)
     priority = rules.cfg("priority_product")
     accounting = rules.cfg("missed_copy_cost_eur")
     deltas = {edition: row["projected"] - baseline[edition]["projected"] for edition, row in alt.items()}
@@ -626,13 +636,18 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     sources = [evidence(offer["_path"].rsplit("/", 1)[-1], offer.get("summary") or "Supplier offer")]
     if price_source:
         sources.append(evidence(price_source.rsplit("/", 1)[-1], "The offer points to Annex A; estimate uses the latest EUR purchase-order unit price."))
-    if active:
+    if claim := next((row for row in reversed(delivery.get("claims", [])) if row["kind"] != "note"), None):
+        sources.insert(0, evidence(f"Supplier reply from {claim['who']}", claim["text"]) | {"message_id": claim["message_id"]})
+    elif active and active["summary_en"]:
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
     steps = offer_steps(related, supplier, quantity, offer, expired, order, delivery)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)
-    if expired:
+    if conflict:
+        next_action = next_step("Needs you", delivery["revised_reason"], conflict["at"], delivery["action_id"]) | {
+            "urgent": True, "person": conflict["owner_reconcile"], "reply_id": conflict["message_id"]}
+    elif expired:
         next_action = next_step("Stuck", "The rush order window has passed.")
     elif delivery.get("needs_revised_terms"):
         next_action = next_step("Stuck", delivery["revised_reason"], action_id=delivery["action_id"]) | {"urgent": True}
@@ -660,6 +675,8 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "departBy": depart_cutoff.isoformat(timespec="minutes") if depart_cutoff else None,
              "requestedBy": requested_by.isoformat(timespec="minutes") if requested_by else None,
              "departForRequested": depart_requested.isoformat(timespec="minutes") if depart_requested else None,
+             "modeledUnloadAt": modeled_unload.isoformat(timespec="minutes") if modeled_unload else None,
+             "modeledUnloadBasis": modeled_basis,
              "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
              "origin": origin,
              "timingState": timing, "evidence": sources, "assurance": None})  # no unsourced standby-premium example
@@ -771,7 +788,8 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
                                "adjustments": [{"detail": adj["detail"], "evidence": adj.get("evidence", [])} for adj in stock["adjustments"]],
                                "latestActivity": latest["summary_en"] if latest else None, "default_route_id": primary_route["id"],
                                "current_stage": primary_route["current_stage"],
-                               "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" and primary_route is not review_route else primary_route["next_step"]})
+                               "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" and primary_route is not review_route
+                                            and not primary_route["next_step"].get("reply_id") else primary_route["next_step"]})
 
     from core import followup
     reviews = followup.last_reviews() if include_activity else {}

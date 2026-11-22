@@ -142,8 +142,11 @@ def test_snapshot_reports_the_configured_dispatch_deadline():
 
 
 def test_supplier_acceptance_is_recognised_but_refusal_is_not():
-    from core.dispatch import ACCEPTED, REFUSED
+    from core.release import _claim_rows
+
     yes = "Karton Nowak says it is treating the prior written message as the EUR 16,800 order and has released the goods to logistics"
     no = "Karton Nowak cannot accept the order until a PO number is given"
-    assert ACCEPTED.search(yes) and not REFUSED.search(yes)
-    assert REFUSED.search(no)
+    reply = {"id": "RPL-1", "from_name": "Karton Nowak", "received_at": "2026-11-22T02:07:00+01:00",
+             "summary_en": None}
+    assert _claim_rows(dict(reply, body=yes), {})[0]["kind"] == "accepted"
+    assert _claim_rows(dict(reply, body=no), {})[0]["kind"] == "disputed"

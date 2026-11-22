@@ -3,6 +3,7 @@
 Runs inside the server process (same action log as the web UI). Enabled when DISCORD_TOKEN and DISCORD_CHANNEL_ID are set.
 - New / escalated decision -> message with "Approve and send" / "Decline" buttons.
 - /ask <question>  -> the agent answers with numbers from the tools.
+- /answer <question> <text> -> answer a specific open question assigned to you.
 - /status          -> money at risk and the decisions waiting.
 - Data drop        -> one-line note in the channel.
 """
@@ -10,13 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import threading
 import traceback
 
 import discord
 from discord import app_commands
 
-from core import actions, release, agent, rules
+from core import actions, release, agent, inbox, rules
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID") or 0)                       # decisions with buttons, /ask, /status
@@ -25,6 +27,34 @@ GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID") or 0)
 UI_URL = os.environ.get("PUBLIC_URL", "")
 
 eur = lambda v: f"€{round(v or 0):,}"
+
+
+def open_questions(who):
+    people = rules.cfg("people")
+    with actions.tx() as log:
+        inbox.init_schema(log)
+        rows = log.execute("""SELECT m.id, m.to_name, m.subject, m.body, a.title, a.finding_id
+            FROM messages m JOIN actions a ON a.id=m.action_id
+            WHERE m.channel='discord' AND m.status='delivered'
+              AND a.kind IN ('ask','escalate','chase_escalation')
+              AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.msg_id=m.id)
+            ORDER BY julianday(m.sent_at) DESC, m.id""").fetchall()
+    questions = {}
+    for row in rows:
+        recipient = re.split(r"\s+(?:and|\()\s*", row["to_name"] or "", maxsplit=1)[0].strip()
+        if (people.get(recipient) or recipient) == who:
+            text = " ".join((row["subject"] or row["title"] or row["body"] or "").split())
+            if part := actions.PART.search(row["finding_id"] or ""):
+                text = f"{part[0]} · {text}"
+            questions[row["id"]] = text[:100]
+    return questions
+
+
+def answer_route():
+    if release.setting("staff_accounts", {}) or release.setting("demo_local_operator", None):
+        dashboard = f" at {UI_URL}" if UI_URL else ""
+        return f"Open Actions in the Dockside dashboard{dashboard} and answer the question there."
+    return "Ask your Dockside administrator to link your Discord account."
 
 
 def decision_embed(a: dict) -> discord.Embed:
@@ -91,24 +121,29 @@ class Bot(discord.Client):
             lines += [f"• {a['title']} — needs {a['approver_name']}" for a in pending[:8]] or ["No decisions waiting."]
             await inter.response.send_message("\n".join(lines)[:1990])
 
-        @self.tree.command(name="answer", description="Answer the latest question Dockside asked you")
-        async def answer(inter: discord.Interaction, text: str):
+        @self.tree.command(name="answer", description="Answer a specific Dockside question")
+        @app_commands.describe(question="Select the question you want to answer")
+        async def answer(inter: discord.Interaction, question: str, text: str):
             who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
             if not who:
-                await inter.response.send_message("This Discord account is not linked to a Dockside staff member yet.", ephemeral=True)
+                await inter.response.send_message(f"This Discord account has no staff mapping. {answer_route()}", ephemeral=True)
                 return
-            from core import inbox
-            with actions.tx() as c:
-                rows = c.execute("""SELECT m.id, m.to_name FROM messages m WHERE m.channel='discord' AND m.status='delivered'
-                                    AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.msg_id=m.id)
-                                    ORDER BY m.sent_at DESC""").fetchall()
-            people = rules.cfg("people")
-            mine = next((r["id"] for r in rows if (people.get(n := (r["to_name"] or "").split(" (")[0].split(" and ")[0].strip()) or n) == who), None)
-            if not mine:
-                await inter.response.send_message("Dockside has no open question for you.", ephemeral=True)
+            if question not in open_questions(who):
+                await inter.response.send_message("Select an open question assigned to you.", ephemeral=True)
                 return
-            await asyncio.to_thread(inbox.add_staff_answer, mine, who, text[:4000])
+            if not (text := text.strip()):
+                await inter.response.send_message("Write an answer first.", ephemeral=True)
+                return
+            inbox.add_staff_answer(question, who, text[:4000])
             await inter.response.send_message(f"Thanks {who}, Dockside will act on your answer in its next pass.", ephemeral=True)
+
+        @answer.autocomplete("question")
+        async def question_choices(inter: discord.Interaction, current: str):
+            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            questions = await asyncio.to_thread(open_questions, who) if who else {}
+            query = current.casefold()
+            return [app_commands.Choice(name=label, value=mid) for mid, label in questions.items()
+                    if query in label.casefold() or query in mid.casefold()][:25]
 
         @self.tree.command(name="decisions", description="Show every decision waiting for approval, with buttons")
         async def decisions(inter: discord.Interaction):

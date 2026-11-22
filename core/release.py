@@ -860,6 +860,98 @@ def delivery_terms(action):
     return terms_for(action) or _historical_terms(action)
 
 
+ACCEPTED_ORDER = re.compile(
+    r"\b(?:accept\w*\b.{0,65}\border|\btreat\w*\b.{0,120}\bas\s+(?:the|a)\b.{0,60}\border"
+    r"|releas\w* the goods|traktuję.{0,80}jako pisemne zlecenie)", re.I)
+DISPUTED_ORDER = re.compile(
+    r"\b(?:no\s+(?:written\s+)?(?:dispatch (?:instruction|release)|booking in (?:our|the|its) (?:current )?records)"
+    r"|(?:order|goods|shipment|dispatch)\b.{0,30}\b(?:not (?:been )?(?:released|accepted|received)|was never released)"
+    r"|(?:not|never|cannot|can't|won't)\s+(?:been\s+)?(?:released|accept(?:ed)? the order|received.{0,30}dispatch)"
+    r"|no\b.{0,65}\bdispatch release|nie otrzymali\w*\s+(?:również\s+)?dyspozycji"
+    r"|(?:wrong|incorrect|different|revised)\s+(?:PO\b|purchase order|quantity|price)"
+    r"|(?:PO\b|purchase order|quantity|price)\s+(?:is\s+)?(?:incorrect|wrong|does not match))", re.I)
+ACKNOWLEDGED_ORDER = re.compile(r"\b(?:acknowledg\w*|confirm\w* receipt|potwierdzam otrzymanie)\b", re.I)
+CLAIMED_PO = re.compile(r"\b(?:correct|new|actual)\s+PO(?:\s+(?:number|reference))?\s*[:#]?\s*(\d{6,})\b", re.I)
+NOTE_START = re.compile(
+    r"(?:[;,]|(?<=[.!?]))\s*(?=(?:and\s+|so\s+|(?:so |and )?then\s+)?"
+    r"(?:(?:Dockside|ACT-[A-Z0-9]+)\b|(?:I|we)\s+(?:resent|sent|asked|placed|recorded|chased|updated|logged|escalated)\b"
+    r"|using\b.{0,130}\bmodel(?:ed|led)\b|(?:the\s+)?(?:earliest\s+)?model(?:ed|led)\b|so no\b))", re.I)
+
+
+def _claim_rows(reply, terms):
+    body = inbox._strip_quote(reply["body"] or "")
+    summary = " ".join((reply["summary_en"] or "").split())
+    words, *notes = NOTE_START.split(summary, maxsplit=1)
+    words = words.rstrip(" ,;")
+    if re.match(r"^(?:Dockside|ACT-[A-Z0-9]+)\b", words, re.I):
+        notes, words = [summary], ""
+    if not (words or body):
+        return []
+    content = " ".join(f"{body} {words}".split())
+    commercial_change = (all(terms.get(k) is not None for k in ("quantity", "unit_price", "total_price", "currency"))
+                         and _body_blocker(terms, {"body": body, "body_en": words}))
+    po_change = terms.get("po") and any(po != terms["po"] for po in CLAIMED_PO.findall(content))
+    if DISPUTED_ORDER.search(content) or commercial_change or po_change:
+        kind = "disputed"
+    elif ACCEPTED_ORDER.search(content):
+        kind = "accepted"
+    elif ACKNOWLEDGED_ORDER.search(content):
+        kind = "acknowledged"
+    else:
+        kind = "reported"
+    event = {"message_id": reply["id"], "at": reply["received_at"]}
+    claim = event | {"who": reply["from_name"] or reply["contact"], "kind": kind, "text": words or body}
+    return [claim, *(event | {"who": "Dockside", "kind": "note", "text": note} for note in notes)]
+
+
+def supplier_claims(log, action, terms, now):
+    """Read the order thread and linked follow-ups from the supplier who received the order."""
+    sent = sent_order_message(action)
+    if not sent or "simulated" not in {column[1] for column in log.execute("PRAGMA table_info(replies)")}:
+        return []
+    replies = log.execute("""WITH RECURSIVE related(id) AS (
+        SELECT id FROM actions
+        WHERE id=? OR finding_id=? OR
+            (substr(finding_id, 1, length('followup-' || ? || '-'))='followup-' || ? || '-')
+        UNION
+        SELECT a.id FROM related JOIN replies r ON r.action_id=related.id
+        JOIN actions a ON a.finding_id='reply-' || r.id
+    )
+    SELECT r.*, m.to_name AS contact FROM related JOIN replies r ON r.action_id=related.id
+    JOIN messages m ON m.id=r.msg_id AND m.action_id=r.action_id
+    WHERE r.simulated=0 AND m.channel='email' AND m.status IN ('sent','delivered')
+      AND lower(r.from_addr)=lower(?) AND lower(m.to_address)=lower(r.from_addr)
+      AND julianday(r.received_at) BETWEEN julianday(?) AND julianday(?)
+    ORDER BY julianday(r.received_at), r.rowid""",
+                          (action["id"], action["finding_id"], action["finding_id"], action["finding_id"],
+                           terms["recipient"], sent["sent_at"], now.isoformat()))
+    return [claim for reply in replies for claim in _claim_rows(reply, terms)]
+
+
+def _order_conflict(action, claims, transport, contacts, terms, now):
+    material = [claim for claim in claims if claim["kind"] in {"disputed", "accepted"}]
+    dispute = next((claim for claim in reversed(material) if claim["kind"] == "disputed"), None)
+    if not dispute:
+        return None
+    # A later acceptance resolves the supplier's side of the conflict. Require fresh logistics evidence too.
+    eta = rules.ts(transport.get("eta"))
+    observation = rules.ts(transport.get("received_at"))
+    cutoff = _receiving_cutoff()
+    if (material[-1]["kind"] == "accepted" and observation and observation >= rules.ts(dispute["at"])
+            and eta and now <= eta <= cutoff and transport.get("booking_reference")
+            and (terms.get("vehicle_limit_t") is None or transport.get("vehicle_rating_t") is not None)):
+        return None
+    buyer = action.get("approver_name") or "Buyer"
+    logistics = ", ".join(contacts.get("transport_confirmed", {}).values()) or "the supplier logistics contact or carrier"
+    return dispute | {
+        "owner_reconcile": buyer,
+        "owner_logistics": logistics,
+        "clears_when": (f"{buyer} reconciles the order reference, quantity, price and dispatch release with the supplier. "
+                        f"{logistics} verifies a booking, eligible vehicle and current ETA by the {cutoff:%H:%M} receiving cutoff. "
+                        "Receiving must confirm an unload slot for that ETA before release."),
+    }
+
+
 def amendment_window(original: dict, cutoff: dt.datetime | None = None) -> dict | None:
     """The original deadline is exclusive and the receiving cutoff is inclusive."""
     if not (after := rules.ts(original.get("deliver_by"))):
@@ -872,7 +964,7 @@ def amendment_window(original: dict, cutoff: dt.datetime | None = None) -> dict 
 def verified_eta(delivery: dict) -> str | None:
     """A verified carrier observation can be too late for the original order."""
     transport = delivery.get("confirmation_evidence", {}).get("transport_confirmed", {})
-    return delivery.get("eta") if not transport.get("eta_expired") else None
+    return delivery.get("eta") if not (delivery.get("conflict") or transport.get("eta_expired")) else None
 
 
 def amendment_deadline_blocker(original: dict, deliver_by: str | None, eta: str | None = None) -> str | None:
@@ -952,12 +1044,16 @@ def _departure_blocker(action, terms):
     if "depart_by" in terms and not terms["depart_by"]:
         return "departure deadline is missing" if terms.get("revises_action_id") else None
     now = rules.now()
-    if terms.get("depart_by") and now <= rules.ts(terms["depart_by"]):
+    if terms.get("depart_by") and now <= rules.ts(terms["depart_by"]) and not terms.get("revises_action_id"):
         return None
     if not actions.DB.is_file():
         return DEPARTURE_HOLD if terms.get("depart_by") else None
     try:
         with _action_log() as log:
+            if original_id := terms.get("revises_action_id"):
+                original = actions._get(log, original_id)
+                if original and (conflict := delivery_state(original, log=log, now=now)["conflict"]):
+                    return conflict_reason(conflict)
             depart_by = _effective_depart_by(terms, log)
             if depart_by is None:
                 return "departure deadline is missing" if terms.get("revises_action_id") else None
@@ -969,11 +1065,17 @@ def _departure_blocker(action, terms):
     return None
 
 
+def conflict_reason(conflict):
+    at = rules.ts(conflict["at"]).astimezone(rules.timezone())
+    text = conflict["text"].rstrip(".!?")
+    return f"Supplier reply from {conflict['who']} at {at:%H:%M} disputes the order. {text}. {conflict['clears_when']}"
+
+
 def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
     """The gate and cockpit share the same reply evidence and delivery constraints."""
     now = now or rules.now()
     terms = delivery_terms(action)
-    matches, review, departure_hold = {}, None, None
+    matches, review, departure_hold, claims = {}, None, None, []
     depart_by = (terms or {}).get("depart_by")
     if terms and terms.get("deliver_by"):
         def evidence(db):
@@ -983,14 +1085,14 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
             hold = _departure_evidence(db, terms, confirmations, departure, now) if after_departure else None
             if departure is None and terms.get("revises_action_id"):
                 hold = "departure deadline is missing"
-            return supplier_review, confirmations, hold, departure
+            return supplier_review, confirmations, hold, departure, supplier_claims(db, action, terms, now)
 
         try:
             if log is None:
                 with _action_log() as db:
-                    review, matches, departure_hold, depart_by = evidence(db)
+                    review, matches, departure_hold, depart_by, claims = evidence(db)
             else:
-                review, matches, departure_hold, depart_by = evidence(log)
+                review, matches, departure_hold, depart_by, claims = evidence(log)
         except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
             review = "evidence stale or unreadable"
     terms = terms or {}
@@ -999,12 +1101,16 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
     deadline = rules.ts(terms.get("deliver_by"))
     eta = rules.ts(transport.get("eta"))
     limit = terms.get("vehicle_limit_t")
+    contacts = _confirmation_contacts(terms) if terms else {}
+    conflict = _order_conflict(action, claims, transport, contacts, terms, now)
     revised_reason = None
-    if eta and deadline and eta > deadline:
+    if conflict:
+        revised_reason = conflict_reason(conflict)
+    elif eta and deadline and eta > deadline:
         revised_reason = f"Verified ETA {eta:%a %H:%M} is after the ordered {deadline:%H:%M} arrival."
     elif deadline and (now >= deadline or (depart_for_requested and now > depart_for_requested)) and (not eta or eta < now):
         revised_reason = f"The ordered {deadline:%H:%M} arrival can no longer be met."
-    hold_reason = departure_hold or review or _confirmation_blocker(matches)
+    hold_reason = revised_reason if conflict else departure_hold or review or _confirmation_blocker(matches)
     saved_hold = (action.get("payload") or {}).get("held_reason")
     if (log is None and not hold_reason and saved_hold and saved_hold != DEPARTURE_HOLD
             and not saved_hold.startswith("required condition missing")):
@@ -1016,15 +1122,16 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
         "terms_source": ("signed_terms" if _signed(action, fingerprint(terms)) else "proposed_terms") if terms_for(action)
                         else "sent_order" if terms else None,
         "booking_ref": transport.get("booking_reference"), "eta": transport.get("eta"),
-        "eta_source": transport.get("contact") if eta else None, "transport_confirmed": bool(transport.get("confirmed")),
+        "eta_source": transport.get("contact") if eta else None, "transport_confirmed": bool(transport.get("confirmed") and not conflict),
         "slot_window": {"start": dock["slot_start"], "end": dock["slot_end"]} if dock.get("slot_end") else None,
-        "slot_confirmed": bool(dock.get("confirmed")),
+        "slot_confirmed": bool(dock.get("confirmed") and not conflict),
         "slot_confirmed_by": dock.get("contact") if dock.get("slot_end") else None,
         "vehicle_limit": limit, "vehicle_rating": transport.get("vehicle_rating_t"),
         "vehicle_ok": (transport.get("vehicle_rating_t") is not None) if limit is not None else None,
         "hold_reason": hold_reason,
         "needs_revised_terms": bool(revised_reason), "revised_reason": revised_reason,
-        "confirmation_evidence": matches, "contacts": _confirmation_contacts(terms) if terms else {},
+        "conflict": conflict, "claims": claims, "can_propose_revision": False,
+        "confirmation_evidence": matches, "contacts": contacts,
     }
 
 
@@ -1038,6 +1145,8 @@ def _amendment_blocker(log, terms):
                  "vehicle_limit_t")
     if any(terms.get(field) != prior.get(field) for field in preserved) or set(prior["conditions"]) - set(terms["conditions"]):
         return "delivery amendment must preserve the original order and vehicle requirement"
+    if conflict := delivery_state(original, log=log)["conflict"]:
+        return conflict_reason(conflict)
     return amendment_deadline_blocker(prior, terms["deliver_by"])
 
 
@@ -1227,6 +1336,9 @@ def check(action: dict) -> tuple[bool, str | None]:
             if action["payload"].get("repeat_commitment"):
                 if action["status"] not in {"auto", "sent"} or not _authorized_repeat(log, action, terms):
                     return False, "repeat needs the exact terms of an explicitly approved and sent commitment"
+                origin = actions._get(log, action["payload"]["repeat_commitment"])
+                if conflict := delivery_state(origin, log=log)["conflict"]:
+                    return False, conflict_reason(conflict)
             else:
                 if terms.get("revises_action_id") and (reason := _amendment_blocker(log, terms)):
                     return False, reason

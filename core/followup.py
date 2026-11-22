@@ -32,6 +32,8 @@ def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime |
     option = (part or {}).get("option")
     if option and str(part.get("default_route_id", "")).startswith("offer-"):
         delivery = option.get("deliveryState") or {}
+        if delivery.get("conflict"):
+            return cutoff
         if delivery.get("needs_revised_terms") and delivery.get("can_propose_revision"):
             # The revision only helps if the goods can still leave in time for the cutoff.
             return rules.ts(delivery.get("depart_by") or option.get("departBy")) or cutoff
@@ -148,6 +150,11 @@ How to decide, per part:
 - Schedule each intervention by act_by, including the answer-by time and the approval due time. For a rush amendment, act_by is the last
   departure time. The amended deliver_by is an arrival time: it must be strictly after arrival_window.after, at or before
   arrival_window.latest, and at or after verified_eta. Use the full date, time and offset.
+- Rush delivery with delivery_state.conflict takes precedence. Ask owner_reconcile to reconcile the supplier's earlier acceptance
+  and later dispute, including the order reference, quantity, price and dispatch release. Ask owner_logistics on a linked confirmation
+  thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit, request actual departure.
+  Use clears_when and cite the supplier message ID. Keep any existing request that already covers the check.
+  Do not propose an amendment while the conflict is open. Skip the other rules for this delivery.
 - Rush delivery with needs_revised_terms: if delivery_state.can_propose_revision is false, escalate revised_reason to the buyer and
   finish this item.
   Inspect delivery_state.action_id and its delivery_terms. If pending_revision_action_id exists, review that action and continue its
