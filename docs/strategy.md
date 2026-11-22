@@ -2,9 +2,13 @@
 
 ## The story in 30 seconds
 
-*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, **€708,000 in projected refunds**. It ordered replacements but never counted them as stock. Overnight the supplier reversed itself. The order had already gone out, so when the 07:00 departure deadline passed, Dockside held any amendment and asked the buyer to reconcile the order in writing.
+**The pain.** *"We find out at the dock,"* Soony's Head of Procurement told us.
 
-*(The 00:14 order under the night's policy, the 02:07 acceptance and the 04:17 and 04:51 reversals are each one click away in the live trace, with their source emails.)*
+**The catch.** On Saturday Dockside found an art-book receipt booked as 80,000 against a delivery note for 8,000, two minutes into its first pass: **5,900 Collector's copies short, €708,000 in projected refunds**.
+
+**The save.** It ordered replacements but refused to count books that had not left the supplier. When the supplier contradicted itself overnight, it held everything and handed the buyer the one decision that is left.
+
+*(The timeline, the order that went out under the night's policy, the acceptance and the two reversals are one click away in the live trace with their source emails. The unsigned order is our answer to "what happens when you are wrong": it is why the release gate exists.)*
 
 *(The figures above are the Saturday replay; the live board recalculates them from every new file, receipt and reply.)*
 
@@ -79,6 +83,20 @@ Adjacent segments follow with the same product: video game physical editions and
 **What customer two costs us.** Kestrel took one reviewed mapping file (270 lines: source paths, column names, SKU and site conventions, policy) and 22 small fixture files; the runtime code did not change. The manual part is the mapping review and reading the customer's document types. Our targets for the first real prospect: one working day elapsed from receiving their files to the first replayed alert; about 16 Dockside staff hours (mapping, document types, policy) plus about 4 hours of the customer's review; afterwards one named Dockside engineer owns the customer's mapping and reviews every change to it. At €5,000 the pilot covers that work with room for the replay and support during the launch weekend. We will time all of it.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
+
+## Market and contract value
+
+| | Accounts | Critical periods per year | Value per period | Per account per year |
+|---|---:|---:|---:|---:|
+| Tabletop publishers (beachhead) | ~40 in DACH with fair and Christmas launches | 2–3 | €5,000 + capped success share | €15,000–40,000 |
+| Video game physical editions and their packers | ~60 in Europe | 4–6 | same | €30,000–60,000 |
+| Contract packers and fulfilment centres | ~150 in Europe, each serving many brands | continuous | per site, per month | €40,000–80,000 |
+
+Contract packers are the multiplier: one onboarding serves every brand they pack for. These are planning ranges from public company lists, to be checked in the first ten conversations, not researched market data.
+
+**Cost to serve, per launch:** model calls for reading documents and replies (tens of euros at this weekend's volume of 300+ files and about 40 messages), email and hosting (a few euros), and the staff hours above. The margin is in the software running the weekend, not in people chasing.
+
+**One signal to get before 12:00 at the booth:** ask Soony's team what a missing Collector's copy costs on day one and whether late copies replace the refund (the onboarding notes say "ask me at the booth"), how they react to €5,000, and how many hours their buyers spent chasing this week. We will quote the answers on the pilot slide.
 
 ## The platform: compile an operation once, then let the agent run it
 
