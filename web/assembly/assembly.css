@@ -75,8 +75,8 @@ img { display: block; max-width: 100%; }
 .next-strip { margin-bottom: 16px; padding: 11px 15px 13px; background: var(--sheet); border: 1px solid var(--line); border-radius: 8px; }
 .next-strip header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
 .next-strip h2 { font-size: 1.15rem; }
-#busy-progress { color: var(--active); font-size: .84rem; font-weight: 700; }
-.strip-status { color: var(--muted); font-size: .84rem; }
+.strip-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: .84rem; }
+#refresh-status:empty { display: none; }
 .next-strip[data-attention="true"] { border-color: var(--short); border-left-width: 4px; }
 .next-strip[data-attention="true"] h2 { color: var(--short); }
 .next-strip .needs-you { display: block; margin: 6px 0 10px; }

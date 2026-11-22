@@ -3,6 +3,15 @@ let activityKey = "";
 let nextStepsKey = "";
 let callsKey = "";
 let busyRequestOpen = false;
+let refreshRequested = false;
+let evidenceBusy = false;
+
+function renderRefreshButton() {
+  const button = $("refresh-evidence");
+  const busy = refreshRequested || evidenceBusy;
+  button.disabled = busy;
+  button.textContent = busy ? "Refreshing…" : "Refresh";
+}
 const pendingDecisions = new Set();
 
 const nextStepTones = {
@@ -305,14 +314,14 @@ function renderNextSteps(snapshot) {
 async function refreshBusy() {
   if (busyRequestOpen) return;
   busyRequestOpen = true;
-  const progress = $("busy-progress");
   try {
     const response = await fetch("/api/state", {cache: "no-store"});
     if (!response.ok) throw new Error(response.status);
     const system = (await response.json()).system ?? {};
-    const busy = system.busy;
-    const label = busy ? busy[0].toUpperCase() + busy.slice(1) : "";
-    if (progress.textContent !== label) progress.textContent = label;
+    const wasBusy = evidenceBusy;
+    evidenceBusy = Boolean(system.busy);
+    renderRefreshButton();
+    if (wasBusy && !evidenceBusy) refresh();
     const llm = system.llm ?? {ok: true};
     const banner = $("llm-banner");
     banner.hidden = llm.ok !== false;
@@ -322,7 +331,8 @@ async function refreshBusy() {
       banner.dataset.kind = llm.kind;
     }
   } catch {
-    progress.textContent = "";
+    evidenceBusy = false;
+    renderRefreshButton();
   } finally {
     busyRequestOpen = false;
   }
@@ -369,6 +379,23 @@ function renderOperations(snapshot) {
 
 function initOperations(reload) {
   const decisionResult = $("operation-result");
+  $("refresh-evidence").addEventListener("click", async () => {
+    const status = $("refresh-status");
+    refreshRequested = true;
+    renderRefreshButton();
+    status.textContent = "";
+    try {
+      const response = await fetch("/api/cycle", {method: "POST"});
+      if (!response.ok) throw new Error(response.status);
+      const result = await response.json();
+      evidenceBusy = result.started || Boolean(result.reason);
+    } catch {
+      status.textContent = "Couldn’t start refresh. Try again.";
+    } finally {
+      refreshRequested = false;
+      renderRefreshButton();
+    }
+  });
   $("needs-you").addEventListener("click", event => {
     const link = event.target.closest("[data-jump]");
     const card = link && $("decision-list").querySelector(`[data-action="${CSS.escape(link.dataset.jump)}"]`);

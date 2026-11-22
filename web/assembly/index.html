@@ -40,7 +40,11 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
   </header>
 
   <section id="next-strip" class="next-strip" aria-labelledby="next-title" hidden>
-    <header><h2 id="next-title">Checking</h2><p class="strip-status"><span id="busy-progress" role="status"></span> <span id="sync" role="status">Connecting</span></p></header>
+    <header><h2 id="next-title">Checking</h2><div class="strip-status">
+      <span id="sync" role="status">Connecting</span>
+      <button id="refresh-evidence" class="secondary-button" type="button">Refresh</button>
+      <span id="refresh-status" role="status"></span>
+    </div></header>
     <p id="llm-banner" class="llm-banner" role="alert" hidden></p>
     <ul id="needs-you" class="needs-you" hidden></ul>
     <details id="handling" class="handling" hidden>
