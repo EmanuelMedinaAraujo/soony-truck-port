@@ -4,9 +4,9 @@
 
 At the kickoff, Soony's Head of Procurement told us: *"We find out at the dock."* Hamburg books what is on the paper, and *"half of what we know is in a PDF somebody scanned."*
 
-That is what happened. A delivery note for 8,000 art books was booked as **80,000**, so the stock list looked full. In reality **5,900 numbered Collector's copies** could not be packed. Soony refunds €120 for each one, so **€708,000** was at stake, and nobody saw it until Saturday.
+That is what happened. A delivery note for 8,000 art books was booked as **80,000**, so the stock list looked full. In reality **5,900 numbered Collector's copies** could not be packed. Soony refunds €120 for each one, so **€708,000** was at stake, and nobody saw it until Saturday. Up to **2,500** of those copies are recoverable, if 8,000 replacement books arrive usable before the receiving cutoff.
 
-Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give, such as the right PO reference.
+Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Then it did what a tired team cannot do at 4 a.m.: it noticed that the supplier's latest email contradicted its earlier one, recalculated that the books would now arrive after the cutoff, and put that conflict in front of the buyer instead of reporting the rescue as on track. Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give, such as the right PO reference.
 
 **The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers in their language, chases confirmations, requests unload slots from the site, prepares and runs calls (simulated until a phone line is connected), and escalates to the right person when only a person can help. Anything that costs money waits for the assigned approver to sign the exact terms.
 
@@ -41,11 +41,22 @@ Dockside shows the clocks that decide the outcome next to the person who has to 
 | Sun 00:14 | The formal order goes out when its 15-minute stop window elapses, under the policy in force that night (no signature for paid actions in the buyer limit), before the **Sun 03:00** limit. Today's release gate would have held it until Paul Winter signed the exact terms and the carrier and site had confirmed; `examples/replay_gate.py` replays exactly this order under the current rules. |
 | Sun 00:18 | Karton Nowak acknowledges the order and asks for the correct PO reference, because the one quoted was already delivered. Dockside asks Paul Winter. |
 | Sun 02:07 | Karton Nowak accepts the written order and hands the books to its own logistics team (not yet to a carrier). Still open: the carrier booking and arrival time, the unload slot, and the PO reference Soony's buyer has to give. Dockside keeps chasing each of them; the goods must leave Poznań by 07:00. |
+| Sun 04:17 | The same supplier now writes that its records show **no dispatch instruction and no Warta Trans booking**, and that loading takes 4 hours from a written instruction. Dockside treats this as a conflict with the 02:07 acceptance, models the earliest unload at about 17:17, after the 16:00 cutoff, and asks the buyer to reconcile the order and the carrier to confirm a real ETA before anything else is signed. The rescue is shown as at risk, not as on track. |
 | Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). The 4,900 usable books last about five and a half hours at 900 Collector's boxes an hour; then packing stops, too late for a rush order. |
 
 **The next ten customers.** They share three traits: a date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages. We start with one segment where all three are extreme: **tabletop and board game publishers in the German-speaking market**. Each has hundreds of components per box, Asian and Polish print and plastics suppliers, and two immovable dates a year (the SPIEL fair in Essen in October and the Christmas retail cutoff).
 
 Target list: Kosmos, Pegasus Spiele, Ravensburger, Schmidt Spiele, HABA, Asmodee Germany, Hutter Trade, Feuerland Spiele, Frosted Games and Queen Games. The offer to each is the same: send us the files from your last fair or Christmas launch, and within a day we replay it and show which problems Dockside would have caught, when, and what was still possible at that moment. The Kestrel example shows that replay offline on a reviewed sample customer. The first buyer we ask to pay is Soony's Head of Procurement, Dr. Maren Vogt, for the next launch. After that comes the €5,000 pilot on the next launch.
+
+The first three prospects, as a sales plan:
+
+| Prospect | Buyer role we approach | Route in | Replay → pilot decision |
+|---|---|---|---|
+| Kosmos | Head of supply chain / operations | Warm intro via the SPIEL Essen exhibitor network, then an email with the Soony replay | Replay of last October's fair launch; pilot if it shows at least one stock-out caught a day earlier |
+| Pegasus Spiele | Procurement lead | Direct outreach with the Kestrel replay as a sample | Same replay offer; pilot decided by their procurement lead |
+| Asmodee Germany | Logistics manager for the DACH warehouse | Through their contract packer, who serves several publishers | Replay of one Christmas launch; pilot priced per warehouse instead of per brand |
+
+**When does the pilot pay for itself?** At Soony's €120 refund per Collector's copy, **182 attributable copies** cover the €5,000 pilot and the €16,800 rush purchase (182 × €120 = €21,840). Attributable means: absent from the frozen no-intervention forecast (which already counts expected receipts and recovery actions that were under way before Dockside), and traced from a Dockside action to a verified receipt and a dispatched box.
 
 Adjacent segments follow with the same product: video game physical editions and their packing partners, toy kits before Christmas, and contract packers serving several brands, where one onboarding serves many launches.
 
