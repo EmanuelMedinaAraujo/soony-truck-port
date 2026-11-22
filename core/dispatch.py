@@ -444,6 +444,20 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
+def departure_state(delivery: dict | None, now: dt.datetime) -> dict | None:
+    """The release gate's view of departure, for every screen: open, verified in time, or passed without evidence."""
+    deadline = rules.ts((delivery or {}).get("depart_by"))
+    if not deadline:
+        return None
+    transport = ((delivery or {}).get("confirmation_evidence") or {}).get("transport_confirmed") or {}
+    departed = rules.ts(transport.get("departed_at"))
+    verified = bool(transport.get("confirmed") and departed and departed <= deadline)
+    state = "verified" if verified else "passed" if now > deadline else "open"
+    return {"deadline": deadline.isoformat(timespec="minutes"), "state": state,
+            "departed_at": departed.isoformat(timespec="minutes") if departed else None,
+            "evidence_reply_id": transport.get("reply_id")}
+
+
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
                 order: dict | None, delivery: dict):
     """Show which delivery requirements have verified evidence and which are still open."""
@@ -712,6 +726,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "modeledUnloadReplyId": anchor_reply_id, "modeledLateMinutes": late, "modeledUnloadBasis": modeled_basis,
              "task": task,
              "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
+             "departure": departure_state(delivery, now),
              "origin": origin,
              "timingState": timing, "evidence": sources, "assurance": None})  # no unsourced standby-premium example
 

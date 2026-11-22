@@ -379,8 +379,16 @@ def annotate(graph: dict, component: dict | None) -> dict:
         supplier_id = next((sid for sid, name in suppliers.items() if plan["name"].endswith(name)), None)
         open_steps = [s for s in plan.get("steps", [])
                       if s["state"] not in {"confirmed", "superseded"} and not s.get("reminder_of")]
-        meta = (f"Waiting: {', '.join(s['name'].lower() for s in open_steps if s['state'] == 'waiting')}"
-                if any(s["state"] == "waiting" for s in open_steps) else "Not ordered yet")
+        option = component.get("option") or {}
+        conflict = (option.get("deliveryState") or {}).get("conflict")
+        departure = option.get("departure") or {}
+        if conflict:  # the sent order is disputed: say that, not "waiting for the order"
+            meta = "Order sent · supplier disputes dispatch release"
+            if departure.get("state") == "passed":
+                meta += " · departure deadline passed"
+        else:
+            meta = (f"Waiting: {', '.join(s['name'].lower() for s in open_steps if s['state'] == 'waiting')}"
+                    if any(s["state"] == "waiting" for s in open_steps) else "Not ordered yet")
         node = {"id": plan["id"], "label": f"{plan['name'].split(' from ')[0]}, {plan.get('quantity', 0):,}",
                 "kind": "shipment", "status": "at_risk", "meta": meta, "subtitle": "Ready stock",
                 "detail": (f"Still open: {', '.join(s['name'].lower() for s in open_steps)}. Each step is shown under Where it stands."

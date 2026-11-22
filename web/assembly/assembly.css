@@ -414,3 +414,4 @@ img { display: block; max-width: 100%; }
 .blocker-line .next-part { margin-right: 6px; }
 .verdict { margin: 2px 0 6px; color: var(--short); }
 .verdict b { font-weight: 700; }
+.verdict { font-size: .95rem; }

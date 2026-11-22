@@ -77,12 +77,14 @@ function drawLinks() {
 /* The one line a buyer needs first: what is at risk, in copies and money, and which part decides it. */
 function renderStakes() {
   const short = state.editions.filter(edition => edition.short > 0);
-  const lever = state.components.find(part => part.id === state.focusComponentId) ??
-    state.components.find(part => part.id === short[0]?.constraintIds?.[0]);
   const parts = short.map(edition => `<b>${number(edition.short)}</b> ${html(edition.name)} ${edition.short === 1 ? "copy" : "copies"} short` +
     (edition.refundsAtRisk ? ` (${money(edition.refundsAtRisk)} in refunds)` : ""));
-  const text = short.length ? `${parts.join(" · ")}${lever ? `. Biggest lever: <button class="next-part" type="button" data-stake-part="${html(lever.id)}">${html(nameOf(lever))}</button>` : ""}.`
-    : "Every edition is covered for Sunday.";
+  // The part that limits each edition, named per edition so a reader knows which shortfall it explains.
+  const limits = short.map(edition => {
+    const part = state.components.find(item => item.id === edition.constraintIds?.[0]);
+    return part ? `${html(edition.name.replace(/ Edition$/, ""))} bottleneck: <button class="next-part" type="button" data-stake-part="${html(part.id)}">${html(nameOf(part))}</button>` : "";
+  }).filter(Boolean);
+  const text = short.length ? `${parts.join(" · ")}.${limits.length ? ` ${limits.join(" · ")}.` : ""}` : "Every edition is covered for Sunday.";
   if ($("stakes").dataset.text !== text) { $("stakes").dataset.text = text; $("stakes").innerHTML = text; }
 }
 
