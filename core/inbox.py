@@ -137,6 +137,24 @@ def unhandled() -> list[dict]:
             ORDER BY r.received_at""", (rules.cfg("chase")["enabled"],))]
 
 
+def add_staff_answer(message_id: str, person: str, text: str) -> dict:
+    """An answer typed into the dashboard by a verified person; it joins the same reply queue as email."""
+    import uuid
+    with actions.tx() as c:
+        init_schema(c)
+        message = c.execute("SELECT id, action_id, subject, to_name FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not message:
+            raise KeyError(message_id)
+        rid = "RPL-" + uuid.uuid4().hex[:6].upper()
+        stamp = rules.now().isoformat(timespec="seconds")
+        c.execute("""INSERT INTO replies(id, message_id, msg_id, action_id, from_addr, from_name, subject, received_at, body, handled)
+                     VALUES (?,?,?,?,?,?,?,?,?,0)""",
+                  (rid, f"dashboard:{rid}", message["id"], message["action_id"], None, person,
+                   f"Dashboard answer: {message['subject'] or ''}".strip(), stamp, text))
+        c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "reply", message["action_id"], f"{person} replied on the dashboard"))
+    return get_reply(rid)
+
+
 def get_reply(rid: str) -> dict | None:
     with actions.tx() as c:
         init_schema(c)

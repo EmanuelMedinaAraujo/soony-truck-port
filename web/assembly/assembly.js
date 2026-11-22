@@ -337,7 +337,8 @@ async function refreshChaser() {
   chaserCases = cases.filter(item => item.status !== "closed");
   const count = chaserCases.length;
   const suppliers = new Set(chaserCases.map(item => item.supplier_id)).size;
-  const label = status !== "ok" ? "" : count ? `Chasing ${number(suppliers)} ${suppliers === 1 ? "supplier" : "suppliers"} for ${number(count)} unconfirmed ${count === 1 ? "order line" : "order lines"}.` : "";
+  const lines = new Set(chaserCases.map(item => `${item.supplier_id}|${item.po_number}|${item.po_line ?? ""}`)).size;
+  const label = status !== "ok" ? "" : count ? `Supplier Chaser: ${number(count)} open ${count === 1 ? "issue" : "issues"} on ${number(lines)} ${lines === 1 ? "order line" : "order lines"} with ${number(suppliers)} ${suppliers === 1 ? "supplier" : "suppliers"}.` : "";
   if ($("chaser-count").textContent !== label) $("chaser-count").textContent = label;
   if (state) renderInspector();
 }

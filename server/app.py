@@ -378,6 +378,29 @@ def component_graph(component_id: str):
     return annotate(graph, part)
 
 
+class Answer(BaseModel):
+    text: str
+
+
+@app.post("/api/questions/{message_id}/answer")
+def answer_question(message_id: str, answer: Answer, request: Request):
+    """A staff member answers Dockside's question on the dashboard; the agent handles it like any reply."""
+    from core import inbox
+    verified = verified_person(request)
+    if not verified:
+        raise HTTPException(403, "Sign in through the company network to answer.")
+    who = verified[0]
+    text = answer.text.strip()
+    if not text:
+        raise HTTPException(422, "Write an answer first.")
+    try:
+        reply = inbox.add_staff_answer(message_id, who, text[:4000])
+    except KeyError:
+        raise HTTPException(404, "That question no longer exists; reload the page.")
+    notify("staff_answer", {"reply": reply})
+    return {"ok": True, "reply_id": reply["id"]}
+
+
 class Decision(BaseModel):
     decision: str
     by: str = "web"

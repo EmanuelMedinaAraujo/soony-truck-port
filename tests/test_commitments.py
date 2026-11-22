@@ -600,3 +600,20 @@ def test_email_link_approves_the_exact_terms_in_its_message(client, deliveries, 
     assert deliveries == ["paul@example.test", ADDRESS]
     stored = actions.get(action["id"])
     assert stored["signatures"]["Paul Winter"]["commitment_digest"] == release.approval_digest(action)
+
+
+def test_staff_answer_on_dashboard_joins_the_reply_queue(log, monkeypatch):
+    from core import inbox, release
+    from server import app as server
+    a = actions.propose("gap-CMP-GAM-008", "Give the PO number", "supplier needs it", "ask", 0, 0, 0, None, None,
+                        messages=[{"channel": "discord", "to_name": "Paul Winter", "to_address": None, "language": "en",
+                                   "subject": "PO number", "body": "Please name the PO by 02:25."}])
+    mid = a["messages"][0]["id"]
+    monkeypatch.setattr(server, "verified_person", lambda request: ("Paul Winter", "dashboard"))
+    client = TestClient(server.app)
+    ok = client.post(f"/api/questions/{mid}/answer", json={"text": "Use 4500318775"})
+    assert ok.status_code == 200
+    reply = inbox.get_reply(ok.json()["reply_id"])
+    assert reply["from_name"] == "Paul Winter" and reply["msg_id"] == mid and reply["handled"] == 0
+    monkeypatch.setattr(server, "verified_person", lambda request: None)
+    assert client.post(f"/api/questions/{mid}/answer", json={"text": "x"}).status_code == 403

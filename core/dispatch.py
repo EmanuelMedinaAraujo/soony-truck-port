@@ -102,7 +102,15 @@ def internal_followup(action: dict, message: dict) -> dict:
         title = asked if asked and not asked.endswith("…") else (action["title"] or "").strip().rstrip(".")
         if title:
             text = f"Waiting for {who}: {title[:1].lower() + title[1:]}" + ("" if title.endswith("?") else ".")
-            return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {"person": who}
+            asked_by = re.search(r"\bby (\d{1,2}:\d{2})\b", message.get("body") or "")
+            due = None
+            if asked_by and (sent := rules.ts(message.get("sent_at"))):
+                local = sent.astimezone(rules.timezone())
+                due = local.replace(hour=int(asked_by[1][:-3]), minute=int(asked_by[1][-2:]), second=0, microsecond=0)
+                due = due if due >= local else due + dt.timedelta(days=1)
+            return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {
+                "person": who, "question": message.get("body"), "message_id": message.get("id"),
+                "answer_by": due.isoformat(timespec="minutes") if due else None}
     text = f"Waiting for {who} to {task}."
     return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {"person": who}
 

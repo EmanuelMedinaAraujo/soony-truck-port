@@ -101,6 +101,8 @@ function renderNextSteps(snapshot) {
     team.length ? `Waiting on your team: ${team.length === 1 ? "1 answer" : `${number(team.length)} answers`}` : "No spending approvals pending";
   $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
   const needs = $("needs-you");
+  const drafts = new Map([...needs.querySelectorAll("form[data-answer]")].map(form => [form.dataset.answer, form.querySelector("textarea").value]));
+  const opened = new Set([...needs.querySelectorAll("details[data-question][open]")].map(node => node.dataset.question));
   needs.innerHTML = [...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
@@ -111,12 +113,22 @@ function renderNextSteps(snapshot) {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const option = part.option;
       const clock = deliveryClock(option);
+      const step = item.next_step;
+      const overdue = step.answer_by && Date.now() > Date.parse(step.answer_by);
+      const due = step.answer_by ? ` <span class="clock-note">${overdue ? `Answer was due ${html(at(step.answer_by))}.` : `Answer by ${html(at(step.answer_by))}.`}</span>` : "";
+      const answer = step.message_id ? `<details class="question" data-question="${html(step.message_id)}"><summary>Read the question and answer it here</summary>
+          <p>${html(step.question)}</p>
+          <form class="answer-form" data-answer="${html(step.message_id)}"><label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
+          <textarea id="answer-${html(step.message_id)}" rows="2" required placeholder="Answer as ${html(step.person)}"></textarea>
+          <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form></details>` : "";
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(item.next_step.text)}</span>${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}</li>`;
+        <span>${html(step.text)}</span>${due}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
   needs.hidden = !count && !scheduled.length && !team.length;
+  for (const node of needs.querySelectorAll("details[data-question]")) if (opened.has(node.dataset.question)) node.open = true;
+  for (const form of needs.querySelectorAll("form[data-answer]")) form.querySelector("textarea").value = drafts.get(form.dataset.answer) ?? "";
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
     const part = snapshot.components.find(component => component.id === item.component_id);
@@ -252,3 +264,25 @@ function initOperations(reload) {
     }
   });
 }
+
+if (typeof document !== "undefined") document.addEventListener("submit", async event => {
+  const form = event.target.closest("form[data-answer]");
+  if (!form) return;
+  event.preventDefault();
+  const status = form.querySelector("[role=status]");
+  const button = form.querySelector("button");
+  button.disabled = true;
+  status.textContent = "Sending…";
+  try {
+    const response = await fetch(`/api/questions/${encodeURIComponent(form.dataset.answer)}/answer`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({text: form.querySelector("textarea").value})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "Try again.");
+    form.querySelector("textarea").value = "";
+    status.textContent = "Sent. Dockside reads it in its next pass and continues.";
+  } catch (error) {
+    status.textContent = `Not sent. ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});

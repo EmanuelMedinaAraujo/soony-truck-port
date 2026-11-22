@@ -379,3 +379,11 @@ img { display: block; max-width: 100%; }
   .stakes { max-width: none; }
   .clock-note { white-space: normal; display: block; margin-top: 2px; }
 }
+
+/* Answer Dockside's question without leaving the page. */
+.question { margin-top: 6px; font-size: .9rem; }
+.question summary { cursor: pointer; color: var(--active); width: fit-content; }
+.question p { margin: 6px 0; max-width: 70ch; color: var(--ink); }
+.answer-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.answer-form textarea { flex: 1 1 280px; min-height: 2.6em; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); color: var(--ink); font: inherit; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
