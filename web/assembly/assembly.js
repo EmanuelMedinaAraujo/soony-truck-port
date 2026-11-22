@@ -203,7 +203,7 @@ function renderProgress(route, line) {
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepLabel(step)}</span>
         <p>${html(clean(withoutRepeat(step.detail, line)))}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
           `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(clean(event.text))}${
-            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}/view" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

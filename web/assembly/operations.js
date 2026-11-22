@@ -140,7 +140,7 @@ function conflictCard(part, item, snapshot) {
       <li>${html(siteName())} receiving: an unload slot for that arrival.</li></ol>
 
       <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
-        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}/view" target="_blank" rel="noreferrer">Source</a></p>
+        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
         <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
         ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? ` (passed, ${departure.reason ? html(departure.reason) : "no proof of departure"})` : departure.state === "verified" ? ` (${html(departure.proof_text ?? `left by ${at(departure.departed_at)}`)})` : ""}</span>` : ""}</p>
