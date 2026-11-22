@@ -36,7 +36,8 @@ def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime |
             return cutoff
         if delivery.get("needs_revised_terms") and delivery.get("can_propose_revision"):
             # The revision only helps if the goods can still leave in time for the cutoff.
-            return rules.ts(delivery.get("depart_by") or option.get("departBy")) or cutoff
+            return rules.ts((delivery.get("departure") or {}).get("deadline")
+                            or delivery.get("depart_by") or option.get("departBy")) or cutoff
         if deliver_by := rules.ts(delivery.get("deliver_by")):
             return deliver_by
         return rules.ts(option.get("latestUsefulAt")) or cutoff
@@ -139,6 +140,7 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
                     "verified_eta": release.verified_eta(delivery),
                     "booking_ref": delivery.get("booking_ref"), "slot_window": delivery.get("slot_window"),
                     "vehicle_limit": delivery.get("vehicle_limit"), "needs_revised_terms": revised,
+                    "departure": delivery.get("departure"),
                     "revised_reason": delivery.get("revised_reason"), "open_staff_questions": list(staff_questions.values()),
                     "task": task, "delivery_state": delivery or None})
     no_deadline = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
@@ -158,9 +160,13 @@ How to decide, per part:
 - Schedule each intervention by act_by, including the answer-by time and the approval due time. For a rush amendment, act_by is the last
   departure time. The amended deliver_by is an arrival time: it must be strictly after arrival_window.after, at or before
   arrival_window.latest, and at or after verified_eta. Use the full date, time and offset.
+- Use departure as the gate's verdict. A verified reply gives the reported departure time. A verified carrier_position shows the truck
+  had left by the observation time (departed_at). Cite evidence_id and source_label, and use existing verified evidence. If departure is
+  passed, reopening requires evidence the truck left by departure.deadline, a current ETA and a confirmed slot.
 - Rush delivery with delivery_state.conflict takes precedence. For an open task, remind owner_reconcile using task.id and the finding ID
   for this delivery. For an answered task, use task.answer and continue with the evidence still outstanding. Ask owner_logistics on a linked
-  confirmation thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit, request actual departure.
+  confirmation thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit and departure is still
+  unverified, request actual departure.
   Use clears_when and cite the supplier message ID. Keep any existing request that already covers the check.
   Do not propose an amendment while the conflict is open. Skip the other rules for this delivery.
 - Rush delivery with needs_revised_terms: if delivery_state.can_propose_revision is false, escalate revised_reason to the buyer and
@@ -173,7 +179,7 @@ How to decide, per part:
   Once the amendment is proposed, email an authorized receiving contact for a fresh unload slot covering verified_eta, under the
   amendment's finding ID. The earlier slot does not establish the revised slot. If verified_eta, booking_ref or required vehicle
   confirmation is missing, email a listed transport contact for the missing evidence and use any open request that already covers it.
-  If the carrier has left, ask for the actual departure time and current ETA. Dockside checks departure evidence against act_by
+  If the carrier has left and departure is still unverified, ask for the actual departure time and current ETA. Dockside checks departure evidence against act_by
   and requires a confirmed slot for that ETA once act_by has passed.
   Wait for a verified ETA before choosing arrival terms. Use kind 'confirm_terms', the same delivery_id and confirmation_kind 'dock_slot'
   or 'book_truck' for the emails. Skip the generic reminder and slot rules below for this delivery.

@@ -135,6 +135,30 @@ def test_draft_or_disabled_never_contacts_provider(call, provider):
     assert not requests
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_mock_reply_summary_attributes_reported_claims(call, completed, monkeypatch, legacy):
+    completed["metadata"]["start_time_unix_secs"] = int(rules.now().timestamp())
+    reply = voice._store_result(call, completed, simulated=True, source="mock")
+    summary = "Simulated call: Shipping operations VERIFIED no booking, release or ETA."
+    expected = "simulated call (local mock): Shipping operations reported no booking, release or ETA."
+    if legacy:
+        inbox.mark_handled(reply["id"], summary)
+    else:
+        def process(*_args, **_kwargs):
+            assert agent.Tools(handling_replies=True).note_reply(reply["id"], summary)["ok"]
+            return summary
+
+        monkeypatch.setattr(agent, "run", process)
+        assert agent.handle_replies() == f"{call['to_name']} — {expected}"
+        assert "verified" not in inbox.get_reply(reply["id"])["summary_en"].lower()
+        assert expected in voice.get(call["id"])["result"]["summary"]
+
+    with actions.read() as db:
+        activity = dispatch.readable_activity(db)
+    assert "1 simulated call (local mock)" in activity["summary"]
+    assert activity["items"][0]["text"] == f"{call['to_name']} — {expected}"
+
+
 def test_automatic_simulation_delivers_one_unverified_reply(call, provider, completed, monkeypatch):
     requests, responses = provider
     mid = call["id"]

@@ -125,7 +125,11 @@ def test_departure_deadline_blocks_late_proposal_and_signature(tmp_path, monkeyp
 
         replay.store_reply(carrier, "verified", "Truck departed at 06:40. ETA Sun 14:30.")
         assert replay.sign(in_time)["status"] == "approved"
-        assert release.decision_state(actions.get(late["id"]))["can_approve"]
+        # The next update carries the same booking but doesn't report a new departure time.
+        replay.store_reply(carrier, "refreshed-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
+        decision = release.decision_state(actions.get(late["id"]))
+        assert decision["can_approve"]
+        assert decision["departure"]["evidence_id"] == "verified"
 
         feed = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please send the latest ETA.", "book_truck", replay.ORDER)
         replay.store_reply(feed, "feed-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")

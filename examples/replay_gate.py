@@ -91,8 +91,9 @@ def store_reply(message, reply_id, body, summary=None):
 
 
 def show_evidence(action):
-    evidence = action["payload"].get("confirmation_evidence") or release.preview_confirmations(action)
-    for line in release.confirmation_summary(evidence):
+    delivery = release.delivery_state(action)
+    evidence = action["payload"].get("confirmation_evidence") or delivery["confirmation_evidence"]
+    for line in release.confirmation_summary(evidence, delivery["departure"]):
         print(f"  {line}")
 
 
@@ -246,6 +247,7 @@ def run_revision(policy, sent):
             assert rules.ts(window["after"]) == at("12:00") and rules.ts(window["latest"]) == at("16:00")
             assert eta == at("14:30") and item["booking_ref"] == "WT-123" and item["vehicle_limit"] == 7.5
             assert item["needs_revised_terms"] and "after the ordered 12:00 arrival" in item["revised_reason"]
+            assert item["departure"] == late["departure"] and item["departure"]["state"] == "open"
             assert item["slot_window"] == {"start": at("07:00").isoformat(), "end": at("12:00").isoformat()}
             assert item["open_staff_questions"] == [{"who": "Paul Winter", "what": question, "asked_at": at("03:20").isoformat()}]
 
@@ -306,6 +308,8 @@ def run_revision(policy, sent):
         before_retry = len(sent)
         held = outbound.dispatch(amended["id"])
         assert held["status"] == "approved" and held["held_reason"] == "departure deadline passed"
+        rejected = release.decision_state(held)["departure"]
+        assert rejected["state"] == "passed" and rejected["evidence_type"] == "none"
         assert len(sent) == before_retry
         print(f"\n07:01 RETRY WITH CONFIRMED SLOT — HELD — {held['held_reason']}")
         print(release.decision_state(held)["hold_clears"])
@@ -321,9 +325,34 @@ def run_revision(policy, sent):
         route, final = view()
         assert not final["needsRevisedTerms"] and final["deliveryState"]["terms_source"] == "signed_terms"
         assert final["deliveryState"]["slot_confirmed_by"] == "Katrin Jansen"
+        departure = final["departure"]
+        assert departure == final["deliveryState"]["departure"] == release.departure_verdict(released, rules.now())
+        assert departure["state"] == "verified" and departure["evidence_type"] == "reply"
+        assert departure["evidence_id"] == departure["evidence_reply_id"] == "departed"
         assert followup.deadline_for({"option": final, "default_route_id": FINDING}, at("16:00")) == at("15:00")
         print("\n07:01 REVISED TERMS RELEASED — verified departure Sun 06:40, ETA Sun 14:30")
         show_trace(final, route)
+
+        # Use a fresh thread with booking and ETA only. The position must be the only proof of departure.
+        feed = thread("Warta Trans", CARRIER_EMAIL, "Please send the latest booking and ETA.", "book_truck", ORDER)
+        store_reply(feed, "position-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("INSERT INTO carriers(carrier_id, name) VALUES ('WARTA', 'Warta Trans')")
+            db.execute("""INSERT INTO shipments(shipment_id,carrier_id,mode,reference,supplier_id,material_ids,
+                                                dest_site,status,last_lat,last_lon,updated_at)
+                          VALUES ('TRUCK-1','WARTA','road','WT-123',?,?,'DC-HAM','in_transit',52.4,16.8,?)""",
+                       (SUPPLIER, PART, at("06:40").isoformat()))
+        assert release.check(released) == (True, None)
+        verdict = release.departure_verdict(released, rules.now())
+        _, final = view()
+        assert verdict == final["departure"] == final["deliveryState"]["departure"]
+        assert verdict == release.decision_state(actions.get(released["id"]))["departure"]
+        assert verdict == release.departure_verdict(release.terms_for(released), rules.now())
+        assert verdict["state"] == "verified" and verdict["evidence_type"] == "carrier_position"
+        assert verdict["evidence_id"] == "TRUCK-1" and verdict["evidence_reply_id"] is None
+        assert verdict["departed_at"] == at("06:40").isoformat() and verdict["source_label"] == "Carrier position"
+        print("\n07:01 CARRIER POSITION — gate and cockpit agree: verified, carrier_position")
+        print(f"  {verdict['source_label']} {verdict['evidence_id']} confirms departure by Sun 06:40.")
 
 
 def main():

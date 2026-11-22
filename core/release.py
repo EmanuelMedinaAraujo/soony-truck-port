@@ -686,8 +686,12 @@ def _confirmation_details(condition, reply, contact, deadline, eta, created, veh
             else:
                 missing.append("booking reference missing")
             same_booking = details.get("booking_reference") and details["booking_reference"] == prior.get("booking_reference")
-            if departure or (same_booking and (departure := prior.get("departed_at"))):
+            if departure:
                 details["departed_at"] = departure
+                details["departure_reply_id"] = reply["id"]
+            elif same_booking and prior.get("departed_at"):
+                details["departed_at"] = prior["departed_at"]
+                details["departure_reply_id"] = prior["departure_reply_id"]
             if arrived:
                 arrival = _appointment(*arrived, deadline)
                 details["eta"] = arrival.isoformat()
@@ -818,23 +822,24 @@ def _linked_condition(log, reply, delivery_id, sender):
     return None
 
 
-def confirmation_summary(matches):
+def confirmation_summary(matches, departure=None):
     lines = []
     for condition, evidence in matches.items():
         if condition == "transport_confirmed" and evidence["confirmed"]:
             eta = rules.ts(evidence["eta"])
             lines.append(f"Carrier confirmed booking {evidence['booking_reference']}, ETA {eta:%a %H:%M}")
-            if departed := rules.ts(evidence.get("departed_at")):
-                lines.append(f"Departure at {departed:%a %H:%M} confirmed by {evidence['contact']}")
-            elif position := evidence.get("departure_position"):
-                observed = rules.ts(position["observed_at"])
-                lines.append(f"Carrier position at {observed:%a %H:%M} confirms departure")
         elif condition == "dock_slot_confirmed" and evidence["confirmed"]:
             start, end = (rules.ts(evidence[key]) for key in ("slot_start", "slot_end"))
             lines.append(f"Slot {start:%H:%M}–{end:%H:%M} confirmed by {evidence['contact']}")
         else:
             label = "Carrier booking and ETA" if condition == "transport_confirmed" else "Dock slot"
             lines.append(f"{label}: {evidence['reason']}")
+    if departure and departure["state"] == "verified":
+        departed = rules.ts(departure["departed_at"])
+        if departure["evidence_type"] == "reply":
+            lines.append(f"Departure at {departed:%a %H:%M} confirmed by {departure['source_label']}")
+        elif departure["evidence_type"] == "carrier_position":
+            lines.append(f"Carrier position at {departed:%a %H:%M} confirms departure by then")
     return lines
 
 
@@ -1064,7 +1069,7 @@ def _effective_depart_by(terms, log):
     if "depart_by" in terms:
         return rules.ts(terms["depart_by"])
     if original_id := terms.get("revises_action_id"):
-        original = _prior_terms(log, original_id)
+        original = _prior_terms(log, original_id) if log is not None else None
         return rules.ts(_revision_depart_by(original)) if original else None
     return rules.ts(_derive_depart_by(terms, terms.get("deliver_by")))
 
@@ -1091,57 +1096,86 @@ def _carrier_departure(terms, booking, depart_by, now):
         return None
     observed_at = rules.ts(observed)
     freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
-    if now - freshness <= observed_at <= depart_by:
+    if now - freshness <= observed_at <= min(depart_by, now):
         return {"shipment_id": shipment_id, "reference": reference, "observed_at": observed_at.isoformat(),
                 "lat": lat, "lon": lon}
     return None
 
 
-def _departure_evidence(log, terms, matches, depart_by, now):
-    transport = matches.get("transport_confirmed", {})
-    slot = matches.get("dock_slot_confirmed", {})
+def _departure_without_evidence(depart_by, now):
+    return {"deadline": depart_by.isoformat() if depart_by else None,
+            "state": "passed" if depart_by and now > depart_by else "open",
+            "evidence_type": "none", "evidence_id": None, "evidence_reply_id": None,
+            "departed_at": None, "source_label": None}
+
+
+def departure_verdict(action_or_commitment: dict, now: dt.datetime, *, log=None, confirmations=None) -> dict:
+    """Evaluate departure for an action or its normalized commitment against current evidence."""
+    if log is None and actions.DB.is_file():
+        with _action_log() as db:
+            return departure_verdict(action_or_commitment, now, log=db, confirmations=confirmations)
+    is_action = "payload" in action_or_commitment
+    terms = delivery_terms(action_or_commitment) if is_action else action_or_commitment
+    depart_by = _effective_depart_by(terms, log) if terms and terms.get("deliver_by") else None
+    verdict = _departure_without_evidence(depart_by, now)
+    if not depart_by or log is None:
+        return verdict
+    if confirmations is None:
+        if is_action:
+            action = action_or_commitment
+        else:
+            row = log.execute("""SELECT finding_id, created_at FROM actions
+                                 WHERE json_extract(payload,'$.commitment_digest')=?
+                                 ORDER BY created_at DESC LIMIT 1""", (fingerprint(terms),)).fetchone()
+            action = dict(row) if row else {"finding_id": None}
+        _, confirmations = _related_replies(log, action, terms, now, after_departure=now > depart_by)
+    transport = confirmations.get("transport_confirmed", {})
+    slot = confirmations.get("dock_slot_confirmed", {})
     if not (transport.get("confirmed") and slot.get("confirmed")):
-        return DEPARTURE_HOLD
+        return verdict
     eta = rules.ts(transport["eta"])
     freshness = dt.timedelta(hours=setting("staleness_hours", {}).get("road", 24))
     if not (now <= eta and rules.ts(transport["received_at"]) >= now - freshness):
-        return DEPARTURE_HOLD
+        return verdict
     if original_id := terms.get("revises_action_id"):
         original = _prior_terms(log, original_id)
         if not original or eta <= rules.ts(original["deliver_by"]):
-            return DEPARTURE_HOLD
+            return verdict
     if (departed := rules.ts(transport.get("departed_at"))) and departed <= depart_by:
-        return None
+        reply_id = transport["departure_reply_id"]
+        return verdict | {"state": "verified", "evidence_type": "reply", "evidence_id": reply_id,
+                          "evidence_reply_id": reply_id, "departed_at": departed.isoformat(),
+                          "source_label": transport["contact"]}
     if position := _carrier_departure(terms, transport["booking_reference"], depart_by, now):
-        transport["departure_position"] = position
-        return None
-    return DEPARTURE_HOLD
+        return verdict | {"state": "verified", "evidence_type": "carrier_position",
+                          "evidence_id": position["shipment_id"], "departed_at": position["observed_at"],
+                          "source_label": "Carrier position"}
+    return verdict
+
+
+def _departure_hold(verdict, terms):
+    if verdict["deadline"] is None and terms.get("revises_action_id"):
+        return "departure deadline is missing"
+    return DEPARTURE_HOLD if verdict["state"] == "passed" else None
 
 
 def _departure_blocker(action, terms):
     """Read evidence without taking a write lock inside the approval transaction."""
-    if "depart_by" in terms and not terms["depart_by"]:
-        return "departure deadline is missing" if terms.get("revises_action_id") else None
     now = rules.now()
-    if terms.get("depart_by") and now <= rules.ts(terms["depart_by"]) and not terms.get("revises_action_id"):
-        return None
-    if not actions.DB.is_file():
-        return DEPARTURE_HOLD if terms.get("depart_by") else None
     try:
-        with _action_log() as log:
-            if original_id := terms.get("revises_action_id"):
+        if "depart_by" in terms and not terms.get("revises_action_id"):
+            deadline = rules.ts(terms["depart_by"])
+            if not deadline or now <= deadline:
+                return None
+        if (original_id := terms.get("revises_action_id")) and actions.DB.is_file():
+            with _action_log() as log:
                 original = actions._get(log, original_id)
                 if original and (conflict := delivery_state(original, log=log, now=now)["conflict"]):
                     return conflict_reason(conflict)
-            depart_by = _effective_depart_by(terms, log)
-            if depart_by is None:
-                return "departure deadline is missing" if terms.get("revises_action_id") else None
-            if now > depart_by:
-                _, matches = _related_replies(log, action, terms, now, after_departure=True)
-                return _departure_evidence(log, terms, matches, depart_by, now)
+                return _departure_hold(departure_verdict(action, now, log=log), terms)
+        return _departure_hold(departure_verdict(action, now), terms)
     except sqlite3.Error:
         return "evidence stale or unreadable"
-    return None
 
 
 def conflict_reason(conflict):
@@ -1155,23 +1189,21 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
     now = now or rules.now()
     terms = delivery_terms(action)
     matches, review, departure_hold, claims = {}, None, None, []
-    depart_by = (terms or {}).get("depart_by")
+    departure = _departure_without_evidence(rules.ts((terms or {}).get("depart_by")), now)
     if terms and terms.get("deliver_by"):
         def evidence(db):
-            departure = _effective_depart_by(terms, db)
-            after_departure = departure is not None and now > departure
+            depart_by = _effective_depart_by(terms, db)
+            after_departure = depart_by is not None and now > depart_by
             supplier_review, confirmations = _related_replies(db, action, terms, now, after_departure=after_departure)
-            hold = _departure_evidence(db, terms, confirmations, departure, now) if after_departure else None
-            if departure is None and terms.get("revises_action_id"):
-                hold = "departure deadline is missing"
-            return supplier_review, confirmations, hold, departure, supplier_claims(db, action, terms, now)
+            verdict = departure_verdict(terms, now, log=db, confirmations=confirmations)
+            return supplier_review, confirmations, _departure_hold(verdict, terms), verdict, supplier_claims(db, action, terms, now)
 
         try:
             if log is None:
                 with _action_log() as db:
-                    review, matches, departure_hold, depart_by, claims = evidence(db)
+                    review, matches, departure_hold, departure, claims = evidence(db)
             else:
-                review, matches, departure_hold, depart_by, claims = evidence(log)
+                review, matches, departure_hold, departure, claims = evidence(log)
         except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
             review = "evidence stale or unreadable"
     terms = terms or {}
@@ -1196,7 +1228,7 @@ def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
         hold_reason = saved_hold
     return {
         "action_id": action["id"], "delivery_id": terms.get("delivery_id"), "deliver_by": terms.get("deliver_by"),
-        "depart_by": depart_by.isoformat() if isinstance(depart_by, dt.datetime) else depart_by,
+        "depart_by": departure["deadline"], "departure": departure,
         "revises_action_id": terms.get("revises_action_id"),
         "terms_source": ("signed_terms" if _signed(action, fingerprint(terms)) else "proposed_terms") if terms_for(action)
                         else "sent_order" if terms else None,
@@ -1456,8 +1488,12 @@ def check(action: dict) -> tuple[bool, str | None]:
 def decision_state(action: dict) -> dict:
     held = action["held_reason"]
     blocker = proposal_blocker(action) if applies(action) and not action["payload"].get("repeat_commitment") else None
-    if held == DEPARTURE_HOLD and action["status"] in {"proposed", "scheduled", "escalated"}:
-        held = blocker
+    departure = delivery_state(action)["departure"] if action["kind"] == "order" else None
+    if held == DEPARTURE_HOLD:
+        if action["status"] in {"proposed", "scheduled", "escalated"}:
+            held = blocker
+        elif departure and departure["state"] == "verified":
+            held = None
     expired = action["status"] == "expired" or bool(blocker and "expired" in blocker) or bool(held and "expired" in held)
     replaced = re.search(r"duplicate of (ACT-[A-Z0-9]+)", held or "")
     if action["status"] == "superseded":
@@ -1478,7 +1514,7 @@ def decision_state(action: dict) -> dict:
         condition = reason.partition(": ")[2].partition(" (")[0]
         owner = "Carrier" if condition == "transport confirmed" else "Receiving team"
         delivery = (terms or {}).get("delivery_id")
-        clears = (f"Delivery {delivery}. " + ". ".join(confirmation_summary(matches)) if matches else
+        clears = (f"Delivery {delivery}. " + ". ".join(confirmation_summary(matches, departure)) if matches else
                   f"Confirm the {condition.removesuffix(' confirmed')} for {delivery} in the linked email thread.")
     elif reason and "supplier reply" in reason:
         owner, clears = "Buyer", "Review the latest supplier reply, then submit the instruction with the current terms."
@@ -1490,4 +1526,5 @@ def decision_state(action: dict) -> dict:
     return {"terminal": terminal, "can_approve": not (terminal or blocker) and action["status"] in
             {"proposed", "scheduled", "escalated"}, "held_reason": reason,
             "hold_owner": owner if reason and not terminal else None,
-            "hold_clears": clears if reason and not terminal else None, "confirmation_evidence": matches}
+            "hold_clears": clears if reason and not terminal else None, "confirmation_evidence": matches,
+            "departure": departure}

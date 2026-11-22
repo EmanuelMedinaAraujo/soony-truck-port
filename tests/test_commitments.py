@@ -333,7 +333,10 @@ def test_historical_release_gate_replay():
     command = [sys.executable, str(root / "examples/replay_gate.py")]
     result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
     assert result.stdout == subprocess.check_output(command, cwd=root, text=True)
-    assert result.stdout.strip() in (root / "README.md").read_text()
+    documented, position_case = result.stdout.split("\n\n07:01 CARRIER POSITION", 1)
+    assert documented.strip() in (root / "README.md").read_text()
+    assert "gate and cockpit agree: verified, carrier_position" in position_case
+    assert "Carrier position TRUCK-1 confirms departure by Sun 06:40." in position_case
     assert "RELEASED WITH SYNTHETIC EVIDENCE" in result.stdout
     assert "HELD — draft quantity disagrees with the commitment" in result.stdout
     assert "07:01 RETRY WITH CONFIRMED SLOT — HELD — departure deadline passed" in result.stdout

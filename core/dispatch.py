@@ -146,13 +146,23 @@ def _first_sentence(text: str | None, limit: int = 220) -> str:
     return sentence if len(sentence) <= limit else sentence[:limit - 1].rsplit(" ", 1)[0] + "…"
 
 
+def simulated_call_summary(text: str | None) -> str:
+    label = "simulated call (local mock)"
+    text = re.sub(r"^(?:\s*simulated call(?: \(local mock\))?(?:\s*[:—-]\s*|\s*$))+", "", text or "", flags=re.I)
+    text = re.sub(r"\bnot (?:verified|confirmed|validated)\b", "still uncertain", text, flags=re.I)
+    text = re.sub(r"\bunverified\b", "provisional", text, flags=re.I)
+    text = re.sub(r"\b(?:verified|confirmed|validated|established|proved)\b", "reported", text, flags=re.I)
+    return f"{label}: {text.strip()}" if text.strip() else label
+
+
 def readable_activity(log, limit: int = 10) -> dict:
     """Recent work in plain English: who was asked what, what they answered, what changed.
     The raw event log has e-mail addresses and foreign-language subjects; those stay out."""
     rows = log.execute("""SELECT e.ts, e.kind, e.ref, e.text, a.title FROM events e LEFT JOIN actions a ON a.id = e.ref
                           WHERE e.kind IN ('email_sent','approval_email_sent','reply','action_auto','action_approved','action_done','data_drop','docs_read')
                           ORDER BY e.ts DESC, e.rowid DESC LIMIT 60""").fetchall()
-    replies = log.execute("SELECT action_id, from_name, received_at, summary_en FROM replies ORDER BY received_at").fetchall()
+    replies = log.execute("""SELECT action_id, from_name, received_at, summary_en, simulated, subject
+                             FROM replies ORDER BY julianday(received_at) DESC, rowid DESC""").fetchall()
     sent_to = {r[0]: r[1] for r in log.execute("SELECT action_id, to_name FROM messages WHERE channel='email' ORDER BY created_at")}
     items = []
     emailed = {ref for _, kind, ref, _, _ in rows if kind == "email_sent"}
@@ -166,9 +176,19 @@ def readable_activity(log, limit: int = 10) -> dict:
         elif kind == "approval_email_sent":
             line = text
         elif kind == "reply":
-            reply = next((r for r in reversed(replies) if r[0] == ref and r[2] <= ts), None) if ref else None
+            moment = rules.ts(ts)
+            candidates = [r for r in replies if r[0] == ref and r[2] and rules.ts(r[2]) <= moment]
+            reply = next((r for r in candidates if text == f"{r[1]} replied: {r[5]}"), None)
+            simulated = " (simulated call) replied:" in text
+            if reply is None and ref:
+                reply = next((r for r in candidates if bool(r[4]) == simulated), None)
             who = (reply[1] if reply else text.split(" replied", 1)[0]) or "Supplier"
-            line = f"{who} replied: {_first_sentence(reply[3])}" if reply and reply[3] else f"{who} replied" + (f" about: {what}" if what else "") + "."
+            if (reply and reply[4]) or simulated:
+                who = who.removesuffix(" (simulated call)")
+                summary = simulated_call_summary(reply[3] if reply else None)
+                line = f"{who} — {_first_sentence(summary)}"
+            else:
+                line = f"{who} replied: {_first_sentence(reply[3])}" if reply and reply[3] else f"{who} replied" + (f" about: {what}" if what else "") + "."
         elif kind == "action_auto":
             line = f"Dockside started: {what}." if what and ref not in emailed else None
         elif kind == "action_approved":
@@ -194,7 +214,8 @@ def readable_activity(log, limit: int = 10) -> dict:
     staff = count("SELECT sent_at FROM messages WHERE channel='discord' AND sent_at IS NOT NULL")
     calls = count("SELECT received_at FROM replies WHERE COALESCE(simulated, 0)=1")
     parts = [(sent, "email sent", "emails sent"), (received, "reply received", "replies received"),
-             (staff, "message to staff", "messages to staff"), (calls, "simulated call", "simulated calls")]
+             (staff, "message to staff", "messages to staff"),
+             (calls, "simulated call (local mock)", "simulated calls (local mock)")]
     summary = ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in parts if n)
     return {"summary": f"Last 24 hours: {summary}" if summary else "Nothing in the last 24 hours", "items": items}
 
@@ -444,18 +465,8 @@ def _requested_arrival(delivery: dict) -> dt.datetime | None:
     return rules.ts(delivery.get("deliver_by"))
 
 
-def departure_state(delivery: dict | None, now: dt.datetime) -> dict | None:
-    """The release gate's view of departure, for every screen: open, verified in time, or passed without evidence."""
-    deadline = rules.ts((delivery or {}).get("depart_by"))
-    if not deadline:
-        return None
-    transport = ((delivery or {}).get("confirmation_evidence") or {}).get("transport_confirmed") or {}
-    departed = rules.ts(transport.get("departed_at"))
-    verified = bool(transport.get("confirmed") and departed and departed <= deadline)
-    state = "verified" if verified else "passed" if now > deadline else "open"
-    return {"deadline": deadline.isoformat(timespec="minutes"), "state": state,
-            "departed_at": departed.isoformat(timespec="minutes") if departed else None,
-            "evidence_reply_id": transport.get("reply_id")}
+def departure_state(delivery: dict | None, _now: dt.datetime) -> dict | None:
+    return (delivery or {}).get("departure")
 
 
 def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool,
