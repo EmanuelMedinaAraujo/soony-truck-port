@@ -617,3 +617,14 @@ def test_staff_answer_on_dashboard_joins_the_reply_queue(log, monkeypatch):
     assert reply["from_name"] == "Paul Winter" and reply["msg_id"] == mid and reply["handled"] == 0
     monkeypatch.setattr(server, "verified_person", lambda request: None)
     assert client.post(f"/api/questions/{mid}/answer", json={"text": "x"}).status_code == 403
+
+
+def test_answer_is_refused_from_someone_else(log, monkeypatch):
+    from server import app as server
+    a = actions.propose("gap-CMP-GAM-008", "Give the PO number", "supplier needs it", "ask", 0, 0, 0, None, None,
+                        messages=[{"channel": "discord", "to_name": "Paul Winter", "to_address": None, "language": "en",
+                                   "subject": "PO number", "body": "Please name the PO."}])
+    mid = a["messages"][0]["id"]
+    monkeypatch.setattr(server, "verified_person", lambda request: ("Katrin Jansen", "dashboard"))
+    refused = TestClient(server.app).post(f"/api/questions/{mid}/answer", json={"text": "Use 4500318775"})
+    assert refused.status_code == 403 and "Paul Winter" in refused.json()["detail"]

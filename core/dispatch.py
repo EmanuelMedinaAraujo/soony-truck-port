@@ -71,6 +71,21 @@ INTERNAL_FOLLOWUP = {
 }
 
 
+def question_options(body: str | None, finding_id: str | None) -> list[dict]:
+    """Purchase orders a question names, as answer choices: the line for this part, its quantity and requested date."""
+    pattern = ((rules.CONFIG.get("sources") or {}).get("value") or {}).get("document_po_pattern")
+    numbers = list(dict.fromkeys(re.findall(rf"\b{pattern}\b", body or ""))) if pattern else []
+    part = next(iter(re.findall(r"\b[A-Z]{2,4}-[A-Z0-9]{2,5}-\d{2,4}\b", finding_id or "")), None)
+    if not numbers or not rules.DB_PATH.exists():
+        return []
+    with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as db:
+        rows = db.execute(f"""SELECT po_number, po_line, quantity, requested_date, status FROM purchase_orders
+                               WHERE po_number IN ({",".join("?" * len(numbers))}) AND (? IS NULL OR material_id=?)
+                               ORDER BY po_number, po_line""", (*numbers, part, part)).fetchall()
+    return [{"po": po, "line": line, "quantity": qty, "requested": requested, "status": status,
+             "answer": f"Use PO {po} line {line} for this delivery."} for po, line, qty, requested, status in rows]
+
+
 def internal_followup(action: dict, message: dict) -> dict:
     """A message that went out by chat or as a call script: say who has to do what next."""
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
@@ -110,7 +125,8 @@ def internal_followup(action: dict, message: dict) -> dict:
                 due = due if due >= local else due + dt.timedelta(days=1)
             return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {
                 "person": who, "question": message.get("body"), "message_id": message.get("id"),
-                "answer_by": due.isoformat(timespec="minutes") if due else None}
+                "answer_by": due.isoformat(timespec="minutes") if due else None,
+                "options": question_options(message.get("body"), action.get("finding_id"))}
     text = f"Waiting for {who} to {task}."
     return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {"person": who}
 
@@ -527,7 +543,7 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                         asked[person] = step(f"Answer from {person}", "waiting", question[:1].upper() + question[1:] +
                                              f" Asked {_clock(rules.ts(message.get('sent_at')))}.") | {
                             "person": person, "message_id": step_.get("message_id"), "question": step_.get("question"),
-                            "answer_by": step_.get("answer_by"), "since": message.get("sent_at")}
+                            "answer_by": step_.get("answer_by"), "since": message.get("sent_at"), "options": step_.get("options")}
     unique = steps + list(asked.values())
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
     return unique

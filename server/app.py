@@ -389,7 +389,18 @@ def answer_question(message_id: str, answer: Answer, request: Request):
     verified = verified_person(request)
     if not verified:
         raise HTTPException(403, "Sign in through the company network to answer.")
-    who = verified[0]
+    who, source = verified
+    with actions.tx() as c:
+        row = c.execute("SELECT to_name FROM messages WHERE id=?", (message_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "That question no longer exists; reload the page.")
+    asked = re.split(r"\s+(?:and|\()\s*", row["to_name"] or "", maxsplit=1)[0].strip()
+    asked = rules.cfg("people").get(asked) or asked  # a role means its holder
+    delegates = release.setting("delegates", {}).get(asked, [])
+    if source == "local demo":
+        who = f"{asked} (entered by the local demo operator)"
+    elif who != asked and who not in delegates:
+        raise HTTPException(403, f"This question is for {asked}. Only {asked} or a named delegate can answer it.")
     text = answer.text.strip()
     if not text:
         raise HTTPException(422, "Write an answer first.")
@@ -399,6 +410,13 @@ def answer_question(message_id: str, answer: Answer, request: Request):
         raise HTTPException(404, "That question no longer exists; reload the page.")
     notify("staff_answer", {"reply": reply})
     return {"ok": True, "reply_id": reply["id"]}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    """Who the dashboard is talking to, so it shows answer and approval controls only to the right person."""
+    verified = verified_person(request)
+    return {"person": verified[0] if verified else None, "source": verified[1] if verified else None}
 
 
 class Decision(BaseModel):

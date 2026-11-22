@@ -10,7 +10,26 @@ const nextStepTones = {
   "Confirmed": "ready", "Booked": "ready", "Unloaded": "ready", "After launch": "waiting"
 };
 
+let viewer = {person: null, source: null};  // who is signed in, from /api/me
 let calls = new Map();  // message id -> voice call (talk link, script, result)
+
+async function refreshViewer() {
+  try {
+    const response = await fetch("/api/me", {cache: "no-store"});
+    if (response.ok) viewer = await response.json();
+  } catch {
+    // Without it the page shows questions read-only.
+  }
+}
+
+async function sendAnswer(id, text, status) {
+  status.textContent = "Sending…";
+  const response = await fetch(`/api/questions/${encodeURIComponent(id)}/answer`, {method: "POST",
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify({text})});
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || "Try again.");
+  status.textContent = "Sent. Dockside reads it in its next pass and continues.";
+}
 
 async function refreshCalls() {
   try {
@@ -112,7 +131,7 @@ function renderNextSteps(snapshot) {
   $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
   const needs = $("needs-you");
   const drafts = new Map([...needs.querySelectorAll("form[data-answer]")].map(form => [form.dataset.answer, form.querySelector("textarea").value]));
-  const opened = new Set([...needs.querySelectorAll("details[data-question][open]")].map(node => node.dataset.question));
+  const opened = new Set([...needs.querySelectorAll("[data-question] details[open]")].map(node => node.closest("[data-question]").dataset.question));
   needs.innerHTML = [...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
@@ -126,18 +145,33 @@ function renderNextSteps(snapshot) {
       const step = item.next_step;
       const overdue = step.answer_by && Date.now() > Date.parse(step.answer_by);
       const due = step.answer_by ? ` <span class="clock-note">${overdue ? `Answer was due ${html(at(step.answer_by))}.` : `Answer by ${html(at(step.answer_by))}.`}</span>` : "";
-      const answer = step.message_id ? `<details class="question" data-question="${html(step.message_id)}"><summary>Read the question and answer it here</summary>
-          <p>${html(step.question)}</p>
-          <form class="answer-form" data-answer="${html(step.message_id)}"><label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
-          <textarea id="answer-${html(step.message_id)}" rows="2" required placeholder="Answer as ${html(step.person)}"></textarea>
-          <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form></details>` : "";
+      const mine = viewer.person && (viewer.person === step.person || viewer.source === "local demo");
+      const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
+      // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
+      const wanted = part.option?.quantity;
+      const match = (step.options ?? []).find(option => wanted && option.quantity === wanted);
+      const advice = step.options?.length ? (match ? `Recommended: PO ${match.po} line ${match.line}, it matches the ${number(wanted)} ordered.`
+        : `Recommended: a new emergency order. No line matches this delivery of ${number(wanted)}${part.option?.requestedBy ? ` for ${at(part.option.requestedBy)}` : ""}${(step.options ?? []).every(option => part.option?.requestedBy && option.requested > part.option.requestedBy.slice(0, 10)) ? "; the lines named are later deliveries" : ""}.`) : "";
+      const choices = (step.options ?? []).map(option => `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
+          data-text="${html(option.answer)}">PO ${html(option.po)} line ${html(option.line)} · ${number(option.quantity)} · due ${html(day(option.requested))}</button>`).join("");
+      const emergency = step.options?.length ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
+          data-text="Create a new emergency order for this delivery; I will send the reference.">New emergency order</button>` : "";
+      const form = mine ? `<form class="answer-form" data-answer="${html(step.message_id)}">${choices ? `<div class="answer-choices">${choices}${emergency}</div>` : ""}
+          <label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
+          <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
+          <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
+        : `<p class="side-note">Only ${html(step.person)} can answer this here${viewer.person ? `; you are signed in as ${html(viewer.person)}` : ""}.</p>`;
+      const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
+          ${choices ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency order.</p>
+          <p class="advice">${html(advice)}</p>` : ""}
+          <details><summary>Full question</summary><p>${html(step.question)}</p></details>${form}</div>` : "";
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
         <span>${html(step.text)}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
   needs.hidden = !count && !scheduled.length && !team.length;
-  for (const node of needs.querySelectorAll("details[data-question]")) if (opened.has(node.dataset.question)) node.open = true;
+  for (const node of needs.querySelectorAll("[data-question]")) if (opened.has(node.dataset.question)) node.querySelector("details").open = true;
   for (const form of needs.querySelectorAll("form[data-answer]")) form.querySelector("textarea").value = drafts.get(form.dataset.answer) ?? "";
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
@@ -274,6 +308,15 @@ function initOperations(reload) {
     }
   });
 }
+
+if (typeof document !== "undefined") document.addEventListener("click", async event => {
+  const choice = event.target.closest("[data-quick-answer]");
+  if (!choice) return;
+  const status = choice.closest("form").querySelector("[role=status]");
+  choice.disabled = true;
+  try { await sendAnswer(choice.dataset.quickAnswer, choice.dataset.text, status); }
+  catch (error) { status.textContent = `Not sent. ${error.message}`; choice.disabled = false; }
+});
 
 if (typeof document !== "undefined") document.addEventListener("submit", async event => {
   const form = event.target.closest("form[data-answer]");
