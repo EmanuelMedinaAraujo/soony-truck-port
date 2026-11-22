@@ -6,7 +6,7 @@ Soony's Head of Procurement at the kickoff: *"We find out at the dock."* Hamburg
 
 **Saturday:** a delivery note for 8,000 art books was booked as **80,000**. The stock list looked full; in reality **5,900 numbered Collector's copies** could not be packed, **€708,000** in refunds. Dockside caught the extra zero against the order and the scanned note, found 8,000 ready books at a Polish supplier, and ordered them: up to **2,500 copies** recoverable if they arrive usable before the cutoff (statues limit the rest).
 
-**Sunday 02:07** the supplier wrote that it treats the order as placed. **04:17** the same supplier wrote that it has no dispatch instruction and no carrier booking. Dockside put the two emails side by side, stopped counting the 2,500 copies, modeled the arrival at 17:17, after the 16:00 cutoff, and at 04:19 gave the buyer one task: reconcile the order and the dispatch instruction with the supplier, and record the outcome. A tired team at 4 a.m. reports the rescue as on track. Dockside reported the conflict.
+**Sunday 02:07** the supplier wrote that it treats the order as placed. **04:17** the same supplier wrote that it has no dispatch instruction and no carrier booking. Dockside put the two emails side by side, stopped counting the 2,500 copies, modeled the arrival at 17:17, after the 16:00 cutoff, and gave the buyer one task: reconcile the order and the dispatch instruction with the supplier, and record the outcome. A tired team at 4 a.m. reports the rescue as on track. Dockside reported the conflict.
 
 Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give.
 
