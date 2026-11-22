@@ -14,7 +14,11 @@ import uuid
 from email.header import decode_header, make_header
 from email.utils import parseaddr
 
+from langdetect import DetectorFactory, LangDetectException, detect_langs
+
 from core import actions, rules
+
+DetectorFactory.seed = 0
 
 REPLY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS replies(
@@ -71,6 +75,17 @@ def _strip_quote(text: str) -> str:
 
 def _norm(subject: str) -> str:
     return re.sub(r"^(\s*(re|aw|odp|回复|답장|fw|fwd)\s*:\s*)+", "", subject or "", flags=re.I).strip().lower()
+
+
+def reply_language(body: str) -> str | None:
+    # A short acknowledgement or reference can look like several languages.
+    if len(body.strip()) < 15:
+        return None
+    try:
+        best = next(iter(detect_langs(body)), None)
+    except LangDetectException:
+        return None
+    return best.lang if best and best.prob >= 0.9 else None
 
 
 def fetch() -> list[dict]:

@@ -39,4 +39,4 @@ def test_missing_key_is_reported(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY")
     with pytest.raises(llm_health.LLMUnavailable) as info:
         llm_health.guard()
-    assert info.value.kind == "key_invalid"
+    assert info.value.kind == "key_missing"

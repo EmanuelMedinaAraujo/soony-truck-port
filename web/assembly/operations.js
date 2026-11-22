@@ -3,14 +3,14 @@ let activityKey = "";
 let nextStepsKey = "";
 let callsKey = "";
 let busyRequestOpen = false;
-let refreshRequested = false;
 let evidenceBusy = false;
 
-function renderRefreshButton() {
-  const button = $("refresh-evidence");
-  const busy = refreshRequested || evidenceBusy;
-  button.disabled = busy;
-  button.textContent = busy ? "Refreshing…" : "Refresh";
+function renderRefreshIndicator() {
+  const indicator = $("refresh-indicator");
+  indicator.querySelector(".refresh-spinner").hidden = !evidenceBusy;
+  const status = indicator.querySelector(".sr-only");
+  const text = evidenceBusy ? "Refreshing dashboard" : "";
+  if (status.textContent !== text) status.textContent = text;
 }
 const pendingDecisions = new Set();
 let actionDetails = new Map();
@@ -28,6 +28,15 @@ function stepRow(id, title, content, partId = id) {
   const shipment = `<p class="shipment-link"><button type="button" class="detail-trigger" data-show-shipment="${html(partId)}">View shipment</button></p>`;
   stepDetails.set(key, {title, content: content + shipment});
   return `<li>${detailButton(key, title)}</li>`;
+}
+
+function canAnswerStep(step) {
+  const allowed = step.answerable_by ?? step.task?.answerable_by ?? [step.person];
+  return viewer.person && (allowed.includes(viewer.person) || viewer.source === "local demo");
+}
+
+function canReviewSpending(decision) {
+  return decision.can_approve && decision.approver_name?.split(" + ").some(name => name.trim() === viewer.person);
 }
 
 function stepHeadline(part, step) {
@@ -66,6 +75,7 @@ async function sendAnswer(id, text, status) {
   status.textContent = result.approval_requested ? "Decision recorded. Spending approval requested."
     : result.proposal_id ? "Decision recorded. Cancellation request queued."
     : "Sent. Dockside reads it in its next pass and continues.";
+  return result;
 }
 
 async function refreshCalls() {
@@ -112,7 +122,7 @@ function renderCalls() {
     section = document.createElement("details");
     section.id = "calls-history";
     section.className = "operation-details";
-    $("activity-summary").parentElement.after(section);
+    $("activity-row").after(section);
   }
   const open = new Set([...section.querySelectorAll("li:has(details[open])")].map(li => li.dataset.call));
   section.hidden = !rows.length;
@@ -125,7 +135,8 @@ function renderCalls() {
 
 function nextStepLine(next) {
   if (!next) return "";
-  return `<span class="state-chip" data-tone="${nextStepTones[next.state] ?? "active"}">${html(next.state)}</span>
+  const assigned = next.state === "Needs you" && next.task && !canAnswerStep(next);
+  return `<span class="state-chip" data-tone="${assigned ? "waiting" : nextStepTones[next.state] ?? "active"}">${html(assigned ? `Waiting for ${next.person}` : next.state)}</span>
     <span>${html(next.text)}</span>${callControls(next)}`;
 }
 
@@ -181,8 +192,11 @@ function conflictCard(part, item, snapshot) {
 function postDeadlineCard(part, item) {
   const step = item.next_step;
   const task = step.task;
+  const role = task.person_role?.startsWith("Buyer:") ? `${task.person_role.slice(6)} buyer` : task.person_role;
   return `<p class="verdict"><b>No confirmed Sunday recovery.</b> ${html(task.text)}</p>
-    ${task.status === "open" ? `<p><b>${html(task.person)}</b> decides. ${html(task.recommendation)}</p>
+    ${task.status === "open" ? `<p>${canAnswerStep(step) ? "Assigned to" : "Waiting for"} <b>${html(task.person)}</b>${role ? `, ${html(role)}` : ""}.</p>
+      <p class="side-note">${task.reminded_at ? `Discord reminder sent ${html(at(task.reminded_at))}.` : "No Discord reminder for this decision is recorded."}</p>
+      <p>${html(task.recommendation)}</p>
       ${questionBlock(part, {task, person: task.person, message_id: task.id, options: task.options})}
       <p class="side-note">Monday delivery requires spending approval. A cancellation request authorizes no fee.</p>` : `<p>${html(step.text)}</p>`}
     ${step.reply_id ? `<a href="/api/replies/${encodeURIComponent(step.reply_id)}/view" target="_blank" rel="noreferrer">Supplier email</a>` : ""}
@@ -191,7 +205,7 @@ function postDeadlineCard(part, item) {
 
 function questionBlock(part, step) {
   const allowed = step.answerable_by ?? step.task?.answerable_by ?? [step.person];
-  const mine = viewer.person && (allowed.includes(viewer.person) || viewer.source === "local demo");
+  const mine = canAnswerStep(step);
   if (step.task?.kind === "post_deadline") {
     const choices = step.options.map(option => `<li>
       ${mine ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
@@ -199,7 +213,7 @@ function questionBlock(part, step) {
       <div>${html(option.consequence)}</div></li>`).join("");
     return `<div class="question" data-question="${html(step.message_id)}">
       <form><ul>${choices}</ul><span class="side-note" role="status"></span></form>
-      ${mine ? "" : '<p class="side-note">Answer after company sign-in or with /answer in Discord.</p>'}</div>`;
+      ${mine ? "" : `<p class="side-note">${viewer.person ? "The buyer or a delegate can record the decision here." : "The buyer or a delegate can decide here using their company Tailscale account."} They can also use /answer in Discord.</p>`}</div>`;
   }
   const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
   // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
@@ -243,14 +257,14 @@ function renderNextSteps(snapshot) {
     decision.status === "scheduled");
   const listed = new Set([...waiting, ...scheduled].map(decision => decision.id));
   const hasDecision = item => listed.has(item.next_step?.action_id) && !item.next_step?.task;
-  const yours = all.filter(item => item.next_step?.state === "Needs you" && !hasDecision(item));
+  const reviews = all.filter(item => item.next_step?.state === "Needs you" && !hasDecision(item));
   // Questions to Soony staff: a part's next step, or an open question row on its current delivery (newest per person).
   const team = all.filter(item => item.next_step?.person && item.next_step?.state !== "Needs you");
   for (const part of snapshot.components ?? []) {
     const route = part.routes?.find(candidate => candidate.id === part.default_route_id);
     for (const row of route?.steps ?? []) {
       if (!row.message_id || team.some(item => item.next_step.message_id === row.message_id || item.next_step.person === row.person)) continue;
-      const card = yours.find(item => item.component_id === part.id);
+      const card = reviews.find(item => item.component_id === part.id);
       if (card) {  // questions on a part with a decision card belong on that card: its owner's question, or an escalation
         if (card.next_step.person === row.person) card.question ??= row;
         else (card.alsoAsked ??= []).push(row);
@@ -262,11 +276,14 @@ function renderNextSteps(snapshot) {
       else team.push({component_id: part.id, next_step: {...row, state: "Waiting for reply", text: `Waiting for ${row.person}: ${detail}`}});
     }
   }
-  const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item) && !hasDecision(item));
-  const count = waiting.length + yours.length;
-  $("next-title").textContent = count ? "Action needed" :
-    team.length ? "Waiting on your team" : "No spending approvals pending";
-  $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
+  const upcoming = all.filter(item => !reviews.includes(item) && !team.includes(item) && !hasDecision(item));
+  const pendingApproval = waiting.filter(decision => decision.can_approve);
+  const needsViewer = pendingApproval.some(decision => canReviewSpending(decision) && !decision.signatures?.[viewer.person]) ||
+    reviews.some(({next_step: step, question}) => !step.person || canAnswerStep(question ?? step));
+  const waitingOnTeam = Boolean(team.length || reviews.length || pendingApproval.length);
+  $("next-title").textContent = needsViewer ? "Action needed" :
+    waitingOnTeam ? "Waiting on your team" : "No spending approvals pending";
+  $("next-strip").dataset.attention = needsViewer ? "true" : waitingOnTeam ? "waiting" : "false";
   const needs = $("needs-you");
   const focusedDetail = document.activeElement?.dataset.detail;
   stepDetails = new Map();
@@ -274,19 +291,20 @@ function renderNextSteps(snapshot) {
   const binding = snapshot.components.find(component => component.id === snapshot.focusComponentId);
   const bindingStep = binding?.next_step;
   const blocker = binding && bindingStep && !hasDecision({next_step: bindingStep})
-    && ![...yours, ...team].some(item => item.component_id === binding.id)
+    && ![...reviews, ...team].some(item => item.component_id === binding.id)
     ? [stepRow("dispatch-limit", `Dispatch limit · ${nameOf(binding)}`,
       `<p>${html(bindingStep.text)}</p>${callControls(bindingStep)}`, binding.id)] : [];
-  const rows = [...waiting.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}</li>`),
-    ...yours.map(item => {
+  const rows = [...waiting.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}${decision.can_approve ? "" : ' <span class="side-note">On hold</span>'}</li>`),
+    ...reviews.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const step = item.next_step;
       const content = step.task?.kind === "post_deadline" ? postDeadlineCard(part, item)
         : part.option?.deliveryState?.conflict ? conflictCard(part, item, snapshot)
         : `<p>${html(roleText(step.text))}</p>${callControls(step)}`;
-      return stepRow(part.id, stepHeadline(part, step), content);
+      const assignee = step.task?.status === "open" && !canAnswerStep(step) ? ` · ${step.task.person}` : "";
+      return stepRow(part.id, stepHeadline(part, step) + assignee, content);
     }), ...blocker,
-    ...(team.length && (count || blocker.length) ? [`<li class="group-label">Waiting on your team</li>`] : []),
+    ...(team.length && (waiting.length || reviews.length || blocker.length) ? [`<li class="group-label">Team follow-ups</li>`] : []),
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const option = part.option;
@@ -307,7 +325,7 @@ function renderNextSteps(snapshot) {
   nextStepsKey = key;
   needs.innerHTML = rows;
   if (focusedDetail) needs.querySelector(`[data-detail="${CSS.escape(focusedDetail)}"]`)?.focus({preventScroll: true});
-  needs.hidden = !count && !scheduled.length && !team.length && !blocker.length;
+  needs.hidden = !rows;
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
     const part = snapshot.components.find(component => component.id === item.component_id);
@@ -329,7 +347,7 @@ async function refreshBusy() {
     const system = (await response.json()).system ?? {};
     const wasBusy = evidenceBusy;
     evidenceBusy = Boolean(system.busy);
-    renderRefreshButton();
+    renderRefreshIndicator();
     if (wasBusy && !evidenceBusy) refresh();
     const llm = system.llm ?? {ok: true};
     const banner = $("llm-banner");
@@ -341,7 +359,7 @@ async function refreshBusy() {
     }
   } catch {
     evidenceBusy = false;
-    renderRefreshButton();
+    renderRefreshIndicator();
   } finally {
     busyRequestOpen = false;
   }
@@ -351,6 +369,8 @@ function decisionItem(decision) {
   const scheduled = decision.status === "scheduled";
   const due = scheduled ? decision.next_check_at : decision.due_at;
   const signed = Object.keys(decision.signatures ?? {});
+  const canReview = canReviewSpending(decision);
+  const alreadySigned = signed.includes(viewer.person);
   const actionLine = decision.terminal || (decision.held_reason ?
     [`On hold — ${decision.held_reason}`, decision.hold_owner && `${decision.hold_owner} · ${decision.hold_clears}`].filter(Boolean).join(". ") :
     scheduled ? `Goes ahead ${at(due)} unless stopped.` :
@@ -363,8 +383,11 @@ function decisionItem(decision) {
     ${decision.instruction ? `<details class="detail-block" open><summary>Shipment instruction</summary><pre style="white-space: pre-wrap">${html(decision.instruction)}</pre></details>` : ""}
     ${decision.details || reviewed ? `<details class="detail-block"><summary>Review action</summary>
        ${decision.details ? `<p>${html(decision.details)}</p>` : ""}${reviewed ? `<ul>${reviewed}</ul>` : ""}</details>` : ""}
-    ${decision.can_approve ? `<div class="decision-buttons"><button type="button" class="action-button" data-decision="approve">${scheduled ? "Do it now" : "Approve"}</button>
-      <button type="button" class="secondary-button" data-decision="reject">${scheduled ? "Stop" : "Decline"}</button></div>` : ""}</article>`;
+    ${canReview ? `<div class="decision-buttons">${alreadySigned ? '<span class="side-note">Your signature is recorded.</span>' :
+      `<button type="button" class="action-button" data-decision="approve">${scheduled ? "Do it now" : "Approve spending"}</button>`}
+      <button type="button" class="secondary-button" data-decision="reject">${scheduled ? "Stop" : "Decline"}</button></div>` :
+      decision.can_approve ? `<p class="side-note">${viewer.person ? `${html(decision.approver_name || "The assigned approver")} can approve here.` :
+        "The assigned approver can approve here using their company Tailscale account or use the link in their approval email."}</p>` : ""}</article>`;
 }
 
 function renderOperations(snapshot) {
@@ -383,6 +406,13 @@ function renderOperations(snapshot) {
     const focusedDetail = document.activeElement?.dataset.detail;
     list.innerHTML = rows;
     if (focusedDetail) list.querySelector(`[data-detail="${CSS.escape(focusedDetail)}"]`)?.focus({preventScroll: true});
+  }
+  const approval = actionDetails.get(openDetail?.approval);
+  if (approval) {
+    openDetail.id = approval.id;
+    delete openDetail.approval;
+    $("action-dialog-title").textContent = approval.title;
+    $("decision-result").textContent = "Delivery choice recorded.";
   }
   if (openDetail && !openDetail.id.startsWith("step:") && !pendingDecisions.has(openDetail.id)) {
     const decision = actionDetails.get(openDetail.id);
@@ -405,26 +435,10 @@ function renderOperations(snapshot) {
 }
 
 function initOperations(reload) {
+  initChat();
   const dialog = $("action-dialog");
   const dialogContent = $("action-dialog-content");
   const decisionResult = $("decision-result");
-  $("refresh-evidence").addEventListener("click", async () => {
-    const status = $("refresh-status");
-    refreshRequested = true;
-    renderRefreshButton();
-    status.textContent = "";
-    try {
-      const response = await fetch("/api/cycle", {method: "POST"});
-      if (!response.ok) throw new Error(response.status);
-      const result = await response.json();
-      evidenceBusy = result.started || Boolean(result.reason);
-    } catch {
-      status.textContent = "Couldn’t start refresh. Try again.";
-    } finally {
-      refreshRequested = false;
-      renderRefreshButton();
-    }
-  });
   document.addEventListener("click", event => {
     const trigger = event.target.closest(".detail-trigger[data-detail]");
     if (!trigger || dialog.open) return;
@@ -445,13 +459,30 @@ function initOperations(reload) {
     openDetail = null;
     dialogContent.replaceChildren();
     if (shipment) selectPart(shipment, true);
-    else (button ?? list.querySelector("[data-detail]") ?? $("refresh-evidence")).focus({preventScroll: true});
+    else (button ?? list.querySelector("[data-detail]") ?? list.closest("section")?.querySelector("h2"))?.focus({preventScroll: true});
   });
   dialog.addEventListener("click", async event => {
     const shipment = event.target.closest("[data-show-shipment]");
     if (shipment) {
       openDetail.shipment = shipment.dataset.showShipment;
       dialog.close();
+      return;
+    }
+    const choice = event.target.closest("[data-quick-answer]");
+    if (choice) {
+      const form = choice.closest("form");
+      const status = form.querySelector("[role=status]");
+      const controls = form.querySelectorAll("button");
+      const opened = openDetail;
+      controls.forEach(control => control.disabled = true);
+      try {
+        const result = await sendAnswer(choice.dataset.quickAnswer, choice.dataset.text, status);
+        if (opened === openDetail && result.approval_requested) opened.approval = result.proposal_id;
+        await reload();
+      } catch (error) {
+        status.textContent = `Couldn’t record the choice. ${error.message}`;
+        controls.forEach(control => control.disabled = false);
+      }
       return;
     }
     const button = event.target.closest("[data-decision]");
@@ -461,14 +492,12 @@ function initOperations(reload) {
     if (pendingDecisions.has(id)) return;
     const opened = openDetail;
     const decision = button.dataset.decision;
-    let by = "web";
-    try { by = localStorage.getItem("dockside.me") || by; } catch {}
     pendingDecisions.add(id);
     card.querySelectorAll("button").forEach(control => control.disabled = true);
     decisionResult.textContent = "Recording decision…";
     try {
       const response = await fetch(`/api/actions/${encodeURIComponent(id)}/decide`, {method: "POST",
-        headers: {"Content-Type": "application/json"}, body: JSON.stringify({decision, by, commitment_digest: card.dataset.commitmentDigest || null})});
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify({decision, commitment_digest: card.dataset.commitmentDigest || null})});
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Try again after refreshing the page.");
       const queued = result.messages?.some(message => ["draft", "outbox"].includes(message.status));
@@ -476,6 +505,7 @@ function initOperations(reload) {
       if (opened === openDetail) {
         decisionResult.textContent = decision === "reject" ? "Decision recorded." :
           ["proposed", "scheduled", "escalated"].includes(result.status) ? "Signature recorded. Waiting for the remaining approvers." :
+          result.held_reason ? `Approval recorded. Release is on hold. ${result.held_reason}` :
           unknown ? "Approved. Delivery needs confirmation." : queued ? "Approved. A message is queued." : "Approved.";
       }
       card.querySelector(".decision-buttons")?.remove();
@@ -487,18 +517,50 @@ function initOperations(reload) {
       await reload();
     }
   });
+}
+
+function initChat() {
+  const chat = $("dockside-chat");
+  const opener = $("open-chat");
+  const toggle = $("toggle-chat");
+  const content = $("chat-content");
+  const input = $("question");
+
+  function setExpanded(expanded) {
+    content.hidden = !expanded;
+    chat.classList.toggle("is-collapsed", !expanded);
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.textContent = expanded ? "Minimize" : "Expand";
+    (expanded ? input : toggle).focus({preventScroll: true});
+  }
+
+  opener.addEventListener("click", () => {
+    chat.hidden = false;
+    opener.setAttribute("aria-expanded", "true");
+    setExpanded(true);
+  });
+  toggle.addEventListener("click", () => setExpanded(content.hidden));
+  $("close-chat").addEventListener("click", () => {
+    chat.hidden = true;
+    opener.setAttribute("aria-expanded", "false");
+    opener.focus({preventScroll: true});
+  });
+  chat.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !content.hidden) setExpanded(false);
+  });
   $("ask-form").addEventListener("submit", async event => {
     event.preventDefault();
     const button = event.target.querySelector("button");
     const answer = $("answer");
-    const question = $("question").value.trim();
+    const question = input.value.trim();
     if (button.disabled || !question) return;
     button.disabled = true;
     answer.textContent = "Checking shipment and packing records…";
     try {
       const response = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({q: question})});
-      if (!response.ok) throw new Error();
-      answer.textContent = (await response.json()).answer;
+      const result = await response.json();
+      if (typeof result.answer !== "string" || !result.answer.trim()) throw new Error();
+      answer.textContent = result.answer;
     } catch {
       answer.textContent = "Dockside couldn’t answer. Try again in a moment.";
     } finally {
@@ -506,15 +568,6 @@ function initOperations(reload) {
     }
   });
 }
-
-if (typeof document !== "undefined") document.addEventListener("click", async event => {
-  const choice = event.target.closest("[data-quick-answer]");
-  if (!choice) return;
-  const status = choice.closest("form").querySelector("[role=status]");
-  choice.disabled = true;
-  try { await sendAnswer(choice.dataset.quickAnswer, choice.dataset.text, status); }
-  catch (error) { status.textContent = `Not sent. ${error.message}`; choice.disabled = false; }
-});
 
 if (typeof document !== "undefined") document.addEventListener("submit", async event => {
   const form = event.target.closest("form[data-answer]");

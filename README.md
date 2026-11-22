@@ -52,7 +52,7 @@ The rush option in `GET /api/dispatch` exposes `deliveryState` and `needsRevised
 
 The formal order trace shows each supplier acknowledgement, acceptance and dispute with its source reply. Select the reply to read the original message via `GET /api/replies/{message_id}`. When a supplier disputes the order, the decision and recovery forecast show who must reconcile the order and who must verify a booking, eligible vehicle and ETA by cutoff. The conflict blocks amendments while those checks are open. The background cycle records one task for the order; earlier questions and later escalations link to it as notifications. The buyer or an authorized procurement lead can answer the task, and Dockside records who answered. The forecast also shows the modeled unload time based on the latest supplier reply, loading time and drive duration.
 
-The dashboard opens source replies at `/api/replies/{message_id}/view` with the original beside a cached English translation. While translation is unavailable, it shows the recorded English summary when one exists.
+The dashboard opens source replies at `/api/replies/{message_id}/view`. For non-English replies it shows an English translation or a recorded English summary when available.
 
 After the last Sunday departure time, the art-book order gets a new buyer task to choose Monday delivery or request cancellation. Monday delivery needs a spending approval, the original order reconciled in writing, an authorized Monday carrier ETA with the required vehicle rating, and a matching receiving slot. Cancellation uses the recorded buyer choice and asks the supplier to quote any fee before proceeding. The recommendation uses `late_collectors_ship_instead_of_refund.value` when Soony confirms its policy.
 

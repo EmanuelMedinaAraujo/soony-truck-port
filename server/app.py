@@ -374,20 +374,29 @@ def reply_source(message_id: str):
     reply = inbox.get_reply(message_id)
     if not reply:
         raise HTTPException(404, "Reply message not found")
-    with actions.read() as log:
-        cached = log.execute("SELECT body_en FROM reply_translations WHERE reply_id=?", (message_id,)).fetchone()
     body = reply["body"] or ""
-    translation = cached["body_en"] if cached else ""
-    if not cached and body and not reply["simulated"] and reply["from_addr"] and os.environ.get("OPENAI_API_KEY"):
-        try:
-            translation = agent.translate_reply(body)
-        except Exception:
-            logging.getLogger(__name__).info("Reply translation is unavailable")
-        if translation:
-            with actions.tx() as log:
-                log.execute("INSERT OR IGNORE INTO reply_translations VALUES (?,?)", (message_id, translation))
-    label = "English translation" if translation else "English summary"
-    english = translation or reply["summary_en"] or "English translation unavailable."
+    companion = ""
+    language = inbox.reply_language(body)
+    if language != "en":
+        with actions.read() as log:
+            cached = log.execute("SELECT body_en FROM reply_translations WHERE reply_id=?", (message_id,)).fetchone()
+        translation = cached["body_en"] if cached else ""
+        if not cached and body and not reply["simulated"] and reply["from_addr"] and os.environ.get("OPENAI_API_KEY"):
+            try:
+                translation = agent.translate_reply(body)
+            except Exception:
+                logging.getLogger(__name__).info("Reply translation is unavailable")
+            if translation:
+                with actions.tx() as log:
+                    log.execute("INSERT OR IGNORE INTO reply_translations VALUES (?,?)", (message_id, translation))
+        label = "English translation"
+        english = translation.strip()
+        original_words = body.casefold().split()
+        if not english or english.casefold().split() == original_words:
+            label = "English summary"
+            english = (reply["summary_en"] or "").strip() if language else ""
+        if english and english.casefold().split() != original_words:
+            companion = f'<section><h2>{label}</h2><p class="message">{escape(english)}</p></section>'
     subject = escape(reply["subject"] or "Supplier reply")
     sender = escape(reply["from_name"] or reply["from_addr"] or "")
     stamp = rules.ts(reply["received_at"])
@@ -402,7 +411,7 @@ def reply_source(message_id: str):
   .message {{white-space: pre-wrap; margin-bottom: 0}}
 </style><h1>{subject}</h1><p>{sender} · {escape(received)}</p>
 <main><section><h2>Original message</h2><p class="message">{escape(body)}</p></section>
-<section><h2>{label}</h2><p class="message">{escape(english)}</p></section></main></html>""",
+{companion}</main></html>""",
                         headers={"Cache-Control": "no-store"})
 
 

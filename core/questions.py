@@ -73,15 +73,23 @@ def can_answer(question: dict, who: str) -> bool:
 def public(c, task) -> dict:
     reply = (c.execute("SELECT from_name FROM replies WHERE id=?", (task["answered_reply_id"],)).fetchone()
              if task["answered_reply_id"] else None)
+    assignee = person(task["person"])
+    role = next((role for role, name in rules.cfg("people").items() if name == assignee), None)
     result = {key: task[key] for key in ("id", "status", "text", "answered_at")} | {
-        "person": person(task["person"]),
+        "person": assignee, "person_role": role,
         "answer": task["answer_text"], "answered_by": reply["from_name"] if reply else None,
-        "answerable_by": answerers(person(task["person"]), task=True),
+        "answerable_by": answerers(assignee, task=True),
     }
     if decision := _post_deadline_record(c, task["id"]):
         order = actions._get(c, task["action_id"])
         if plan := release.post_deadline_plan(order):
-            result.update(_decision_fields(order, plan), proposal_id=decision["proposal_id"])
+            sent = c.execute("""SELECT m.to_name, m.sent_at FROM staff_task_reminders t
+                              JOIN messages m ON m.id=t.message_id
+                              WHERE t.task_id=? AND m.subject=? AND m.channel='discord' AND m.status='delivered'
+                                AND julianday(m.sent_at)>=julianday(?) ORDER BY julianday(m.sent_at) DESC""",
+                             (task["id"], f"Reminder of task {task['id']}", task["created_at"]))
+            reminded_at = next((row["sent_at"] for row in sent if person(row["to_name"]) == assignee), None)
+            result.update(_decision_fields(order, plan), proposal_id=decision["proposal_id"], reminded_at=reminded_at)
     return result
 
 

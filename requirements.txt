@@ -8,4 +8,5 @@ pandas
 python-docx
 discord.py
 searoute
+langdetect
 pytest

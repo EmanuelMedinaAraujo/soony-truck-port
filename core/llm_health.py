@@ -15,6 +15,7 @@ RETRY_MINUTES = {"rate_limited": 2, "offline": 2, "out_of_credit": 15, "key_inva
 MESSAGES = {
     "out_of_credit": "The OpenAI key has run out of credit. Dockside keeps tracking and executing scheduled actions, but cannot read new documents, replies or answer questions. Add a new key as OPENAI_API_KEY in .env.",
     "key_invalid": "The OpenAI key was rejected. Add a valid key as OPENAI_API_KEY in .env.",
+    "key_missing": "Ask Dockside is unavailable because its OpenAI key is not configured.",
     "rate_limited": "OpenAI is rate limiting Dockside. It retries automatically in a few minutes.",
     "offline": "OpenAI cannot be reached. Dockside retries automatically.",
 }
@@ -93,7 +94,7 @@ def available() -> bool:
 
 def guard() -> None:
     if not os.environ.get("OPENAI_API_KEY"):
-        raise LLMUnavailable("key_invalid", "OPENAI_API_KEY is not set")
+        raise LLMUnavailable("key_missing")
     if not available():
         s = status()
         raise LLMUnavailable(s.get("kind", "offline"), s.get("detail", ""))

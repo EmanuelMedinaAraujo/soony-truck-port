@@ -265,11 +265,10 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert note["who"] == "Dockside" and "ACT-B7B90B" in note["text"]
         assert server.get_reply(dispute["message_id"])["body"] == denial
         monkeypatch.setenv("OPENAI_API_KEY", "fixture")
-        monkeypatch.setattr(agent, "translate_reply", lambda body: body + " <supplier>")
+        monkeypatch.setattr(agent, "translate_reply", lambda body: pytest.fail("English replies should bypass translation"))
         source = client.get(f"/api/replies/{dispute['message_id']}/view")
         assert source.status_code == 200
-        assert "Original message" in source.text and "English translation" in source.text
-        assert "&lt;supplier&gt;" in source.text
+        assert denial in source.text and source.text.count("<section>") == 1
         monkeypatch.delenv("OPENAI_API_KEY")
         assert source.text == client.get(f"/api/replies/{dispute['message_id']}/view").text
 
@@ -388,6 +387,31 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert all(questions.find(mid)["superseded"] for mid in replaced)
 
 
+def test_reply_source_shows_available_translation_for_non_english(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from server import app as server
+
+    monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
+    actions.initialize()
+    body = "Nie otrzymaliśmy instrukcji wysyłki. Załadunek może rozpocząć się w ciągu czterech godzin."
+    with actions.tx() as log:
+        log.execute("INSERT INTO replies(id, from_addr, body, summary_en) VALUES (?,?,?,?)",
+                    ("polish", "supplier@example.test", body, "The supplier reports no dispatch instruction."))
+        log.execute("INSERT INTO replies(id, from_addr, body) VALUES (?,?,?)",
+                    ("short", "supplier@example.test", "OK"))
+    client = TestClient(server.app)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    summary = client.get("/api/replies/polish/view")
+    assert body in summary.text and "English summary" in summary.text
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture")
+    monkeypatch.setattr(agent, "translate_reply", lambda text: "No dispatch instruction for <supplier>." if text == body else text)
+    translated = client.get("/api/replies/polish/view")
+    assert "English translation" in translated.text and "&lt;supplier&gt;" in translated.text
+    assert client.get("/api/replies/short/view").text.count("<section>") == 1
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert client.get("/api/replies/polish/view").text == translated.text
+
+
 def test_recorded_cancellation_queues_no_fee_request(tmp_path, monkeypatch):
     from core import inbox, outbound, questions
 
@@ -431,6 +455,15 @@ def test_post_deadline_separates_spending_approval_from_no_fee_cancellation(tmp_
     policy = customer.load(replay.ROOT / "config" / "business.json")
     policy["release_carrier_contacts"]["value"] = {replay.ORDER: replay.CARRIER_EMAIL}
     policy["staff_email"]["value"]["Katrin Jansen"] = replay.DOCK_EMAIL
+
+    def record_reminder(task):
+        message = {"channel": "discord", "to_name": task["person"], "to_address": None, "language": "en",
+                   "subject": f"Reminder of task {task['id']}", "body": task["text"]}
+        notice = actions.propose(replay.FINDING, "Remind the buyer", "", "ask", 0, 0, 0, None, None, messages=[message])
+        with actions.tx() as log:
+            log.execute("UPDATE messages SET status='delivered', sent_at=? WHERE id=?",
+                        (rules.now().isoformat(), notice["messages"][0]["id"]))
+
     with rules.replay(policy, replay.at("00:14")):
         replay.seed_sent_order()
         original = actions.get(replay.ORDER)
@@ -439,14 +472,20 @@ def test_post_deadline_separates_spending_approval_from_no_fee_cancellation(tmp_
         replay.store_reply(supplier, "denial", "We received no dispatch instruction.")
         earlier, = questions.current()
         assert not earlier["task_kind"]
+        record_reminder(earlier)
     with rules.replay(policy, replay.at("07:01")):
         task, = questions.current()
         assert task["id"] != earlier["id"]
         assert task["person"] == "Paul Winter"
+        assert task["person_role"] == "Buyer:Print & Packaging"
         assert task["task_kind"] == "post_deadline"
+        assert task["reminded_at"] is None
         assert "07:00" in task["text"]
         assert questions.find(earlier["id"])["status"] == "closed"
         assert questions.order_state(original, now=rules.now())["task"]["id"] == task["id"]
+        record_reminder(task)
+        current, = questions.current()
+        assert current["reminded_at"] == rules.now().isoformat()
         with pytest.raises(PermissionError):
             questions.answer(task, "Raj Patel", choice)
         reply = questions.answer(task, "Paul Winter", choice)

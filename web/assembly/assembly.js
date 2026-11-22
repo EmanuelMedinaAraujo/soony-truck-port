@@ -75,20 +75,6 @@ function drawLinks() {
   }).join("");
 }
 
-/* The one line a buyer needs first: what is at risk, in copies and money, and which part decides it. */
-function renderStakes() {
-  const short = state.editions.filter(edition => edition.short > 0);
-  const parts = short.map(edition => `<b>${number(edition.short)}</b> ${html(edition.name)} ${edition.short === 1 ? "copy" : "copies"} short` +
-    (edition.refundsAtRisk ? ` (${money(edition.refundsAtRisk)} in projected refunds)` : ""));
-  // The part that limits each edition, named per edition so a reader knows which shortfall it explains.
-  const limits = short.map(edition => {
-    const part = state.components.find(item => item.id === edition.constraintIds?.[0]);
-    return part ? `${html(edition.name.replace(/ Edition$/, ""))} bottleneck: <button class="next-part" type="button" data-stake-part="${html(part.id)}">${html(nameOf(part))}</button>` : "";
-  }).filter(Boolean);
-  const text = short.length ? `${parts.join(" · ")}.${limits.length ? ` ${limits.join(" · ")}.` : ""}` : "Every edition is covered for Sunday.";
-  if ($("stakes").dataset.text !== text) { $("stakes").dataset.text = text; $("stakes").innerHTML = text; }
-}
-
 /* For a rush offer: what it costs, what it can add, and what still limits the edition afterwards. */
 function renderEconomics(part, route) {
   const option = part.option;
@@ -133,7 +119,6 @@ function updateOverview() {
   $("legend").hidden = false;
   $("deadline").textContent = at(state.deadline);
   $("cutoff").textContent = `Receiving cutoff in ${siteName()} ${at(state.cutoff)}`;
-  renderStakes();
   drawLinks();
 }
 
@@ -175,7 +160,7 @@ function collapseReminders(steps) {
   const people = [...new Set(history.map(step => step.person).filter(Boolean))];
   const row = {name: `Reminders and escalations (${history.length})`, state: "superseded",
     detail: `Sent to ${people.join(", ")}. All are folded into the current task; answers go there.`,
-    fold: true, events: history.map(step => ({at: step.since ? at(step.since) : "", who: step.person ?? "", kind: "reply", text: step.detail}))};
+    events: history.map(step => ({at: step.since ? at(step.since) : "", who: step.person ?? "", kind: "reply", text: step.detail}))};
   const first = steps.indexOf(history[0]);
   return [...steps.slice(0, first).filter(step => !history.includes(step)), row, ...steps.slice(first).filter(step => !history.includes(step))];
 }
@@ -193,26 +178,25 @@ function withoutRepeat(detail, shown) {
   return String(detail ?? "").split(/(?<=[.!?])\s+/).filter(sentence => sentence.length < 25 || !seen.includes(sentence.slice(0, 60))).join(" ");
 }
 
-function renderProgress(route, line) {
-  const now = `<p class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
-  if (!route?.steps?.length) return now;
-  return `${now}<p class="progress-caption">Progress of ${html(route.name.charAt(0).toLowerCase() + route.name.slice(1))}</p>
-    <ol class="progress">${collapseReminders(route.steps).map(step => {
+function renderShipmentHistory(route, line) {
+  if (!route?.steps?.length) return "";
+  return `<h4 class="progress-caption">Shipment history</h4>
+    <ol class="progress">${collapseReminders(route.steps).map((step, index) => {
       const position = step.state === "confirmed" ? "done" : step.state === "waiting" ? "waiting" : "todo";
+      const detail = clean(withoutRepeat(step.detail, line));
       return `<li data-position="${position}" data-state="${html(step.state)}">
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepLabel(step)}</span>
-        <p>${html(clean(withoutRepeat(step.detail, line)))}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
+        ${detail ? `<p>${html(detail)}</p>` : ""}${step.events?.length ? `<details class="detail-block step-events" data-detail="events ${html(route.id)} ${html(step.name)} ${index}">
+          <summary>Show ${step.events.length} ${step.events.length === 1 ? "update" : "updates"}</summary><ol class="events">${step.events.map(event =>
           `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(clean(event.text))}${
-            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}/view" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}/view" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol></details>` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 
 function renderRouteDetails(route, showConfirmation) {
-  if (!route) return "";
-  const sources = sourceList(route.evidence);
-  if (!sources && !showConfirmation) return "";
-  return `<details class="detail-block shipment-details" data-detail="route checks"><summary>Sources${showConfirmation ? " and scenario" : ""}</summary>
+  if (!route || (!route.evidence?.length && !showConfirmation)) return "";
+  return `<details class="detail-block" data-detail="route checks ${html(route.id)}"><summary>Sources${showConfirmation ? " and scenario" : ""}</summary>
     ${route.evidence?.length ? `<ul>${route.evidence.map(entry => `<li><strong>${html(entry.label)}</strong><br>${html(entry.detail)}</li>`).join("")}</ul>` : ""}
     ${showConfirmation ? `<div class="handoff"><label><input id="assume-confirmed" type="checkbox" ${assumeConfirmation ? "checked" : ""}> Assume supplier confirms the order</label>
       <a href="${negotiator}" target="_blank" rel="noreferrer">Order negotiator</a>
@@ -298,9 +282,9 @@ function renderInspector(force = false, focusShipment = null) {
   const map = mappedRoute(route);
   const routes = routesFor(part);
   const chaser = renderChaserCases(part);
-  const key = JSON.stringify([part, routes, route?.id, map?.id, assumeConfirmation, chaser]);
-  if (!force && key === inspectorKey) return;
   const line = nextStepLine(routeSelection ? route?.next_step ?? part.next_step : part.next_step);
+  const key = JSON.stringify([part, routes, route?.id, map?.id, assumeConfirmation, chaser, line]);
+  if (!force && key === inspectorKey) return;
   const currentStage = route?.current_stage ?? part.current_stage;
   const focused = document.activeElement;
   const headingFocused = focused === $("part-heading");
@@ -323,14 +307,16 @@ function renderInspector(force = false, focusShipment = null) {
   const showConfirmation = offer || route?.tracking?.status === "booked";
   const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in ${siteName()}, ${number(part.required)} needed`;
   const partNote = parent ? `Fitted into the ${nameOf(parent)} by ${part.includedIn.supplier}.` : stockText;
+  const shipmentDetails = renderEconomics(parent ?? part, route) + renderShipmentHistory(route, line) + renderRouteDetails(route, showConfirmation);
   const wasOpen = new Set([...inspector.querySelectorAll("details[open]")].map(node => node.dataset.detail));
   inspector.innerHTML = `<div class="inspector-head"><div class="inspector-banner">${partArt(part)}
       <div><h2 id="part-heading" tabindex="-1">${html(nameOf(part))}</h2>
-      <p>${html(partNote)}</p>${renderEconomics(parent ?? part, route)}</div>
+      <p>${html(partNote)}</p></div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
-    <div class="shipment-head"><div class="shipment-summary"><h3>Where it stands</h3>
-      ${renderProgress(route, line)}</div>
-      ${renderRouteDetails(route, showConfirmation)}</div>
+    <div class="shipment-head"><h3>Where it stands</h3>
+      <div class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</div>
+      ${shipmentDetails ? `<details class="detail-block shipment-details" data-detail="shipment ${html(route?.id)}">
+        <summary>Shipment details</summary>${shipmentDetails}</details>` : ""}</div>
     </div>
     ${chaser}
     ${map ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(map.tracking, mapLand, map.id, map.name) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
@@ -416,12 +402,12 @@ async function refresh() {
     const [response] = await Promise.all([fetch("/api/dispatch", {cache: "no-store"}), refreshCalls(), refreshViewer()]);
     if (!response.ok) throw new Error(response.status);
     state = await response.json();
-    $("sync").textContent = state.checkedAt ? `Checked ${time.format(new Date(state.checkedAt))}` : "Loading portal data";
     updateOverview();
     renderInspector();
     if (mappedRoute()) loadMap();
     renderOperations(state);
     renderNextSteps(state);
+    $("sync").textContent = "";
     window.PartDependencyGraph.prefetch(state.components.map(component => component.id));
   } catch {
     $("sync").textContent = state ? "Refresh failed" : "Disconnected";
@@ -434,10 +420,6 @@ async function refresh() {
 $("next-strip").addEventListener("click", event => {
   const part = event.target.closest("[data-next-part]");
   if (part) selectPart(part.dataset.nextPart, true);
-});
-$("stakes").addEventListener("click", event => {
-  const part = event.target.closest("[data-stake-part]");
-  if (part) selectPart(part.dataset.stakePart);
 });
 $("overview").addEventListener("click", event => {
   const part = event.target.closest("[data-part]");

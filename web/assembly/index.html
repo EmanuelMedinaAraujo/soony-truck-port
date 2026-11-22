@@ -35,15 +35,16 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
 -->
 <main class="shell">
   <header class="dispatch-heading">
-    <div><h1>Sunday dispatch</h1><p id="stakes" class="stakes" aria-live="polite"></p><p>Select a part to trace it to the box.</p></div>
+    <h1>Sunday dispatch</h1>
     <div class="deadline"><span class="deadline-label">Trucks leave</span><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
   </header>
 
   <section id="next-strip" class="next-strip" aria-labelledby="next-title" hidden>
-    <header><h2 id="next-title">Checking</h2><div class="strip-status">
-      <span id="sync" role="status">Connecting</span>
-      <button id="refresh-evidence" class="secondary-button" type="button">Refresh</button>
-      <span id="refresh-status" role="status"></span>
+    <header><h2 id="next-title" tabindex="-1">Checking</h2><div class="strip-status">
+      <span id="sync" role="status"></span>
+      <span id="refresh-indicator" role="status">
+        <span class="refresh-spinner" aria-hidden="true" hidden></span><span class="sr-only"></span>
+      </span>
     </div></header>
     <p id="llm-banner" class="llm-banner" role="alert" hidden></p>
     <ul id="needs-you" class="needs-you" hidden></ul>
@@ -68,16 +69,26 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
 
   <section class="inspector" id="inspector" aria-labelledby="part-heading" hidden></section>
   <section class="operations" id="operations" aria-labelledby="operations-title">
-    <header><h2 id="operations-title">Actions</h2><p id="attention">Checking for decisions</p></header>
+    <header><h2 id="operations-title" tabindex="-1">Actions</h2><p id="attention">Checking for decisions</p></header>
     <ul id="decision-list" class="decision-list"></ul>
-    <details class="operation-details"><summary id="activity-summary">Recent activity</summary><ol id="activity-list"></ol></details>
-    <details class="operation-details"><summary>Ask Dockside</summary>
-      <form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label>
-        <input id="question" required placeholder="What could hold up the art books?"><button class="action-button" type="submit">Ask</button></form>
-      <p id="answer" role="status" class="answer"></p>
-    </details>
+    <div class="activity-row" id="activity-row">
+      <details class="operation-details"><summary id="activity-summary">Recent activity</summary><ol id="activity-list"></ol></details>
+      <button class="secondary-button" id="open-chat" type="button" aria-controls="dockside-chat" aria-expanded="false">Ask Dockside</button>
+    </div>
   </section>
 </main>
+<section class="dockside-chat" id="dockside-chat" aria-labelledby="chat-title" hidden>
+  <header>
+    <h2 id="chat-title">Ask Dockside</h2>
+    <button class="text-button" id="toggle-chat" type="button" aria-controls="chat-content" aria-expanded="true">Minimize</button>
+    <button class="chat-close" id="close-chat" type="button" aria-label="Close chat">&times;</button>
+  </header>
+  <div class="chat-content" id="chat-content">
+    <p id="answer" role="status" class="answer"></p>
+    <form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label>
+      <input id="question" required placeholder="What could hold up the art books?"><button class="action-button" type="submit">Ask</button></form>
+  </div>
+</section>
 <dialog id="action-dialog" class="action-dialog" aria-labelledby="action-dialog-title">
   <header>
     <h2 id="action-dialog-title"></h2>
