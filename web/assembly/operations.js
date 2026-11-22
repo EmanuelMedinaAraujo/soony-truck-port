@@ -117,7 +117,7 @@ function conflictCard(part, item, snapshot) {
   const q = item.question;
   const task = item.next_step.task ?? q?.task;
   const answered = task && task.status && task.status !== "open"
-    ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.person)} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
+    ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.answered_by ?? task.person)}${task.answered_by && task.answered_by !== task.person ? ` for ${html(task.person)}` : ""} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
   return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
     <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome. ${option.copiesAdded ? `The rescue (+${number(option.copiesAdded)} copies) is at risk.` : `No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
     <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
@@ -136,7 +136,8 @@ function conflictCard(part, item, snapshot) {
 
 /* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */
 function questionParts(part, step) {
-  const mine = viewer.person && (viewer.person === step.person || viewer.source === "local demo");
+  const allowed = step.answerable_by ?? step.task?.answerable_by ?? [step.person];
+  const mine = viewer.person && (allowed.includes(viewer.person) || viewer.source === "local demo");
   const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
   // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
   const wanted = part.option?.quantity;
@@ -151,7 +152,7 @@ function questionParts(part, step) {
       <label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
       <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
       <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
-    : `<p class="side-note">Only ${html(step.person)} can answer: here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}, or with /answer in Discord once their account is linked. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
+    : `<p class="side-note">${allowed.length > 1 ? `${html(allowed[0])} (or ${html(allowed.slice(1).join(", "))} on their behalf)` : `Only ${html(step.person)}`} can answer: here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}, or with /answer in Discord once their account is linked. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
   const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
       ${choices && !step.task ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency reference for the same order.</p>
       <p class="advice">${html(advice)}</p>` : ""}

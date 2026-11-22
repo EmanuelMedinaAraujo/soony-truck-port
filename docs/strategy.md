@@ -4,7 +4,7 @@
 
 *"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. It ordered 8,000 replacements, never counted them as stock, and tracked the supplier. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside held the amendment and gave the buyer one task: settle it with the supplier.
 
-*(The figures above are the Saturday replay. The live board moves on: by Sunday morning game cards became the binding part, the art books would add no copies, and Dockside keeps their amendment on hold and points at game cards instead.)*
+*(The figures above are the Saturday replay; the live board recalculates them from every new file, receipt and reply.)*
 
 Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give.
 
@@ -119,7 +119,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 
 1. **The pain (30 s).** Maren's quote, then the receipt booked as 80,000 against an 8,000 note, and the art book trace: 5,900 Collector's copies short on Saturday.
 2. **The reversal (60 s).** The order row: sent 00:14, accepted 02:07, disputed 04:17, each with its source email. The decision card: one task for Paul, the modeled arrival against the 16:00 cutoff, what clears it. Nothing is counted or sent while the conflict is open.
-3. **The board moves (30 s).** The header now names game cards as the biggest lever and the art books add +0: Dockside recalculates the bottleneck from the bill of materials and the packing clock, and the recommendation follows it.
+3. **Another customer, same runtime (30 s).** The Kestrel replay: a toy maker's files, its own SKUs, site and deadline. A verified receipt moves the forecast; a carrier manifest that contradicts the truck board (30 vs 12) is held for review instead of counted.
 4. **Why it's safe (30 s).** The release-gate replay: unsigned or changed terms are held, 07:01 without proof of departure is held, the exact signed terms are what leaves.
 5. **The business (30 s).** €5,000 pilot, 182 attributable copies break even, Kestrel shows the same runtime on another customer, the first three publishers and how we reach them.
 
