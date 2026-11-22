@@ -415,3 +415,4 @@ img { display: block; max-width: 100%; }
 .verdict { margin: 2px 0 6px; color: var(--short); }
 .verdict b { font-weight: 700; }
 .verdict { font-size: .95rem; }
+.needs-you .group-label { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--line); }

@@ -100,6 +100,12 @@ function renderEconomics(part, route) {
   }
   const edition = state.editions.find(item => item.id === option.editionId);
   if (!edition) return "";
+  // After the departure deadline without proof, the rescue is history: say what that means first.
+  if (option.departure?.state === "passed") {
+    return `<p class="economics"><b>No Sunday recovery: ${html(edition.name)} stays ${number(edition.short)} short.</b>
+      Up to +${number(option.copiesAdded)} copies (${money(option.refundsAvoided)} in refunds avoided for ${money(option.cost)}) were possible only if the books left
+      ${html(option.origin ?? "the supplier")} by ${html(at(option.departure.deadline))}; there is no proof they did.</p>`;
+  }
   const after = edition.projected + option.copiesAdded;
   const limit = option.nextConstraint ? `${html(option.nextConstraint)} then ${edition.demand - after > 0 ? `limits it: ${number(edition.demand - after)} still short` : "is not a limit"}.` : "";
   const by = option.releasedAt ? ` Order released ${html(at(option.releasedAt))}${option.latestUsefulAt ? `, before the ${html(at(option.latestUsefulAt))} limit` : ""}. ${html(deliveryClock(option))}`
@@ -173,6 +179,19 @@ function collapseReminders(steps) {
   return [...steps.slice(0, first).filter(step => !history.includes(step)), row, ...steps.slice(first).filter(step => !history.includes(step))];
 }
 
+/* Text for people: no internal ids, no dangling "so …" fragments, a capital first letter. */
+function clean(text) {
+  const out = String(text ?? "").replace(/\btask:[\w:-]+/g, "").replace(/\s*\(?\b(?:ACT|MSG|RPL)-[0-9A-F]{6}\b\)?/g, "")
+    .replace(/^\s*(?:so|and|but)\s+/i, "").replace(/\s+([.,;])/g, "$1").replace(/See task\s*\./, "See the task above.").trim();
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+/* Sentences already shown in the "now" line are not repeated inside a step. */
+function withoutRepeat(detail, shown) {
+  const seen = String(shown ?? "").replace(/<[^>]+>/g, " ");
+  return String(detail ?? "").split(/(?<=[.!?])\s+/).filter(sentence => sentence.length < 25 || !seen.includes(sentence.slice(0, 60))).join(" ");
+}
+
 function renderProgress(route, line) {
   const now = `<p class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
   if (!route?.steps?.length) return now;
@@ -182,9 +201,9 @@ function renderProgress(route, line) {
       return `<li data-position="${position}" data-state="${html(step.state)}">
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepLabel(step)}</span>
-        <p>${html(step.detail)}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
-          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(event.text)}${
-            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
+        <p>${html(clean(withoutRepeat(step.detail, line)))}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
+          `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(clean(event.text))}${
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}/view" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

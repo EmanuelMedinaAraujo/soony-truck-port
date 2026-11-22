@@ -140,7 +140,7 @@ function conflictCard(part, item, snapshot) {
       <li>${html(siteName())} receiving: an unload slot for that arrival.</li></ol>
 
       <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
-        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
+        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}/view" target="_blank" rel="noreferrer">Source</a></p>
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
         <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
         ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? ` (passed, ${departure.reason ? html(departure.reason) : "no proof of departure"})` : departure.state === "verified" ? ` (${html(departure.proof_text ?? `left by ${at(departure.departed_at)}`)})` : ""}</span>` : ""}</p>
@@ -182,6 +182,12 @@ function blockerText(step) {
   const followUp = step.text.match(/Dockside (?:follows up at [^.]+|is following up now)\.?/)?.[0] ?? "";
   if (step.call_id) return `Departure and arrival are not confirmed; a real confirmation from the carrier is still missing (the call so far was simulated). ${followUp}`.trim();
   return step.text;
+}
+
+/* Text staff read: no internal ids, roles as roles, a capital letter after "Name:". */
+function staffText(text) {
+  return roleText(text).replace(/\s*\(?\b(?:ACT|MSG|RPL)-[0-9A-F]{6}\b(?:\/(?:ACT|MSG|RPL)-[0-9A-F]{6})*\)?/g, "")
+    .replace(/^([^:]{2,60}:\s*)([a-z])/, (_, head, letter) => head + letter.toUpperCase());
 }
 
 /* Lead with what the person must do now, in one sentence. */
@@ -242,6 +248,7 @@ function renderNextSteps(snapshot) {
         <span>${html(roleText(item.next_step.text))}</span>${callControls(item.next_step)}</li>`;
     }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
+    ...(team.length && (count || blocker.length) ? [`<li class="group-label">Waiting on your team</li>`] : []),
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const option = part.option;
@@ -254,7 +261,7 @@ function renderNextSteps(snapshot) {
         : step.answer_by && !overdue ? ` <span class="clock-note">Answer by ${html(at(step.answer_by))}.</span>` : "";
       const {html: answer, advice} = questionParts(part, step);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(instruction(step, advice))}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
+        <span>${html(staffText(instruction(step, advice)))}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
     }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
