@@ -128,3 +128,14 @@ class NextStepTest(unittest.TestCase):
                 current, action = shipment_progress(shipment | {"status": status}, [], "Supplier", hold, now)
                 self.assertEqual(current, stage)
                 self.assertEqual(action["state"], expected_state)
+
+
+def test_snapshot_reports_the_configured_dispatch_deadline():
+    import pytest
+    from core import dispatch, rules
+    if not rules.DB_PATH.exists():
+        pytest.skip("needs the local Soony snapshot")
+    snap = dispatch.snapshot(None)
+    deadline = rules.ts(rules.cfg("deadline"))
+    assert rules.ts(snap["deadline"]) == deadline
+    assert rules.ts(snap["cutoff"]) < deadline

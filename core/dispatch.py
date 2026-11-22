@@ -565,11 +565,11 @@ def snapshot(checked_at: str | None) -> dict:
     from core import followup
     reviews = followup.last_reviews()
     for part in components:  # say what Dockside does next and when (only when follow-ups are switched on)
-        deadline = followup.deadline_for(part, cutoff)
+        last_useful = followup.deadline_for(part, cutoff)
         default = next((route for route in part["routes"] if route["id"] == part["default_route_id"]), None)
         for item in filter(None, [part, default]):
             current = item["next_step"]
-            extra = followup.promise(part["id"], current, reviews, now, deadline) if current and "base_text" not in current else ""
+            extra = followup.promise(part["id"], current, reviews, now, last_useful) if current and "base_text" not in current else ""
             if extra:
                 item["next_step"] = dict(current, text=f"{current['text']} {extra}", base_text=current["text"])
         if default and part["next_step"] is not default["next_step"] and part["next_step"].get("base_text") == default["next_step"].get("base_text"):
