@@ -377,9 +377,9 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     elif received:
         receiving_note = "The shipment record shows this load arrived. Usable stock is counted from inventory records."
     elif arrival and shipment["makes_cutoff"] is False:
-        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}, after the receiving cutoff."
+        receiving_note = f"Dockside estimates {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}, after the receiving cutoff (no carrier confirmation)."
     elif arrival:
-        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}. Receiving is still open."
+        receiving_note = f"Dockside estimates {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}. Receiving is still open."
     else:
         receiving_note = "Arrival and a receiving slot still need confirmation."
     source = suppliers.get(shipment["supplier_id"], "Supplier shipment")

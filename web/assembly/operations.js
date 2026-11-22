@@ -55,12 +55,16 @@ function callControls(next) {
   return call ? `<span class="call-controls">${callFold(call)}</span>` : "";
 }
 
+/* Agent text can name a role field instead of a person; show it as an unassigned role. */
+const roleText = text => String(text ?? "").replace(/\bowner_logistics\b/g, "the logistics owner (not assigned yet)")
+  .replace(/\bowner_reconcile\b/g, "the buyer").replace(/\bowner_\w+\b/g, "the responsible owner (not assigned yet)");
+
 function callStatus(call) {
   if (call.result) {
     const label = call.result.simulated ? " (simulated, no phone line yet)" : "";
     const summary = (call.result.summary || "See the transcript.").replace(/^Simulated call:\s*/, "");
     const sentence = summary.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? summary;
-    return `Dockside called ${call.to_name}${label}: ${sentence}`;
+    return roleText(`Dockside called ${call.to_name}${label}: ${sentence}`);
   }
   if (call.status === "failed") return `Dockside’s call to ${call.to_name} failed.`;
   if (call.status === "unavailable") return `Call to ${call.to_name} is unavailable.`;
@@ -119,19 +123,22 @@ function conflictCard(part, item, snapshot) {
   // Past the departure deadline only verified departure evidence keeps a Sunday recovery alive.
   const departure = option.departure ?? {state: "open"};  // the release gate's structured result, not the browser clock
   const departed = departure.state !== "passed";
+  const orderRow = part.routes?.find(route => route.id === part.default_route_id)?.steps?.find(step => step.name === "Formal order");
+  const sentAt = orderRow?.events?.find(event => event.kind === "sent")?.at;
   const answered = task && task.status && task.status !== "open"
     ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.answered_by ?? task.person)}${task.answered_by && task.answered_by !== task.person ? ` for ${html(task.person)}` : ""} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
   return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-    ${departed ? "" : `<p class="verdict"><b>${html(at(departure.deadline))} departure deadline passed. No confirmed Sunday recovery.</b>
-      ${option.copiesAdded ? `The +${number(option.copiesAdded)} copies stay a scenario until the books are received and inspected.` : ""}</p>`}
+    <p class="verdict"><b>Order sent${sentAt ? ` ${html(sentAt)}` : ""} · supplier disputes dispatch · amendment held${departed ? "" : ` · ${html(at(departure.deadline))} departure deadline passed`}.</b>
+      ${departed ? "" : "No confirmed Sunday recovery."}</p>
     <span class="decision-ask"><b>${html(person)}:</b> ${departed ? `reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome.`
       : `reconcile the existing order with ${html(conflict.who)} in writing. Sunday delivery reopens only with proof that the books left ${html(option.origin ?? "the supplier")} by ${html(at(departure.deadline))}.`}${departed ? (option.copiesAdded ? ` The rescue (+${number(option.copiesAdded)} copies) is at risk.` : ` No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`) : ""}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
-    <ol class="clears" aria-label="What clears it">
+    ${answered || (q ? questionBlock(part, {...q, person: q.person ?? person}) : "")}
+    <details class="question"><summary>What clears it, the evidence and the timing</summary>
+      <ol class="clears" aria-label="What clears it">
       <li>${html(person)}: order reference, quantity, price and dispatch instruction confirmed with ${html(conflict.who)} in writing.</li>
       <li>${html(logistics)}: carrier booking, allowed vehicle and arrival before ${html(at(snapshot.cutoff))}${departed ? "" : ", with proof of departure by " + html(at(departure.deadline))}.</li>
       <li>${html(siteName())} receiving: an unload slot for that arrival.</li></ol>
-    ${answered || (q ? questionBlock(part, {...q, person: q.person ?? person}) : "")}
-    <details class="question"><summary>Evidence: ${html(conflict.who)}'s ${html(at(conflict.at))} reply and the timing</summary>
+
       <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
         <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
@@ -232,7 +239,7 @@ function renderNextSteps(snapshot) {
       const conflict = part.option?.deliveryState?.conflict;
       if (conflict) return conflictCard(part, item, snapshot);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(item.next_step.text)}</span>${callControls(item.next_step)}</li>`;
+        <span>${html(roleText(item.next_step.text))}</span>${callControls(item.next_step)}</li>`;
     }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
     ...team.map(item => {
@@ -327,7 +334,7 @@ function renderOperations(snapshot) {
     const {summary, items} = snapshot.activity;
     $("activity-summary").textContent = `Recent activity · ${summary}`;
     $("activity-list").innerHTML = items.length ? items.map(event =>
-      `<li><time datetime="${html(event.ts)}">${html(at(event.ts))}</time> ${html(event.text)}</li>`).join("") : "<li>No activity recorded yet.</li>";
+      `<li><time datetime="${html(event.ts)}">${html(at(event.ts))}</time> ${html(roleText(event.text))}</li>`).join("") : "<li>No activity recorded yet.</li>";
   }
 }
 

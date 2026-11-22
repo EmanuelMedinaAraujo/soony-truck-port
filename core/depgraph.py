@@ -124,7 +124,7 @@ def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str
         else:
             found.append((8, flag[:30], flag))
     if shipment["makes_cutoff"] is False:
-        found.append((2, "Misses the cut-off", "Arrives after the packing cut-off, too late for launch boxes."))
+        found.append((2, "Misses the cut-off", "Dockside estimates arrival after the packing cut-off, too late for launch boxes."))
     if shipment["status"] == "delayed":
         found.append((5, "Delayed", "The carrier reports a delay."))
     if not found:
