@@ -419,9 +419,15 @@ def run(user_msg: str, on_step=None, model: str | None = None, effort: str = "me
     t = Tools(handling_replies=handling_replies)
     items: list = [{"role": "user", "content": user_msg}]
     tools = [t for t in TOOLS if t["name"] not in {"propose_action", "note_reply"}] if read_only else TOOLS
+    instructions = system_prompt()
+    if read_only:
+        instructions += ("\n\nFor dashboard questions about whether dispatch will meet demand or how many copies will ship, "
+                         "call get_dispatch_options. Report each requested edition's projected and short figures from that tool. "
+                         "Packed figures describe progress so far. Keep them separate from the dispatch forecast. "
+                         "Use short paragraphs or bullets in plain text without Markdown formatting.")
     for _ in range(MAX_STEPS):
         try:
-            resp = client.responses.create(model=model or MODEL, instructions=system_prompt(), input=items, tools=tools, reasoning={"effort": effort})
+            resp = client.responses.create(model=model or MODEL, instructions=instructions, input=items, tools=tools, reasoning={"effort": effort})
         except Exception as e:
             raise llm_health.record_failure(e) or e
         llm_health.record_ok()
