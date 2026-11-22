@@ -385,7 +385,7 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
     voice.init_schema(conn)
     conn.execute("BEGIN")
     action_rows = {row["id"]: dict(row) | {"messages": [], "replies": []} for row in conn.execute(
-        "SELECT id, finding_id, title, kind, status, updated_at, next_check_at, payload FROM actions")}
+        "SELECT id, finding_id, title, kind, status, updated_at, next_check_at, payload, history FROM actions")}
     call_rows = {row["msg_id"]: dict(row) for row in conn.execute(
         """SELECT v.*, r.summary_en, r.received_at FROM voice_calls v LEFT JOIN replies r ON r.id=v.reply_id""")}
     for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at, provider_id, body FROM messages"):
@@ -436,7 +436,7 @@ def offer_price(conn: sqlite3.Connection, offer: dict) -> tuple[float | None, st
     return tuple(price) if price else (None, None)
 
 
-ACCEPTED = re.compile(r"\b(acknowledg\w*|accept\w*|treat\w*\b.{0,60}\bas the\b.{0,40}\border|released the goods)", re.I)
+ACCEPTED = re.compile(r"\b(accept\w*|treat\w*\b.{0,60}\bas the\b.{0,40}\border|released the goods)", re.I)
 REFUSED = re.compile(r"\b(not|no longer|cannot|can't|won't|declin\w*|reject\w*)\b.{0,20}\b(acknowledg|accept|treat|confirm\w* the order)", re.I)
 
 
@@ -456,19 +456,21 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
     sent_at = min((m["sent_at"] for m in (order or {}).get("messages", []) if m["channel"] == "email"
                    and m["status"] in {"sent", "delivered"} and m["sent_at"]), default=None)
     if sent_at:
-        replies = [r for a in related if a["id"] == order["id"] for r in a["replies"]
-                   if not r.get("simulated") and r["summary_en"] and (r["received_at"] or "") >= sent_at]
-        reply = max(replies, key=lambda r: r["received_at"], default=None)
-        accepted = bool(reply and ACCEPTED.search(reply["summary_en"]) and not REFUSED.search(reply["summary_en"]))
+        # Every answer from the same person after the order, wherever in the thread it arrived, in time order.
+        names = {m.get("to_name") for m in order.get("messages", []) if m.get("to_name")}
+        replies = sorted((r for a in related for r in a["replies"]
+                          if not r.get("simulated") and r["summary_en"] and (r["received_at"] or "") >= sent_at
+                          and (a["id"] == order["id"] or r.get("from_name") in names)), key=lambda r: r["received_at"])
+        accepted = next((r for r in replies if ACCEPTED.search(r["summary_en"]) and not REFUSED.search(r["summary_en"])), None)
         label = "Delivery amendment" if delivery.get("revises_action_id") else "Order"
-        detail = f"{label} sent {_clock(rules.ts(sent_at))}."
-        if accepted:
-            detail += f" {reply['from_name']} accepted it {_clock(rules.ts(reply['received_at']))}."
-        elif reply:
-            detail += f" Latest from {reply['from_name']} ({_clock(rules.ts(reply['received_at']))}): {_first_sentence(reply['summary_en'])}"
-        else:
-            detail += f" Waiting for {supplier} to confirm it."
-        steps.append(step("Formal order", "confirmed" if accepted else "waiting", detail))
+        entries = order.get("history") or []
+        entries = json.loads(entries) if isinstance(entries, str) else entries
+        history = " ".join(str(entry.get("entry", "")) for entry in entries if isinstance(entry, dict))
+        how = " when its stop window ran out, without a signature (the policy before the release gate)" if "unless" in history and "stop" in history.lower() else ""
+        events = [f"{label} sent {_clock(rules.ts(sent_at))}{how}."]
+        for r in replies[-3:]:
+            events.append(f"{_clock(rules.ts(r['received_at']))} {r['from_name']}: {_first_sentence(r['summary_en'], 160)}")
+        steps.append(step("Formal order", "confirmed" if accepted else "waiting", " ".join(events)))
     else:
         steps.append(step("Formal order", "waiting" if order else "pending",
                           ("Delivery amendment" if delivery.get("revises_action_id") else "Order") +
@@ -770,4 +772,4 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
             "components": components, "now_next": now_next, "decisions": decisions, "activity": activity,
             "notes": ["The dispatch estimate counts modeled packed stock, usable parts on site and remaining packing capacity.",
                       "The recovery estimate assumes the parts arrive usable by the receiving cutoff and the line can pack them in time.",
-                      "The receiving cutoff is a planning assumption. The standby premium is an example you can change."]}
+                      "The receiving cutoff is a planning assumption."]}
