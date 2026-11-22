@@ -60,7 +60,7 @@ ACTION_SUBJECTS = {
     "ask": "request", "confirm_terms": "confirmation request", "reserve": "reservation request",
     "order": "order", "book_truck": "truck booking", "dock_slot": "unload slot",
     "expedite": "rush delivery", "quality_release": "quality release", "data_fix": "record change",
-    "escalate": "request",
+    "escalate": "request", "chase_escalation": "purchase order review",
 }
 INTERNAL_FOLLOWUP = {
     "book_truck": "confirm the truck",
@@ -68,6 +68,7 @@ INTERNAL_FOLLOWUP = {
     "quality_release": "release the stock",
     "escalate": "answer",
     "ask": "answer",
+    "chase_escalation": "review the purchase order",
 }
 
 
@@ -88,19 +89,21 @@ def question_options(body: str | None, finding_id: str | None) -> list[dict]:
 
 def internal_followup(action: dict, message: dict) -> dict:
     """A message that went out by chat or as a call script: say who has to do what next."""
-    who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
+    from core import questions
+
+    who = questions.person(message["to_name"]) or "the team"
     who = re.sub(rf"\b{re.escape(rules.setting('site'))}\b", lambda _: rules.cfg("site_name"), who)
-    if re.fullmatch(r"owner_\w+", who):  # a role placeholder, not a person: say so instead of showing a field name
-        who = "the logistics owner (not assigned yet)" if "logistics" in who else "the responsible owner (not assigned yet)"
     if message["channel"] == "phone_script":
         call = message.get("call")
         state = "Asking"
+        rehearsal = False
         if call and call["result"]:
             result = json.loads(call["result"])
-            label = " (simulated, no phone line yet)" if result.get("simulated") else ""
+            rehearsal = bool(result.get("simulated"))
             summary = call["summary_en"] or result.get("summary") or "See the transcript."
-            text = f"Dockside called {who}{label}: {_first_sentence(summary.removeprefix('Simulated call: '))}"
-            state = "Waiting for reply" if result.get("simulated") else "Asking"
+            label = f"Call rehearsal for {who}" if rehearsal else f"Dockside called {who}"
+            text = f"{label}: {_first_sentence(summary.removeprefix('Simulated call: ').removeprefix('Call rehearsal: '))}"
+            state = "Waiting for reply" if rehearsal else "Asking"
         elif call and call["progress"] == "failed":
             state, text = "Stuck", f"Dockside's call to {who} failed."
         elif not rules.cfg("voice")["enabled"]:
@@ -108,7 +111,7 @@ def internal_followup(action: dict, message: dict) -> dict:
         else:
             text = f"Dockside is calling {who} now."
         return next_step(state, text, call["received_at"] if call and call["received_at"] else message["sent_at"],
-                         action["id"]) | {"call_id": message["id"]}
+                         action["id"]) | {"call_id": message["id"], "rehearsal": rehearsal}
     task = INTERNAL_FOLLOWUP[action["kind"]]
     if action["kind"] == "dock_slot":
         return next_step("Waiting for reply", f"Unload slot requested from {who}; waiting for the site to confirm it.", message["sent_at"], action["id"])
@@ -570,7 +573,7 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
                 continue
             person = questions.person(message["to_name"])
             when = _clock(rules.ts(message["sent_at"]))
-            if task_id := reminders.get(message["id"]):
+            if (task_id := reminders.get(message["id"])) and person != release.role_owner("owner_logistics"):
                 notice = "Escalation" if action["kind"] in {"escalate", "chase_escalation"} else "Reminder"
                 history.append(step(f"{notice} to {person}", "superseded",
                                     f"{notice} sent {when}. See task {task_id}.") | {
@@ -585,15 +588,17 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
     if task:
         owner = task["person"]
         opened = task["status"] == "open"
+        post = task.get("kind") == "post_deadline"
         steps.append(step(f"Task for {owner}", "waiting" if opened else "answered",
+                          task["text"] if post and opened else
                           "Reconcile the order and its dispatch instruction with the supplier, then record the outcome."
                           if opened else _awaiting_task_evidence(task)) | {
             "task": task, "person": owner, "answerable_by": task["answerable_by"], "since": delivery["task_created_at"],
             "message_id": task["id"] if opened else None, "question": task["text"] if opened else None,
-            "options": [
+            "options": task.get("options", [
                 {"answer": questions.ORDER_STANDS, "label": "Record: order stands and dispatch instruction confirmed in writing"},
                 {"answer": questions.CANCEL_ORDER, "label": "Record: cancel the order"},
-            ] if opened else []})
+            ]) if opened else []})
     unique = steps + list(asked.values()) + history
     unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
     return unique
@@ -602,6 +607,9 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
 def _awaiting_task_evidence(task):
     at = _clock(rules.ts(task["answered_at"]))
     who = task["answered_by"] or task["person"]
+    if task.get("kind") == "post_deadline":
+        choice = next(option["label"] for option in task["options"] if option["answer"] == task["answer"])
+        return f"{who} chose “{choice}” at {at}. Dockside recorded a separate approval request."
     return f"Answered by {who} at {at} — waiting for supplier confirmation and logistics evidence."
 
 
@@ -666,8 +674,11 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         seconds_late = (modeled_unload.astimezone(dt.timezone.utc) - cutoff.astimezone(dt.timezone.utc)).total_seconds()
         late = max(0, round(seconds_late / 60))
         modeled_basis = f"If loading takes {load:g} h from {basis} at {anchor:%H:%M} plus {drive:g} h drive"
+    if delivery.get("task", {}).get("kind") == "post_deadline":
+        timing = "expired"
     if conflict:
-        timing = "disputed"
+        if timing != "expired":
+            timing = "disputed"
         if modeled_unload and seconds_late > 0:
             delivery["revised_reason"] += f" Modeled unload at {modeled_unload:%H:%M} misses the {cutoff:%H:%M} receiving cutoff."
     elif delivery.get("needs_revised_terms"):
@@ -702,10 +713,12 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
                                for a in related], supplier) if not task else None
     if task:
         answered = task["status"] == "answered"
+        post = task.get("kind") == "post_deadline"
         next_action = next_step("Waiting for reply" if answered else "Needs you",
-                                _awaiting_task_evidence(task) if answered else delivery["revised_reason"],
-                                task["answered_at"] if answered else delivery["task_created_at"], delivery["action_id"]) | {
-            "urgent": True, "person": task["person"], "reply_id": conflict["message_id"], "task": task}
+                                _awaiting_task_evidence(task) if answered else task["text"] if post else delivery["revised_reason"],
+                                task["answered_at"] if answered else delivery["task_created_at"],
+                                task.get("proposal_id") or delivery["action_id"]) | {
+            "urgent": True, "person": task["person"], "reply_id": (conflict or {}).get("message_id"), "task": task}
     elif expired:
         next_action = next_step("Stuck", "The rush order window has passed.")
     elif delivery.get("needs_revised_terms"):
@@ -738,6 +751,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "modeledUnloadAnchorAt": anchor.isoformat(timespec="seconds") if anchor else None,
              "modeledUnloadReplyId": anchor_reply_id, "modeledLateMinutes": late, "modeledUnloadBasis": modeled_basis,
              "task": task,
+             "postDeadline": bool(task and task.get("kind") == "post_deadline"),
              "deliveryState": delivery or None, "needsRevisedTerms": delivery.get("needs_revised_terms", False),
              "departure": departure_state(delivery, now),
              "origin": origin,
@@ -815,7 +829,9 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
                     (message["to_address"] or "").casefold() == contact for message in action["messages"])]
                 alternative, _ = forecast(picture, coverage, bom, priority, {cid: int(offer["qty"])})
                 route_options.append(recovery(conn, offer, suppliers, related, alternative, editions, cutoff, now))
-            route_options.sort(key=lambda pair: (pair[1]["timingState"] != "open", -pair[1]["refundsAvoided"], -pair[1]["copiesAdded"]))
+            route_options.sort(key=lambda pair: (
+                not pair[1]["postDeadline"], pair[1]["timingState"] != "open",
+                -pair[1]["refundsAvoided"], -pair[1]["copiesAdded"]))
             option = route_options[0][1] if route_options else None
             if option and option["nextConstraint"] in coverage:
                 option["nextConstraint"] = rules.plain(coverage[option["nextConstraint"]]["description"])
@@ -840,7 +856,8 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
             launch_shipment = next((shipment_routes[s["shipment_id"]] for s in inbound if s["status"] not in received
                                     and not s["quantity_review"] and (s["planned_for_launch"] or s["status"] == "arrived_port")), None)
             review_route = next((shipment_routes[s["shipment_id"]] for s in inbound if s["quantity_review"]), None)
-            viable_offer = next((route for route, scenario in route_options if scenario["timingState"] != "expired"), None)
+            viable_offer = next((route for route, scenario in route_options
+                                 if scenario["postDeadline"] or scenario["timingState"] != "expired"), None)
             primary_route = (viable_offer or launch_shipment or review_route or stock_route) if status == "short" else stock_route
             routes = [route for route, _ in route_options] + list(shipment_routes.values()) + [stock_route]
             latest = latest_summary(gap_actions)
@@ -851,7 +868,8 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
                                "latestActivity": latest["summary_en"] if latest else None, "default_route_id": primary_route["id"],
                                "current_stage": primary_route["current_stage"],
                                "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" and primary_route is not review_route
-                                            and not primary_route["next_step"].get("reply_id") else primary_route["next_step"]})
+                                            and not (primary_route["next_step"].get("reply_id") or primary_route["next_step"].get("task"))
+                                            else primary_route["next_step"]})
 
     for part in components:  # say what Dockside does next and when (only when follow-ups are switched on)
         last_useful = followup.deadline_for(part, cutoff)
@@ -872,6 +890,7 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
             parent = by_component[part["includedIn"]["componentId"]]
             part.update({key: parent[key] for key in ("default_route_id", "current_stage", "next_step")})
     ranked = sorted((part for part in components if not part["includedIn"]), key=lambda part: (
+        (part["next_step"].get("task") or {}).get("kind") != "post_deadline",
         part["id"] not in priority_constraints, part["next_step"]["state"] != "Needs you",
         part["status"] != "short", part["default_route_id"].startswith("stock-"),
         -(part["required"] - part["usable"])))
@@ -888,6 +907,7 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
     return {"now": now.isoformat(timespec="seconds"), "deadline": deadline.isoformat(), "cutoff": cutoff.isoformat(),
             "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "display": rules.CONFIG.get("display", {}).get("value", {}), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
             "components": components, "now_next": now_next, "decisions": decisions, "activity": activity,
+            "roleOwners": rules.CONFIG.get("role_owners", {}).get("value", {}),
             "notes": ["The dispatch estimate counts modeled packed stock, usable parts on site and remaining packing capacity.",
                       "The recovery estimate assumes the parts arrive usable by the receiving cutoff and the line can pack them in time.",
                       "The receiving cutoff is a planning assumption."]}

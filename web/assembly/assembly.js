@@ -203,7 +203,7 @@ function renderProgress(route, line) {
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepLabel(step)}</span>
         <p>${html(clean(withoutRepeat(step.detail, line)))}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
           `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(clean(event.text))}${
-            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}/view" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 
@@ -277,7 +277,11 @@ function renderChaserCases(part) {
   const tones = {waiting: "waiting", answered: "ready", escalated: "alert"};
   return `<section class="chaser-cases" aria-labelledby="chaser-heading"><h3 id="chaser-heading">Order confirmations</h3>
     <ul>${cases.map(item => `<li class="next-step-line"><span class="state-chip" data-tone="${tones[item.status] ?? "active"}">${labels[item.status] ?? "Asking"}</span>
-      <span>${html(item.supplier_name)}, order ${html(item.po_number)}${item.last_reply_summary ? `: ${html(item.last_reply_summary)}` : item.question ? `: ${html(item.question.split(/(?<=[.?!])\s/)[0])}` : ""}</span></li>`).join("")}</ul></section>`;
+      <span>${html(item.supplier_name)}, order ${html(item.po_number)}, line ${number(item.po_line)}
+      ${item.last_reply_summary ? `: ${html(item.last_reply_summary)}` : ""}
+      ${item.next ? ` · ${item.next.kind === "escalation" ? "Escalation" : "Follow-up"} due ${html(at(item.next.at))}` : ""}
+      ${item.questions.length ? `<details><summary>What Dockside is checking</summary>
+        <ul>${item.questions.map(question => `<li>${html(question)}</li>`).join("")}</ul></details>` : ""}</span></li>`).join("")}</ul></section>`;
 }
 
 function renderInspector(force = false) {
@@ -376,17 +380,16 @@ async function refreshChaser() {
   let cases = [];
   try {
     const response = await fetch("/api/chaser", {cache: "no-store"});
-    if (response.ok) ({status, cases} = await response.json());
+    if (response.ok) ({status, order_lines: cases} = await response.json());
   } catch {
     // Dockside remains usable if Supplier Chaser is unavailable.
   } finally {
     chaserRequestOpen = false;
   }
-  chaserCases = cases.filter(item => item.status !== "closed");
+  chaserCases = cases ?? [];
   const count = chaserCases.length;
   const suppliers = new Set(chaserCases.map(item => item.supplier_id)).size;
-  const lines = new Set(chaserCases.map(item => `${item.supplier_id}|${item.po_number}|${item.po_line ?? ""}`)).size;
-  const label = status !== "ok" ? "" : count ? `Supplier Chaser: ${number(count)} open ${count === 1 ? "issue" : "issues"} on ${number(lines)} ${lines === 1 ? "order line" : "order lines"} with ${number(suppliers)} ${suppliers === 1 ? "supplier" : "suppliers"}.` : "";
+  const label = status !== "ok" ? "" : count ? `Supplier Chaser: ${number(count)} ${count === 1 ? "order line" : "order lines"} with ${number(suppliers)} ${suppliers === 1 ? "supplier" : "suppliers"}.` : "";
   if ($("chaser-count").textContent !== label) $("chaser-count").textContent = label;
   if (state) renderInspector();
 }

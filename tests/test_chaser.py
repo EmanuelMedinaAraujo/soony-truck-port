@@ -34,6 +34,22 @@ def test_native_summary_keeps_existing_api_fields(native_cases):
     assert chaser.detail("no-such-case") is None
 
 
+def test_dashboard_groups_order_line_issues_and_uses_reminder_for_escalation(native_cases, monkeypatch):
+    settings = rules.cfg("chase") | {"enabled": True, "reminder_after_hours": 2}
+    monkeypatch.setattr(rules, "cfg", lambda name: settings)
+    with actions.tx() as c:
+        c.execute("""INSERT INTO chase_cases SELECT 'case-4',supplier_id,supplier_name,po_number,po_line,material,
+                     'late','waiting','Can you deliver sooner?',needs_review,created_at,updated_at,NULL
+                     FROM chase_cases WHERE case_id='case-1'""")
+        c.execute("INSERT INTO messages (id,status,sent_at) VALUES ('reminder','sent','2026-11-21T13:00:00+00:00')")
+        c.execute("INSERT INTO chase_threads VALUES ('S001','000007','act','initial',0,'act','reminder')")
+        line, = [row for row in chaser.order_lines(c) if row["po_number"] == "000007"]
+    assert line["po_line"] == 1
+    assert set(line["case_ids"]) == {"case-1", "case-4"}
+    assert len(line["questions"]) == 2
+    assert line["next"] == {"kind": "escalation", "at": "2026-11-21T15:00:00+00:00"}
+
+
 def test_duplicate_email_is_removed_and_case_is_logged(native_cases, monkeypatch):
     master_db = native_cases / "master.db"
     with sqlite3.connect(master_db) as conn:

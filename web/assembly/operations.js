@@ -28,7 +28,8 @@ async function sendAnswer(id, text, status) {
     headers: {"Content-Type": "application/json"}, body: JSON.stringify({text})});
   const result = await response.json();
   if (!response.ok) throw new Error(result.detail || "Try again.");
-  status.textContent = "Sent. Dockside reads it in its next pass and continues.";
+  status.textContent = result.proposal_id ? "Decision recorded. Approval requested."
+    : "Sent. Dockside reads it in its next pass and continues.";
 }
 
 async function refreshCalls() {
@@ -55,16 +56,15 @@ function callControls(next) {
   return call ? `<span class="call-controls">${callFold(call)}</span>` : "";
 }
 
-/* Agent text can name a role field instead of a person; show it as an unassigned role. */
-const roleText = text => String(text ?? "").replace(/\bowner_logistics\b/g, "the logistics owner (not assigned yet)")
-  .replace(/\bowner_reconcile\b/g, "the buyer").replace(/\bowner_\w+\b/g, "the responsible owner (not assigned yet)");
+const roleText = text => String(text ?? "").replace(/\bowner_\w+\b/g, role =>
+  state?.roleOwners?.[role] ?? ({owner_logistics: "the logistics planner", owner_reconcile: "the buyer"})[role] ?? "the responsible owner");
 
 function callStatus(call) {
   if (call.result) {
-    const label = call.result.simulated ? " (simulated, no phone line yet)" : "";
+    const label = call.result.simulated ? "Call rehearsal for" : "Dockside called";
     const summary = (call.result.summary || "See the transcript.").replace(/^Simulated call:\s*/, "");
     const sentence = summary.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? summary;
-    return roleText(`Dockside called ${call.to_name}${label}: ${sentence}`);
+    return roleText(`${label} ${call.to_name}: ${sentence}`);
   }
   if (call.status === "failed") return `Dockside’s call to ${call.to_name} failed.`;
   if (call.status === "unavailable") return `Call to ${call.to_name} is unavailable.`;
@@ -140,7 +140,7 @@ function conflictCard(part, item, snapshot) {
       <li>${html(siteName())} receiving: an unload slot for that arrival.</li></ol>
 
       <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
-        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
+        <a href="/api/replies/${encodeURIComponent(conflict.message_id)}/view" target="_blank" rel="noreferrer">Source</a></p>
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
         <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
         ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? ` (passed, ${departure.reason ? html(departure.reason) : "no proof of departure"})` : departure.state === "verified" ? ` (${html(departure.proof_text ?? `left by ${at(departure.departed_at)}`)})` : ""}</span>` : ""}</p>
@@ -148,9 +148,30 @@ function conflictCard(part, item, snapshot) {
 }
 
 /* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */
+function postDeadlineCard(part, item) {
+  const step = item.next_step;
+  const task = step.task;
+  return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
+    <p class="verdict"><b>No confirmed Sunday recovery.</b> ${html(task.text)}</p>
+    ${task.status === "open" ? `<p><b>${html(task.person)}</b> decides. ${html(task.recommendation)}</p>
+      ${questionBlock(part, {task, person: task.person, message_id: task.id, options: task.options})}
+      <p class="side-note">Either choice creates a separate approval request.</p>` : `<p>${html(step.text)}</p>`}
+    ${step.reply_id ? `<a href="/api/replies/${encodeURIComponent(step.reply_id)}/view" target="_blank" rel="noreferrer">Supplier email</a>` : ""}
+    </li>`;
+}
+
 function questionParts(part, step) {
   const allowed = step.answerable_by ?? step.task?.answerable_by ?? [step.person];
   const mine = viewer.person && (allowed.includes(viewer.person) || viewer.source === "local demo");
+  if (step.task?.kind === "post_deadline") {
+    const choices = step.options.map(option => `<li>
+      ${mine ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
+        data-text="${html(option.answer)}">${html(option.label)}</button>` : `<b>${html(option.label)}</b>`}
+      <div>${html(option.consequence)}</div></li>`).join("");
+    return {html: `<div class="question" data-question="${html(step.message_id)}">
+      <form><ul>${choices}</ul><span class="side-note" role="status"></span></form>
+      ${mine ? "" : '<p class="side-note">Answer after company sign-in or with /answer in Discord.</p>'}</div>`, advice: ""};
+  }
   const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
   // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
   const wanted = part.option?.quantity;
@@ -179,8 +200,7 @@ function questionBlock(part, step) {
 
 /* One line for the binding part: the open check (a simulated call is evidence of nothing), and when Dockside looks again. */
 function blockerText(step) {
-  const followUp = step.text.match(/Dockside (?:follows up at [^.]+|is following up now)\.?/)?.[0] ?? "";
-  if (step.call_id) return `Departure and arrival are not confirmed; a real confirmation from the carrier is still missing (the call so far was simulated). ${followUp}`.trim();
+  if (step.rehearsal) return "Departure and arrival still need confirmation from the carrier. Dockside has a call rehearsal.";
   return step.text;
 }
 
@@ -242,6 +262,7 @@ function renderNextSteps(snapshot) {
       <span>${html(blockerText(bindingStep))}</span></li>`] : [];
   needs.innerHTML = [...blocker, ...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
+      if (item.next_step.task?.kind === "post_deadline") return postDeadlineCard(part, item);
       const conflict = part.option?.deliveryState?.conflict;
       if (conflict) return conflictCard(part, item, snapshot);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
@@ -251,6 +272,7 @@ function renderNextSteps(snapshot) {
     ...(team.length && (count || blocker.length) ? [`<li class="group-label">Waiting on your team</li>`] : []),
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
+      if (item.next_step.task?.kind === "post_deadline") return postDeadlineCard(part, item);
       const option = part.option;
       const clock = item === team.find(entry => entry.component_id === item.component_id) ? deliveryClock(option) : "";
       const step = item.next_step;
@@ -266,7 +288,7 @@ function renderNextSteps(snapshot) {
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
   needs.hidden = !count && !scheduled.length && !team.length && !blocker.length;
-  for (const node of needs.querySelectorAll("[data-question]")) if (opened.has(node.dataset.question)) node.querySelector("details").open = true;
+  for (const node of needs.querySelectorAll("[data-question] details")) if (opened.has(node.closest("[data-question]").dataset.question)) node.open = true;
   for (const form of needs.querySelectorAll("form[data-answer]")) form.querySelector("textarea").value = drafts.get(form.dataset.answer) ?? "";
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {

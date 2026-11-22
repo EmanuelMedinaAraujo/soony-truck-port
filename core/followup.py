@@ -48,7 +48,9 @@ def next_check(component_id: str, step: dict, reviews: dict[str, dt.datetime], n
                deadline: dt.datetime | None = None) -> dt.datetime | None:
     """When Dockside will next look at this item, or None if it is not waiting on anyone (or follow-ups are off)."""
     conf = settings()
-    if not conf["enabled"] or not step or step.get("reviewRequired") or (step.get("state") not in WAITING and not step.get("unverified")):
+    if (not conf["enabled"] or not step or step.get("reviewRequired") or step.get("rehearsal")
+            or (step.get("task") or {}).get("kind") == "post_deadline"
+            or (step.get("state") not in WAITING and not step.get("unverified"))):
         return None
     if deadline and now >= deadline:
         return None  # too late to change anything for launch
@@ -163,8 +165,8 @@ How to decide, per part:
 - Use departure as the gate's verdict. When citing verified departure, quote departure.proof_text, which includes the evidence ID.
   Use departure.evidence_kind_label and departure.source_label for context. If departure is passed, use departure.reason when available.
   Reopening requires evidence the truck left by departure.deadline, a current ETA and a confirmed slot.
-- Rush delivery with delivery_state.conflict takes precedence. For an open task, remind owner_reconcile using task.id and the finding ID
-  for this delivery. For an answered task, use task.answer and continue with the evidence still outstanding. Ask owner_logistics on a linked
+- Rush delivery with delivery_state.conflict takes precedence. For an open task, remind task.person using task.id and the finding ID
+  for this delivery. For an answered task, use task.answer and continue with the evidence still outstanding. Ask {logistics_owner} on a linked
   confirmation thread for a booking reference, eligible vehicle and verified ETA by cutoff. If already in transit and departure is still
   unverified, request actual departure.
   Use clears_when and cite the supplier message ID. Keep any existing request that already covers the check.
@@ -213,5 +215,6 @@ def run(snapshot: dict, on_step=None) -> str | None:
     site_lead_role = rules.cfg("site_lead_role")
     prompt = PROMPT.format(now=f"{now:%a %d %b %H:%M}", items=json.dumps(items, ensure_ascii=False, indent=1),
                            stamp=now.strftime("%Y%m%d%H%M"), site_name=rules.cfg("site_name"),
-                           site_lead=rules.cfg("people").get(site_lead_role) or site_lead_role, site_lead_role=site_lead_role)
+                           site_lead=rules.cfg("people").get(site_lead_role) or site_lead_role, site_lead_role=site_lead_role,
+                           logistics_owner=release.role_owner("owner_logistics", "the Logistics Planner"))
     return agent.run(prompt, on_step, effort="medium")

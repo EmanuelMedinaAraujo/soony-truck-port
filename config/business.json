@@ -13,6 +13,16 @@
     "source": "Short part names and artwork from Lio's deep-dive deck, slides 17–19. Per customer; parts without an entry show their catalog name."
   },
   "departure_geofence_km": {"value": 5, "source": "Team decision: a carrier position counts as departure only more than 5 km from the origin site."},
+  "late_collectors_ship_instead_of_refund": {"value": null, "source": "ask Soony at the booth"},
+  "post_deadline_recovery": {
+    "value": {"CMP-GAM-008": {"order_id": "ACT-F74B32", "supplier_id": "SUP-0028", "quantity": 8000, "late_copies": 2500,
+                            "short_copies": 5900, "remaining_statue_shortfall": 3400, "monday_deliver_by": "16:00"}},
+    "source": "Art-book recovery scenario. Monday 16:00 is the proposed deliver-by, subject to carrier and receiving confirmation."
+  },
+  "role_owners": {
+    "value": {"owner_logistics": "Raj Patel", "owner_reconcile": "Paul Winter"},
+    "source": "Soony organization chart. Logistics Planner (deputy dock slots) and Buyer: Print & Packaging."
+  },
   "release_carrier_feeds": {"value": {"ACT-F74B32": "LSP-04", "ART-BOOKS-20261122": "LSP-04"}, "source": "Carrier position feeds the release gate accepts as departure evidence for a delivery (Warta Trans = LSP-04 in the carrier master)."},
   "site_port": {
     "value": "DEHAM",

@@ -264,10 +264,18 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert dispute["text"] == "Karton Nowak reports no dispatch instruction"
         assert note["who"] == "Dockside" and "ACT-B7B90B" in note["text"]
         assert server.get_reply(dispute["message_id"])["body"] == denial
+        monkeypatch.setenv("OPENAI_API_KEY", "fixture")
+        monkeypatch.setattr(agent, "translate_reply", lambda body: body + " <supplier>")
+        source = client.get(f"/api/replies/{dispute['message_id']}/view")
+        assert source.status_code == 200
+        assert "Original message" in source.text and "English translation" in source.text
+        assert "&lt;supplier&gt;" in source.text
+        monkeypatch.delenv("OPENAI_API_KEY")
+        assert source.text == client.get(f"/api/replies/{dispute['message_id']}/view").text
 
         delivery = option["deliveryState"]
         assert delivery["conflict"]["owner_reconcile"] == "Paul Winter"
-        assert delivery["conflict"]["owner_logistics"] == replay.CARRIER_EMAIL
+        assert delivery["conflict"]["owner_logistics"] == "Raj Patel"
         assert delivery["can_propose_revision"] is False
         assert option["timingState"] == "disputed"
         assert option["modeledUnloadAt"] == replay.at("17:17").isoformat()
@@ -410,3 +418,60 @@ def test_recorded_cancellation_queues_approval(tmp_path, monkeypatch):
                                 commitment_digest=release.approval_digest(action))
         assert release.check(signed) == (True, None)
         assert signed["messages"][0]["to_address"] == supplier["to_address"]
+
+
+@pytest.mark.parametrize("choice", ["keep_monday", "cancel"])
+def test_post_deadline_decision_is_separate_and_signed(tmp_path, monkeypatch, choice):
+    from core import questions
+
+    replay = replay_gate
+    monkeypatch.setattr(actions, "DB", tmp_path / "actions.db")
+    monkeypatch.setattr(rules, "DB_PATH", tmp_path / "master.db")
+    policy = customer.load(replay.ROOT / "config" / "business.json")
+    policy["release_carrier_contacts"]["value"] = {replay.ORDER: replay.CARRIER_EMAIL}
+    policy["staff_email"]["value"]["Katrin Jansen"] = replay.DOCK_EMAIL
+    with rules.replay(policy, replay.at("00:14")):
+        replay.seed_sent_order()
+        original = actions.get(replay.ORDER)
+        supplier = release.sent_order_message(original)
+    with rules.replay(policy, replay.at("06:59")):
+        replay.store_reply(supplier, "denial", "We received no dispatch instruction.")
+        earlier, = questions.current()
+        assert not earlier["task_kind"]
+    with rules.replay(policy, replay.at("07:01")):
+        task, = questions.current()
+        assert task["id"] != earlier["id"]
+        assert task["person"] == "Paul Winter"
+        assert task["task_kind"] == "post_deadline"
+        assert "07:00" in task["text"]
+        assert questions.find(earlier["id"])["status"] == "closed"
+        assert questions.order_state(original, now=rules.now())["task"]["id"] == task["id"]
+        with pytest.raises(PermissionError):
+            questions.answer(task, "Raj Patel", choice)
+        reply = questions.answer(task, "Paul Winter", choice)
+        with pytest.raises(ValueError, match="no longer open"):
+            questions.answer(task, "Paul Winter", choice)
+        proposal = actions.get(reply["proposal_id"])
+        assert proposal["status"] == "proposed"
+        assert proposal["messages"][0]["status"] == "draft"
+        assert not release.check(proposal)[0]
+        signed = replay.sign(proposal)
+        if choice == "cancel":
+            assert signed["kind"] == "cancel_order"
+            assert release.check(signed) == (True, None)
+        else:
+            terms = release.terms_for(signed)
+            assert terms["deliver_by"] == "2026-11-23T16:00:00+01:00"
+            assert terms["depart_by"] == "2026-11-23T07:00:00+01:00"
+            assert terms["revises_action_id"] == replay.ORDER
+            assert release.check(signed) == (False, "The buyer needs written supplier confirmation that the original order stands.")
+    if choice == "keep_monday":
+        with rules.replay(policy, replay.at("08:00")):
+            replay.store_reply(supplier, "reconciled", replay.ACCEPTANCE)
+            carrier = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please confirm Monday's transport.", "book_truck", replay.ORDER)
+            dock = replay.thread("Katrin Jansen", replay.DOCK_EMAIL, "Please confirm Monday's unload slot.", "dock_slot", replay.ORDER)
+            replay.store_reply(carrier, "monday-transport", "Carrier confirmed booking WT-123, ETA Mon 14:30. Gross vehicle weight is 7.5 t.")
+            replay.store_reply(dock, "monday-slot", "Dock slot confirmed for Mon 14:00–15:00.")
+            for source in ("files", "mailbox"):
+                release.record_check(source)
+            assert release.check(signed) == (True, None)

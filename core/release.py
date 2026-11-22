@@ -219,6 +219,35 @@ def setting(key, default):
     return value
 
 
+def role_owner(role: str, default: str | None = None) -> str | None:
+    return setting("role_owners", {}).get(role) or default
+
+
+def post_deadline_plan(order):
+    """Return the configured recovery plan for this specific sent order."""
+    terms = delivery_terms(order) or {}
+    plan = setting("post_deadline_recovery", {}).get(terms.get("part"))
+    if (plan and plan["order_id"] == order["id"] and not terms.get("revises_action_id")
+            and plan["supplier_id"] == terms.get("supplier_id")
+            and plan["quantity"] == terms.get("quantity") and sent_order_message(order)):
+        return plan
+    return None
+
+
+def sunday_recovery_departure(order, now, log):
+    """Use the last possible receiving window for the Sunday recovery decision."""
+    terms = delivery_terms(order)
+    cutoff = _receiving_cutoff().isoformat()
+    return departure_verdict(terms | {"deliver_by": cutoff, "depart_by": _derive_depart_by(terms, cutoff)}, now, log=log)
+
+
+def monday_deliver_by(original, plan):
+    original_day = rules.ts(original["deliver_by"]).astimezone(rules.timezone()).date()
+    monday = original_day + dt.timedelta(days=7 - original_day.weekday())
+    return dt.datetime.combine(monday, dt.time.fromisoformat(plan["monday_deliver_by"]),
+                               tzinfo=rules.timezone()).isoformat()
+
+
 def demo_staff_address(name):
     if not setting("demo_approval_aliases", False):
         return None
@@ -402,6 +431,9 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
         terms["vehicle_limit_t"] = saved["vehicle_limit_t"]
     if saved.get("revises_action_id") is not None:
         terms["revises_action_id"] = saved["revises_action_id"]
+        for field in ("post_deadline_task_id", "post_deadline_reply_id"):
+            if saved.get(field):
+                terms[field] = saved[field]
     try:
         if original_id := terms.get("revises_action_id"):
             if parent and parent["id"] == original_id and sent_order_message(parent):
@@ -409,7 +441,10 @@ def describe(action: dict, *, parent: dict | None = None) -> dict:
             else:
                 with _action_log() as log:
                     original = _prior_terms(log, original_id)
-            terms["depart_by"] = _revision_depart_by(original) if original else None
+            if original and terms.get("post_deadline_task_id"):
+                terms["depart_by"] = _derive_depart_by(terms, deliver_by)
+            else:
+                terms["depart_by"] = _revision_depart_by(original) if original else None
         else:
             terms["depart_by"] = _derive_depart_by(terms, deliver_by)
     except (ArithmeticError, sqlite3.Error, ValueError, TypeError):
@@ -488,11 +523,16 @@ def _cancellation_authorization(log, terms):
     from core import questions
     task = log.execute("SELECT * FROM staff_tasks WHERE id=? AND status='answered'", (terms["task_id"],)).fetchone()
     order = actions._get(log, terms["order_action_id"])
-    if (not task or task["answer_text"] != questions.CANCEL_ORDER or task["action_id"] != terms["order_action_id"]
+    if (not task or task["action_id"] != terms["order_action_id"]
             or not order or not sent_order_message(order) or not delivery_terms(order)
-            or cancellation_terms(order, task) != terms or not delivery_state(order, log=log)["conflict"]):
+            or cancellation_terms(order, task) != terms):
         return "the original order or recorded cancellation outcome changed"
-    return None
+    if task["answer_text"] == "cancel" and questions.is_post_deadline(log, task["id"]):
+        if post_deadline_plan(order) and sunday_recovery_departure(order, rules.now(), log)["state"] == "passed":
+            return None
+    elif task["answer_text"] == questions.CANCEL_ORDER and delivery_state(order, log=log)["conflict"]:
+        return None
+    return "the original order or recorded cancellation outcome changed"
 
 
 def proposal_blocker(action: dict, *, check_departure=True) -> str | None:
@@ -749,6 +789,8 @@ def _related_replies(log, action, terms, now, *, after_departure=False):
         condition = _linked_condition(log, reply, delivery_id, sender) if conditions else None
         authorized = condition in contacts and sender in contacts[condition]
         if condition in conditions:
+            if authorized and terms.get("post_deadline_task_id") and received <= created:
+                continue  # Sunday booking and receiving evidence cannot authorize Monday.
             if authorized and (condition != "dock_slot_confirmed" or not terms.get("revises_action_id")
                                or received >= created or _revision_slot_request(log, reply, action)):
                 eligible[condition] = (reply, contacts[condition][sender])
@@ -767,7 +809,12 @@ def _related_replies(log, action, terms, now, *, after_departure=False):
                               and not _body_blocker(terms, {"body": body})
                               and not re.search(r"\b(?:PO|purchase order|price|quantity|qty|incoterm|DAP|EXW)\b",
                                                 body, re.I))
-            if not logistics_only:
+            accepted_late_order = (
+                terms.get("post_deadline_task_id") and reply["action_id"] == terms["revises_action_id"]
+                and ACCEPTED_ORDER.search(body) and not DISPUTED_ORDER.search(body)
+                and not _body_blocker(terms, {"body": body})
+            )
+            if not (logistics_only or accepted_late_order):
                 review = "newer supplier reply needs review of quantity, price and PO"
 
     matches = {}
@@ -1016,20 +1063,13 @@ def _order_conflict(action, claims, transport, contacts, terms, now):
             and eta and now <= eta <= cutoff and transport.get("booking_reference")
             and (terms.get("vehicle_limit_t") is None or transport.get("vehicle_rating_t") is not None)):
         return None
-    buyer = action.get("approver_name") or "Buyer"
-    addresses = list(contacts.get("transport_confirmed", {}).values())
-    logistics = ", ".join(addresses) or "the supplier logistics contact or carrier"
-    # In the sentence people read, name the person: the supplier contact who wrote, or the carrier's logistics desk.
-    own = str(terms.get("recipient") or "").rsplit("@", 1)[-1].casefold()
-    spoken = ", ".join(dict.fromkeys(
-        value if "@" not in str(value) else
-        f"{dispute['who']} (supplier logistics)" if own and str(value).rsplit("@", 1)[-1].casefold() == own else
-        "the carrier's logistics desk" for value in addresses)) or logistics
+    buyer = action.get("approver_name") or role_owner("owner_reconcile", "Buyer")
+    logistics = role_owner("owner_logistics", "Logistics Planner")
     return dispute | {
         "owner_reconcile": buyer,
         "owner_logistics": logistics,
         "clears_when": (f"{buyer} reconciles the order reference, quantity, price and dispatch release with the supplier. "
-                        f"{spoken} verifies a booking, eligible vehicle and current ETA by the {cutoff:%H:%M} receiving cutoff. "
+                        f"{logistics} verifies a booking, eligible vehicle and current ETA by the {cutoff:%H:%M} receiving cutoff. "
                         "Receiving must confirm an unload slot for that ETA before release."),
     }
 
@@ -1211,7 +1251,8 @@ def _departure_blocker(action, terms):
         if (original_id := terms.get("revises_action_id")) and actions.DB.is_file():
             with _action_log() as log:
                 original = actions._get(log, original_id)
-                if original and (conflict := delivery_state(original, log=log, now=now)["conflict"]):
+                if (original and not terms.get("post_deadline_task_id")
+                        and (conflict := delivery_state(original, log=log, now=now)["conflict"])):
                     return conflict_reason(conflict)
                 return _departure_hold(departure_verdict(action, now, log=log), terms)
         return _departure_hold(departure_verdict(action, now), terms)
@@ -1297,6 +1338,22 @@ def _amendment_blocker(log, terms):
                  "vehicle_limit_t")
     if any(terms.get(field) != prior.get(field) for field in preserved) or set(prior["conditions"]) - set(terms["conditions"]):
         return "delivery amendment must preserve the original order and vehicle requirement"
+    if terms.get("post_deadline_task_id"):
+        from core import questions
+        task = log.execute("""SELECT * FROM staff_tasks WHERE id=? AND action_id=? AND status='answered'
+                              AND answered_reply_id=? AND answer_text='keep_monday'""",
+                           (terms["post_deadline_task_id"], original["id"], terms.get("post_deadline_reply_id"))).fetchone()
+        plan = post_deadline_plan(original)
+        if (not task or not questions.is_post_deadline(log, task["id"]) or not plan
+                or sunday_recovery_departure(original, rules.now(), log)["state"] != "passed"
+                or terms["deliver_by"] != monday_deliver_by(prior, plan)
+                or terms.get("depart_by") != _derive_depart_by(terms, terms["deliver_by"])):
+            return "the original order or recorded Monday delivery decision changed"
+        claims = supplier_claims(log, original, prior, rules.now())
+        material = [claim for claim in claims if claim["kind"] in {"accepted", "disputed"}]
+        if material and material[-1]["kind"] == "disputed":
+            return "The buyer needs written supplier confirmation that the original order stands."
+        return None
     if conflict := delivery_state(original, log=log)["conflict"]:
         return conflict_reason(conflict)
     return amendment_deadline_blocker(prior, terms["deliver_by"])
@@ -1519,7 +1576,12 @@ def check(action: dict) -> tuple[bool, str | None]:
             if not reason and terms.get("revises_action_id"):
                 original = _prior_terms(log, terms["revises_action_id"])
                 arrival = rules.ts(state["eta"])
-                if arrival and arrival <= rules.ts(original["deliver_by"]):
+                if terms.get("post_deadline_task_id") and (
+                    not arrival or arrival.astimezone(rules.timezone()).date() !=
+                    rules.ts(terms["deliver_by"]).astimezone(rules.timezone()).date()
+                ):
+                    reason = "verified ETA must be on the signed Monday delivery date"
+                elif arrival and arrival <= rules.ts(original["deliver_by"]):
                     reason = "verified ETA is outside the amendment arrival window"
             return reason is None, reason
     except (ArithmeticError, sqlite3.Error, ValueError, TypeError):

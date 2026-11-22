@@ -33,6 +33,8 @@ TASK_INDEX = """CREATE UNIQUE INDEX IF NOT EXISTS active_staff_task_per_order
     ON staff_tasks(action_id) WHERE status IN ('open','answered')"""
 REMINDER_SCHEMA = """CREATE TABLE IF NOT EXISTS staff_task_reminders(
     message_id TEXT PRIMARY KEY REFERENCES messages(id), task_id TEXT NOT NULL REFERENCES staff_tasks(id))"""
+TRANSLATION_SCHEMA = """CREATE TABLE IF NOT EXISTS reply_translations(
+    reply_id TEXT PRIMARY KEY REFERENCES replies(id), body_en TEXT NOT NULL)"""
 
 
 def init_schema(c) -> None:
@@ -42,7 +44,7 @@ def init_schema(c) -> None:
         if "simulated" not in {r[1] for r in c.execute("PRAGMA table_info(replies)")}:
             c.execute("ALTER TABLE replies ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0")
         c.commit()
-    for statement in (TASK_SCHEMA, TASK_INDEX, REMINDER_SCHEMA):
+    for statement in (TASK_SCHEMA, TASK_INDEX, REMINDER_SCHEMA, TRANSLATION_SCHEMA):
         c.execute(statement)
 
 

@@ -1,10 +1,11 @@
 """Read the native case log for Dockside's API and agent tools."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from contextlib import closing
 
-from core import actions, inbox
+from core import actions, inbox, rules
 
 SUMMARY = ("case_id", "supplier_id", "supplier_name", "po_number", "material", "status", "question",
            "last_reply_summary", "updated_at")
@@ -40,6 +41,46 @@ def cases(*, include_messages=True, supplier_id=None, po_number=None, active_onl
 def list_native():
     with closing(actions.con()) as c:
         return [dict(row) for row in _rows(c)]
+
+
+def order_lines(c, *, include_messages=True):
+    """Combine the visible issues for each order line without losing case history."""
+    groups = {}
+    priority = {"answered": 0, "open": 1, "waiting": 2, "escalated": 3}
+    for row in _rows(c, active_only=True):
+        key = tuple(row[field] for field in ("supplier_id", "po_number", "po_line", "material"))
+        entry = groups.setdefault(key, {field: row[field] for field in SUMMARY} | {
+            "po_line": row["po_line"], "case_ids": [], "questions": [], "next": None})
+        entry["case_ids"].append(row["case_id"])
+        if priority[row["status"]] > priority[entry["status"]]:
+            entry["status"] = row["status"]
+        if include_messages:
+            if row["question"] not in entry["questions"]:
+                entry["questions"].append(row["question"])
+            entry["last_reply_summary"] = entry["last_reply_summary"] or row["last_reply_summary"]
+        else:
+            entry["question"] = entry["last_reply_summary"] = None
+
+    settings = rules.cfg("chase")
+    if settings["enabled"]:
+        wait = dt.timedelta(hours=settings["reminder_after_hours"])
+        threads = {(row["supplier_id"], row["po_number"]): row for row in c.execute("""
+            SELECT t.*, m.status, m.sent_at, m.created_at FROM chase_threads t
+            JOIN messages m ON m.id=COALESCE(t.reminder_message_id, t.initial_message_id)
+        """)}
+        for key, entry in groups.items():
+            thread = threads.get(key[:2])
+            if entry["status"] not in {"open", "waiting"} or not thread:
+                continue
+            if thread["status"] == "sent" and thread["sent_at"]:
+                when = rules.ts(thread["sent_at"]) + wait
+                if thread["attached"] or thread["reminder_message_id"]:
+                    entry["next"] = {"kind": "escalation", "at": when.isoformat()}
+                elif not settings["only_launch_relevant"] or when < rules.ts(rules.cfg("deadline")):
+                    entry["next"] = {"kind": "follow_up", "at": when.isoformat()}
+            elif thread["status"] in {"outbox", "sending", "delivery_unknown"}:
+                entry["next"] = {"kind": "escalation", "at": (rules.ts(thread["created_at"]) + wait).isoformat()}
+    return list(groups.values())
 
 
 def detail(case_id):

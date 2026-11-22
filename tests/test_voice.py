@@ -193,7 +193,8 @@ def test_automatic_simulation_delivers_one_unverified_reply(call, provider, comp
         assert dispatch.latest_summary(related) is None
         step = dispatch.action_next_step(related)
     assert step["state"] == "Waiting for reply"
-    assert "simulated, no phone line yet" in step["text"]
+    assert step["text"].startswith("Call rehearsal for ")
+    assert step["rehearsal"]
     assert step["call_id"] == mid
     last_count = len(requests)
     assert voice.prepare_open() == []

@@ -129,11 +129,16 @@ class Bot(discord.Client):
                 await inter.response.send_message("Write an answer first.", ephemeral=True)
                 return
             try:
-                await asyncio.to_thread(staff_questions.answer, target, who, text[:4000], channel="Discord")
-            except (KeyError, PermissionError, ValueError):
+                reply = await asyncio.to_thread(staff_questions.answer, target, who, text[:4000], channel="Discord")
+            except ValueError as exc:
+                await inter.response.send_message(str(exc), ephemeral=True)
+                return
+            except (KeyError, PermissionError):
                 await inter.response.send_message("That question is no longer open. Select a current question.", ephemeral=True)
                 return
-            await inter.response.send_message(f"Thanks {who}. Dockside recorded your answer to {question}.", ephemeral=True)
+            confirmation = ("Decision recorded. Dockside queued a separate approval."
+                            if reply.get("proposal_id") else f"Thanks {who}. Dockside recorded your answer.")
+            await inter.response.send_message(confirmation, ephemeral=True)
 
         @answer.autocomplete("question")
         async def question_choices(inter: discord.Interaction, current: str):
@@ -142,6 +147,17 @@ class Bot(discord.Client):
             query = current.casefold()
             return [app_commands.Choice(name=label, value=mid) for mid, label in questions.items()
                     if query in label.casefold() or query in mid.casefold()][:25]
+
+        @answer.autocomplete("text")
+        async def answer_choices(inter: discord.Interaction, current: str):
+            from core import questions as staff_questions
+            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            question = getattr(inter.namespace, "question", None)
+            target = await asyncio.to_thread(staff_questions.find, question) if who and question else None
+            if not target or target.get("status") != "open" or not staff_questions.can_answer(target, who):
+                return []
+            return [app_commands.Choice(name=option["label"], value=option["answer"])
+                    for option in target.get("options", []) if current.casefold() in option["label"].casefold()]
 
         @self.tree.command(name="decisions", description="Show every decision waiting for approval, with buttons")
         async def decisions(inter: discord.Interaction):

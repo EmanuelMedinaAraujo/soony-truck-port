@@ -363,6 +363,46 @@ def get_reply(message_id: str):
     raise HTTPException(404, "Reply message not found")
 
 
+@app.get("/api/replies/{message_id}/view", response_class=HTMLResponse)
+def reply_source(message_id: str):
+    from core import inbox
+
+    actions.initialize()
+    reply = inbox.get_reply(message_id)
+    if not reply:
+        raise HTTPException(404, "Reply message not found")
+    with actions.read() as log:
+        cached = log.execute("SELECT body_en FROM reply_translations WHERE reply_id=?", (message_id,)).fetchone()
+    body = reply["body"] or ""
+    translation = cached["body_en"] if cached else ""
+    if not cached and body and not reply["simulated"] and reply["from_addr"] and os.environ.get("OPENAI_API_KEY"):
+        try:
+            translation = agent.translate_reply(body)
+        except Exception:
+            logging.getLogger(__name__).info("Reply translation is unavailable")
+        if translation:
+            with actions.tx() as log:
+                log.execute("INSERT OR IGNORE INTO reply_translations VALUES (?,?)", (message_id, translation))
+    label = "English translation" if translation else "English summary"
+    english = translation or reply["summary_en"] or "English translation unavailable."
+    subject = escape(reply["subject"] or "Supplier reply")
+    sender = escape(reply["from_name"] or reply["from_addr"] or "")
+    stamp = rules.ts(reply["received_at"])
+    received = stamp.astimezone(rules.timezone()).strftime("%a %d %b %Y, %H:%M %Z") if stamp else ""
+    return HTMLResponse(f"""<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{subject} | Dockside</title><style>
+  html {{color-scheme: light dark}} body {{font: 1rem/1.55 system-ui; max-width: 76rem; padding: 1rem; margin: auto}}
+  main {{display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr))}}
+  section {{border: 1px solid GrayText; padding: 1rem}}
+  h1, p {{overflow-wrap: anywhere}} h2 {{font-size: 1.1rem; margin: 0}}
+  .message {{white-space: pre-wrap; margin-bottom: 0}}
+</style><h1>{subject}</h1><p>{sender} · {escape(received)}</p>
+<main><section><h2>Original message</h2><p class="message">{escape(body)}</p></section>
+<section><h2>{label}</h2><p class="message">{escape(english)}</p></section></main></html>""",
+                        headers={"Cache-Control": "no-store"})
+
+
 def _read_calls(filter_sql: str = "", args: tuple = ()) -> list[dict]:
     with actions.read() as log:
         rows = log.execute(voice.CALLS + filter_sql + " ORDER BY m.created_at, m.id", args)
@@ -438,7 +478,8 @@ def answer_question(message_id: str, answer: Answer, request: Request):
     except ValueError as exc:
         raise HTTPException(409, str(exc))
     notify("staff_answer", {"reply": reply})
-    return {"ok": True, "reply_id": reply["id"], "task_id": question["id"] if question["kind"] == "task" else None}
+    return {"ok": True, "reply_id": reply["id"], "task_id": question["id"] if question["kind"] == "task" else None,
+            "proposal_id": reply.get("proposal_id")}
 
 
 @app.get("/api/me")
@@ -647,13 +688,14 @@ def chaser_view(include_messages: bool = True):
     from core import chaser
 
     with actions.read() as log:
-        cases = [{key: row[key] for key in chaser.SUMMARY} for row in chaser._rows(log)]
+        cases = [{key: row[key] for key in (*chaser.SUMMARY, "po_line")} for row in chaser._rows(log)]
+        order_lines = chaser.order_lines(log, include_messages=include_messages)
     for case in cases:
         if case["status"] in {"resolved", "cancelled"}:
             case["status"] = "closed"
         if not include_messages:
             case["question"] = case["last_reply_summary"] = None
-    return {"cases": cases, "status": "ok"}
+    return {"cases": cases, "order_lines": order_lines, "status": "ok"}
 
 
 @app.get("/api/cases")

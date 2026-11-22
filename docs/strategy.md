@@ -140,7 +140,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 ## The three-minute demo
 
 1. **The pain (30 s).** Maren's quote, then the receipt booked as 80,000 against an 8,000 note, and the art book trace: 5,900 Collector's copies short on Saturday.
-2. **The reversal (60 s).** The order row: sent 00:14, accepted 02:07, disputed 04:17, each with its source email. The decision card: one task for Paul, the modeled arrival against the 16:00 cutoff, what clears it. The amendment stays on hold and the copies are not counted while the conflict is open.
+2. **The reversal (60 s).** Show the order sent at 00:14, accepted at 02:07 and disputed at 04:17. Open a source email to show the original and the English translation. After the 07:00 departure deadline, Paul can keep the order for Monday or request cancellation. Either choice queues a separate approval. The Sunday forecast stays at 5,900 Collector’s copies short.
 3. **Another customer, same runtime (30 s).** The Kestrel replay: a toy maker's files, its own SKUs, site and deadline. A verified receipt moves the forecast; a carrier manifest that contradicts the truck board (30 vs 12) is held for review instead of counted.
 4. **Why it's safe (30 s).** The release-gate replay: unsigned or changed terms are held, 07:01 without proof of departure is held, the exact signed terms are what leaves.
 5. **The business (30 s).** €5,000 pilot, 182 attributable copies break even, Kestrel shows the same runtime on another customer, the first three publishers and how we reach them.
@@ -149,7 +149,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 
 | Criterion | Live proof |
 |---|---|
-| A pitch that sticks | Follow the art book from a corrected receipt to the supplier's reversal: the replacements never entered stock, the art book still binds, and Dockside's next step changed from chasing dispatch to having the buyer reconcile the order. |
+| A pitch that sticks | Follow the art book from a corrected receipt to the supplier's reversal. The deadline leaves Paul with a concrete choice: keep the books for Monday and potentially ship 2,500 copies late, or request cancellation and potentially save €16,800. |
 | A real business case | Compare verified offer cost with marginal refund exposure and show the effect of the next bottleneck. Apply the same calculation to a seasonal retail launch. |
 | Technical depth | Pull source changes by hash, retain evidence for receipt and inspection corrections, show real multilingual supplier replies and real outbound activity. Recompute forecasts from the shared bill of materials and the current packing clock. |
 | Taste | Keep the overview quiet. Select a part to open the exact path, evidence and decision. Keep the work Dockside is doing visible without asking the buyer to manage it. |
