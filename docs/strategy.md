@@ -2,7 +2,7 @@
 
 ## The story in 30 seconds
 
-*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. Under that night's policy it ordered 8,000 replacements (today's release gate would first require the buyer's signature on the exact terms) and never counted them as stock. At 02:07 the supplier accepted; at 04:17 and again at 04:51 it wrote it had no dispatch instruction and no booking. The amendment stayed on hold, the 07:00 departure deadline passed, and Dockside gave the buyer one decision before dispatch: settle the order with the supplier in writing. Soony knew about 5,900 missing copies a day before the dock would have told them, and €300,000 of conditional upside was never mistaken for stock.
+*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. Under that night's policy it ordered 8,000 replacements (today's release gate would first require the buyer's signature on the exact terms) and never counted them as stock. At 02:07 the supplier accepted; at 04:17 and again at 04:51 it wrote it had no dispatch instruction and no booking. The amendment stayed on hold, the 07:00 departure deadline passed, and Dockside gave the buyer one decision before dispatch: settle the order with the supplier in writing. Soony saw the 5,900 missing copies before packing ran into them, and €300,000 of conditional upside was never mistaken for stock.
 
 *(The figures above are the Saturday replay; the live board recalculates them from every new file, receipt and reply.)*
 
