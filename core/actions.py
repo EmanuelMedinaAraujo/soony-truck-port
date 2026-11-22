@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Sequence
@@ -100,6 +101,55 @@ def open_action_for(finding_id: str, kind: str | None = None) -> dict | None:
             args.append(kind)
         r = c.execute(q + " ORDER BY created_at DESC LIMIT 1", args).fetchone()
     return dict(r) if r else None
+
+
+COMMITMENTS = ("order", "book_truck", "expedite")
+PART = re.compile(r"\b[A-Z]{2,4}-[A-Z0-9]{2,5}-\d{2,4}\b")
+
+
+def open_commitment(kind: str, finding_id: str, recipients: Sequence[str], hours: int = 72) -> dict | None:
+    """A paid commitment of the same kind for the same part and recipient that is still standing.
+    Two order emails for the same 8,000 books would be two orders: the second must replace the first, not add to it."""
+    if kind not in COMMITMENTS:
+        return None
+    parts = set(PART.findall(finding_id))
+    wanted = {r.casefold() for r in recipients if r}
+    since = (now() - dt.timedelta(hours=hours)).isoformat(timespec="seconds")
+    with tx() as c:
+        rows = c.execute("""SELECT * FROM actions WHERE kind=? AND cost_eur>0 AND created_at>=?
+                            AND status IN ('proposed','scheduled','approved','sent','escalated')""", (kind, since)).fetchall()
+        for row in rows:
+            if parts and not parts & set(PART.findall(row["finding_id"] or "")):
+                continue
+            sent_to = {(m[0] or "").casefold() for m in c.execute("SELECT to_address FROM messages WHERE action_id=?", (row["id"],))} | {
+                (m[0] or "").casefold() for m in c.execute("SELECT to_name FROM messages WHERE action_id=?", (row["id"],))}
+            if not wanted or wanted & sent_to:
+                return dict(row)
+    return None
+
+
+def release_blocker(a: dict) -> str | None:
+    """Last check before a scheduled commitment leaves: new evidence first, never a second copy of the same commitment."""
+    with tx() as c:
+        addresses = [r[0] for r in c.execute("SELECT to_address FROM messages WHERE action_id=? AND to_address IS NOT NULL", (a["id"],))]
+        if addresses:
+            marks = ",".join("?" * len(addresses))
+            try:
+                unread = c.execute(f"""SELECT COUNT(*) FROM replies r JOIN messages m ON m.id=r.msg_id
+                                       WHERE r.handled=0 AND m.to_address IN ({marks})""", addresses).fetchone()[0]
+            except sqlite3.OperationalError:  # no reply has ever arrived
+                unread = 0
+            if unread:
+                return "a new reply from the same recipient is still being read"
+    twin = open_commitment(a["kind"], a["finding_id"] or "", addresses)
+    if twin and twin["id"] != a["id"] and twin["status"] in ("approved", "sent"):
+        return f"duplicate of {twin['id']}, which already went out"
+    return None
+
+
+def hold(aid: str, reason: str, minutes: int = 5) -> dict | None:
+    later = (now() + dt.timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    return set_status(aid, "scheduled", f"held before release: {reason}", expected="scheduled", next_check_at=later)
 
 
 def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: float, eur_protected: float, ce_copies: int,

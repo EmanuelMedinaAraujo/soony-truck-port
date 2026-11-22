@@ -219,6 +219,10 @@ class Tools:
         existing = actions.open_action_for(finding_id, kind)
         if existing:
             return {"error": f"{existing['id']} already open for {finding_id} ({kind})", "action": existing["title"]}
+        twin = actions.open_commitment(kind, finding_id, [m.get("to_address") or m.get("to_name") for m in messages])
+        if twin:
+            return {"error": f"{twin['id']} already commits this ({twin['status']}): {twin['title']}. "
+                             "A second paid commitment would double it; follow up on that one instead."}
         if any(m["channel"] == "email" for m in messages):
             with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as c:
                 recipients = {}

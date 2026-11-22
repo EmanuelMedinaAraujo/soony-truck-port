@@ -97,6 +97,12 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
         approvals.email_open()
         STATE["busy"] = "executing scheduled actions"
         for a in actions.due_scheduled():
+            if reason := actions.release_blocker(a):
+                if reason.startswith("duplicate"):
+                    actions.set_status(a["id"], "superseded", f"not released: {reason}", expected="scheduled")
+                else:
+                    actions.hold(a["id"], reason)
+                continue
             try:
                 actions.decide(a["id"], "approve", "Dockside", "stop window elapsed", scheduled_only=True)
             except ValueError:
@@ -352,10 +358,22 @@ def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "", *, exp
     return a
 
 
+def verified_person(request: Request) -> str | None:
+    """Who is deciding: the tailnet identity Tailscale Serve attaches, or the local operator. Never a name the page sends."""
+    name = request.headers.get("Tailscale-User-Name") or request.headers.get("Tailscale-User-Login")
+    if name:
+        return name
+    host = request.client.host if request.client else ""
+    return "local operator" if host in {"127.0.0.1", "::1"} and not request.headers.get("X-Forwarded-For") else None
+
+
 @app.post("/api/actions/{aid}/decide")
-def decide(aid: str, d: Decision):
+def decide(aid: str, d: Decision, request: Request):
+    who = verified_person(request)
+    if not who:
+        raise HTTPException(403, "Sign in through the company network to decide, or use the link in the approval email.")
     try:
-        return decide_and_dispatch(aid, d.decision, d.by, d.note)
+        return decide_and_dispatch(aid, d.decision, f"{who} (dashboard)", d.note)
     except KeyError:
         raise HTTPException(404, f"No decision {aid}. It may have been replaced; reload the page.")
     except ValueError as e:
