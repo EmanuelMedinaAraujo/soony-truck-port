@@ -2,7 +2,7 @@
 
 ## The story in 30 seconds
 
-*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, **€708,000 in projected refunds**. It ordered replacements but never counted them as stock. Overnight the supplier reversed itself. When the 07:00 departure deadline passed, Dockside held the order and gave the buyer one decision: settle it in writing.
+*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, **€708,000 in projected refunds**. It ordered replacements but never counted them as stock. Overnight the supplier reversed itself. The order had already gone out, so when the 07:00 departure deadline passed, Dockside held any amendment and asked the buyer to reconcile the order in writing.
 
 *(The 00:14 order under the night's policy, the 02:07 acceptance and the 04:17 and 04:51 reversals are each one click away in the live trace, with their source emails.)*
 
@@ -75,6 +75,8 @@ Adjacent segments follow with the same product: video game physical editions and
 4. Zero paid commitments sent without the assigned approver's signature on the exact terms.
 
 **How we measure it (proposed for the buyer's sign-off before the pilot starts).** On day one we freeze the comparison forecast defined above (stock on hand, plus receipts already expected and recovery actions already under way, at their booked times) and store it with the action log, dated and with the quantities and arrival times it assumed. Every copy counted as recovered must trace from that frozen gap through a Dockside action, a verified receipt and a finished-box dispatch record. Copies that would have shipped anyway stay out. For the next prospect we also time the onboarding itself: hours from receiving their files to the first replayed alert.
+
+**What customer two costs us.** Kestrel took one reviewed mapping file (270 lines: source paths, column names, SKU and site conventions, policy) and 22 small fixture files; the runtime code did not change. The manual part is the mapping review and reading the customer's document types. Our target for the first real prospect replay is one working day from receiving their files to the first replayed alert, and we will time it.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
 

@@ -154,18 +154,30 @@ const shipmentStates = {in_transit:"In transit", in_delivery:"Out for delivery",
 const stepStates = {confirmed: "Done", superseded: "Replaced", waiting: "Waiting for answer", pending: "To do", blocked: "Blocked", unknown: "Unclear"};
 
 /* What Dockside does now, then the selected delivery's checkpoints on one vertical line. */
+/* Replaced questions, reminders and escalations are history: one row that opens, not ten rows that compete with the task. */
+function collapseReminders(steps) {
+  const history = steps.filter(step => step.state === "superseded" || step.reminder_of);
+  if (history.length < 2) return steps;
+  const people = [...new Set(history.map(step => step.person).filter(Boolean))];
+  const row = {name: `Reminders and escalations (${history.length})`, state: "superseded",
+    detail: `Sent to ${people.join(", ")}. All are folded into the current task; answers go there.`,
+    fold: true, events: history.map(step => ({at: step.since ? at(step.since) : "", who: step.person ?? "", kind: "reply", text: step.detail}))};
+  const first = steps.indexOf(history[0]);
+  return [...steps.slice(0, first).filter(step => !history.includes(step)), row, ...steps.slice(first).filter(step => !history.includes(step))];
+}
+
 function renderProgress(route, line) {
   const now = `<p class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</p>`;
   if (!route?.steps?.length) return now;
   return `${now}<p class="progress-caption">Progress of ${html(route.name.charAt(0).toLowerCase() + route.name.slice(1))}</p>
-    <ol class="progress">${route.steps.map(step => {
+    <ol class="progress">${collapseReminders(route.steps).map(step => {
       const position = step.state === "confirmed" ? "done" : step.state === "waiting" ? "waiting" : "todo";
       return `<li data-position="${position}" data-state="${html(step.state)}">
         <i class="progress-dot" aria-hidden="true"></i>
         <div><b>${html(step.name)}</b> <span class="progress-state">${stepStates[step.state] ?? "Unclear"}</span>
-        <p>${html(step.detail)}</p>${step.events?.length ? `<ol class="events">${step.events.map(event =>
+        <p>${html(step.detail)}</p>${step.events?.length ? `${step.fold ? `<details class="detail-block" data-detail="reminders"><summary>Show all ${step.events.length}</summary>` : ""}<ol class="events">${step.events.map(event =>
           `<li data-kind="${html(event.kind)}"><time>${html(event.at)}</time> <b>${html(event.kind === "estimate" ? "Dockside estimate" : event.who)}</b> ${html(event.text)}${
-            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>` : ""}</div></li>`;
+            event.message_id && !["sent", "note", "estimate"].includes(event.kind) ? ` <a href="/api/replies/${encodeURIComponent(event.message_id)}" target="_blank" rel="noreferrer">Source</a>` : ""}</li>`).join("")}</ol>${step.fold ? "</details>" : ""}` : ""}</div></li>`;
     }).join("")}</ol>`;
 }
 

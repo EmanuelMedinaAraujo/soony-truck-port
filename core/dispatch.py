@@ -90,6 +90,8 @@ def internal_followup(action: dict, message: dict) -> dict:
     """A message that went out by chat or as a call script: say who has to do what next."""
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
     who = re.sub(rf"\b{re.escape(rules.setting('site'))}\b", lambda _: rules.cfg("site_name"), who)
+    if re.fullmatch(r"owner_\w+", who):  # a role placeholder, not a person: say so instead of showing a field name
+        who = "the logistics owner (not assigned yet)" if "logistics" in who else "the responsible owner (not assigned yet)"
     if message["channel"] == "phone_script":
         call = message.get("call")
         state = "Asking"
