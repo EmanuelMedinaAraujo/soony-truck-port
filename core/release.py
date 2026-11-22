@@ -718,6 +718,34 @@ def delivery_terms(action):
     return terms_for(action) or _historical_terms(action)
 
 
+def amendment_window(original: dict, cutoff: dt.datetime | None = None) -> dict | None:
+    """The original deadline is exclusive and the receiving cutoff is inclusive."""
+    if not (after := rules.ts(original.get("deliver_by"))):
+        return None
+    if cutoff is None:
+        cutoff = rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
+    return {"after": after.isoformat(), "latest": cutoff.isoformat()}
+
+
+def verified_eta(delivery: dict) -> str | None:
+    """A verified carrier observation can be too late for the original order."""
+    transport = delivery.get("confirmation_evidence", {}).get("transport_confirmed", {})
+    return delivery.get("eta") if not transport.get("eta_expired") else None
+
+
+def amendment_deadline_blocker(original: dict, deliver_by: str | None, eta: str | None = None) -> str | None:
+    try:
+        window = amendment_window(original)
+        deadline = rules.ts(deliver_by)
+        if not window or not deadline or not rules.ts(window["after"]) < deadline <= rules.ts(window["latest"]):
+            return "Amended deliver_by must be inside arrival_window: after the original deadline and at or before the receiving cutoff."
+        if eta and deadline < rules.ts(eta):
+            return "Amended deliver_by must be at or after the verified carrier ETA."
+    except (AttributeError, TypeError, ValueError):
+        return "Amended deliver_by must be a valid ISO arrival time."
+    return None
+
+
 def delivery_state(action, *, depart_for_requested=None, now=None, log=None):
     """The gate and cockpit share the same reply evidence and delivery constraints."""
     now = now or rules.now()
@@ -775,10 +803,7 @@ def _amendment_blocker(log, terms):
                  "vehicle_limit_t")
     if any(terms.get(field) != prior.get(field) for field in preserved) or set(prior["conditions"]) - set(terms["conditions"]):
         return "delivery amendment must preserve the original order and vehicle requirement"
-    cutoff = rules.ts(rules.cfg("deadline")) - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
-    if not rules.ts(prior["deliver_by"]) < rules.ts(terms["deliver_by"]) <= cutoff:
-        return "amended delivery deadline must follow the original deadline and meet the receiving cutoff"
-    return None
+    return amendment_deadline_blocker(prior, terms["deliver_by"])
 
 
 def preview_confirmations(action):

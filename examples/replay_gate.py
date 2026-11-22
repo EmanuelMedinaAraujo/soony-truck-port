@@ -162,8 +162,20 @@ def run(policy, sent):
         print(f"\n02:09 TAMPERED DRAFT (80,000 art books) — HELD — {held['held_reason']}")
 
 
+def seed_sent_order():
+    seed_offer()
+    original = propose()
+    body = ("We hereby place a formal order for 8,000 finished art books at a total price of EUR 16,800 DAP Hamburg. "
+            "Please dispatch via Warta Trans for delivery on Sunday 22 November to DC Hamburg no later than 12:00; "
+            "ideal arrival is 07:00. Please use only vehicles with a maximum permitted gross weight of 7.5 t.")
+    with actions.tx() as db:
+        db.execute("UPDATE actions SET id=?, status='sent', payload='{}' WHERE id=?", (ORDER, original["id"]))
+        db.execute("UPDATE messages SET action_id=?, body=?, body_en=?, status='sent', sent_at=? WHERE action_id=?",
+                   (ORDER, body, body, rules.now().isoformat(), original["id"]))
+
+
 def run_revision(policy, sent):
-    from core import agent, dispatch, followup
+    from core import agent, dispatch, followup, llm_health
 
     def view():
         with closing(actions.con()) as log:
@@ -182,26 +194,9 @@ def run_revision(policy, sent):
                 print(f"  {row['name']} [{row['state']}] {row['detail']}")
         print(f"  needsRevisedTerms={str(option['needsRevisedTerms']).lower()}")
 
-    def ask(to_name, to_address, confirmation_kind, question):
-        result = tools.propose_action(amendment_finding, question, "", "", "confirm_terms", 0, 0, 0,
-                                      None, "Dockside", 15, [email(to_name, to_address, question)],
-                                      delivery_id=ORDER, confirmation_kind=confirmation_kind)
-        assert result.get("done_automatically"), result
-        return actions.get(result["done_automatically"])["messages"][0]
-
     with rules.replay(policy, at("00:14")):
-        seed_offer()
-        original = propose()
-        body = ("We hereby place a formal order for 8,000 finished art books at a total price of EUR 16,800 DAP Hamburg. "
-                "Please dispatch via Warta Trans for delivery on Sunday 22 November to DC Hamburg no later than 12:00; "
-                "ideal arrival is 07:00. Please use only vehicles with a maximum permitted gross weight of 7.5 t.")
-        with actions.tx() as db:
-            db.execute("UPDATE actions SET id=?, status='sent', payload='{}' WHERE id=?", (ORDER, original["id"]))
-            db.execute("UPDATE messages SET action_id=?, body=?, body_en=?, status='sent', sent_at=? WHERE action_id=?",
-                       (ORDER, body, body, rules.now().isoformat(), original["id"]))
-        tools = agent.Tools()
-        amendment_finding = f"followup-{FINDING}-202611220320"
-        carrier = ask("Warta Trans", CARRIER_EMAIL, "book_truck", "Can you confirm the booking, ETA and gross vehicle rating?")
+        seed_sent_order()
+        carrier = thread("Warta Trans", CARRIER_EMAIL, "Can you confirm the booking, ETA and gross vehicle rating?", "book_truck", ORDER)
         old_slot = thread("Katrin Jansen", DOCK_EMAIL, "Can you confirm the morning unload window?", "dock_slot", ORDER)
         store_reply(old_slot, "old-slot", "Dock slot confirmed for Sun 07:00–12:00.")
 
@@ -213,6 +208,10 @@ def run_revision(policy, sent):
         assert before["needsRevisedTerms"] and not before["deliveryState"]["eta"]
         assert before["deliveryState"]["vehicle_limit"] == 7.5
         assert followup.deadline_for({"option": before, "default_route_id": FINDING}, at("16:00")) == at("07:00")  # a revision only helps while the goods can still leave in time
+        question = "Can you confirm which purchase order to use for the art books?"
+        staff = actions.propose(FINDING, question, "", "ask", 0, 0, 0, None, None,
+                                messages=[dict(email("Paul Winter", None, question), channel="discord")])
+        outbound._mark(staff["messages"][0]["id"], "delivered")
         print("\n03:20 HISTORICAL ORDER BEFORE CARRIER REPLY")
         print(before["deliveryState"]["revised_reason"])
         show_trace(before, route)
@@ -231,15 +230,68 @@ def run_revision(policy, sent):
         print("\n03:21 AUTHORIZED CARRIER REPLY")
         show_trace(late, route)
 
-        terms = tools.get_action(ORDER)["delivery_terms"]
-        result = tools.propose_action(amendment_finding, "Amend the art book delivery deadline", "", "", "order",
-                                      16800, 708000, 5900, "Print & Packaging", "Paul Winter", 15,
-                                      [email("Karton Nowak", SUPPLIER_EMAIL, "Revised delivery deadline for the existing order.")],
-                                      commitment={**terms, "deliver_by": at("15:00").isoformat(), "revises_action_id": ORDER},
-                                      delivery_id=ORDER)
-        assert result.get("created"), result
-        amended = actions.get(result["created"])
-        assert amended["status"] == "proposed"
+        snapshot = {"cutoff": at("16:00").isoformat(), "priorityId": policy["priority_product"]["value"],
+                    "components": [{"id": PART, "name": "Art books", "status": "short", "usable": 0, "required": 8000,
+                                    "next_step": route["next_step"], "routes": [route], "default_route_id": route["id"],
+                                    "option": late}]}
+
+        def replay_agent(prompt, on_step=None, *, effort):
+            # Exercise the real tool calls using the fields supplied to the model.
+            items, _ = json.JSONDecoder().raw_decode(prompt.split("Items:\n", 1)[1])
+            item, = items
+            act_by = rules.ts(item["act_by"])
+            eta = rules.ts(item["verified_eta"])
+            window = item["arrival_window"]
+            assert act_by == at("07:00")
+            assert rules.ts(window["after"]) == at("12:00") and rules.ts(window["latest"]) == at("16:00")
+            assert eta == at("14:30") and item["booking_ref"] == "WT-123" and item["vehicle_limit"] == 7.5
+            assert item["needs_revised_terms"] and "after the ordered 12:00 arrival" in item["revised_reason"]
+            assert item["slot_window"] == {"start": at("07:00").isoformat(), "end": at("12:00").isoformat()}
+            assert item["open_staff_questions"] == [{"who": "Paul Winter", "what": question, "asked_at": at("03:20").isoformat()}]
+
+            tools = agent.Tools()
+            original = tools.get_action(item["delivery_state"]["action_id"])
+            original_terms = original["delivery_terms"]
+            arrival = min(eta + dt.timedelta(minutes=30), rules.ts(window["latest"]))
+            assert rules.ts(window["after"]) < arrival == at("15:00")
+            due = min(15, int((act_by - rules.now()).total_seconds() // 60))
+            finding = f"followup-{item['finding_id_for_new_actions']}-{rules.now():%Y%m%d%H%M}"
+            draft = [email("Karton Nowak", original_terms["recipient"], "Revised delivery deadline for the existing order.")]
+            args = ("Amend the art book delivery deadline", "", item["revised_reason"], "order",
+                    original["cost_eur"], original["eur_protected"], original["ce_copies"], original["category"],
+                    "Dockside", due, draft)
+            tool_spec = next(spec for spec in agent.TOOLS if spec["name"] == "propose_action")
+            commitment_fields = tool_spec["parameters"]["properties"]["commitment"]["required"]
+            terms = {field: original_terms.get(field) for field in commitment_fields}
+            terms.update(deliver_by=arrival.isoformat(), revises_action_id=original["id"])
+            result = tools.propose_action(finding, *args, commitment=terms, delivery_id=original_terms["delivery_id"])
+            assert result.get("created") and result.get("waiting_for") == "Buyer (Paul Winter)", result
+            duplicate = tools.propose_action(f"followup-{FINDING}-202611220322", *args, commitment=terms,
+                                            delivery_id=original_terms["delivery_id"])
+            assert "already exists" in duplicate["error"]
+            recipient, = item["delivery_state"]["contacts"]["dock_slot_confirmed"]
+            request = f"Can you confirm an unload slot covering the {eta:%H:%M} arrival by {act_by:%H:%M}?"
+            result = tools.propose_action(finding, request, "", "", "confirm_terms", 0, 0, 0, None, "Dockside", due,
+                                          [email("Katrin Jansen", recipient, request)],
+                                          delivery_id=original_terms["delivery_id"], confirmation_kind="dock_slot")
+            assert result.get("done_automatically"), result
+            return "Proposed the revised arrival and requested an unload slot."
+
+        with (patch.object(agent, "run", side_effect=replay_agent) as run_followup,
+              patch.object(llm_health, "available", return_value=True)):
+            assert followup.run(snapshot) == "Proposed the revised arrival and requested an unload slot."
+            assert followup.run(snapshot) is None
+            run_followup.assert_called_once()
+
+        amended, = actions.list_actions(("proposed",))
+        assert actions.signers(amended) == ("Paul Winter",)
+        assert release.terms_for(amended)["deliver_by"] == at("15:00").isoformat()
+        inquiries = [a for a in actions.list_actions() if a["finding_id"] == amended["finding_id"] and a["kind"] == "confirm_terms"]
+        dock_action, = inquiries
+        dock, = dock_action["messages"]
+        assert dock_action["payload"]["confirmation_kind"] == "dock_slot" and "14:30" in dock["body"]
+        assert release.check(amended) == (False, "verified approval for these exact terms is missing")
+        print("03:21 FOLLOW-UP PROPOSED — act by 07:00, arrive by 15:00, receiving cutoff 16:00")
         for source in ("files", "mailbox"):
             release.record_check(source)
         held = outbound.dispatch(sign(amended)["id"])
@@ -247,7 +299,6 @@ def run_revision(policy, sent):
         print(f"03:21 AMENDMENT SIGNED — HELD — {held['held_reason']}")
 
     with rules.replay(policy, at("03:22")):
-        dock = ask("Katrin Jansen", DOCK_EMAIL, "dock_slot", "Can you confirm an unload slot for the revised arrival?")
         store_reply(dock, "revised-slot", "Dock slot confirmed for Sun 14:00–15:00.")
         released = outbound.dispatch(amended["id"])
         assert released["status"] == "sent", released["held_reason"]

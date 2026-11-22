@@ -9,7 +9,7 @@ import json
 import os
 import re
 import sqlite3
-from contextlib import closing
+from contextlib import closing, nullcontext
 
 from openai import OpenAI
 
@@ -152,7 +152,12 @@ class Tools:
         self.result = r
         pic = {k: {x: v[x] for x in ("packed_est_now", "demand", "todo_now", "hours_left", "slack_copies", "as_of")} for k, v in r["picture"].items()}
         fs = [{k: f[k] for k in ("id", "severity", "title", "detail", "eur_at_risk", "ce_copies", "evidence")} for f in r["findings"][:14]]
-        acts = [{k: a[k] for k in ("id", "finding_id", "title", "status", "approver_name")} for a in actions.list_actions(("proposed", "scheduled", "approved", "sent", "escalated", "auto"))]
+        acts = []
+        for action in actions.list_actions(("proposed", "scheduled", "approved", "sent", "escalated", "auto")):
+            entry = {k: action[k] for k in ("id", "finding_id", "title", "status", "approver_name", "kind")}
+            if action["kind"] == "confirm_terms":
+                entry.update({key: action["payload"].get(key) for key in ("delivery_id", "confirmation_kind")})
+            acts.append(entry)
         return {"now": r["now"], "launch": pic, "findings": fs, "open_actions": acts, "tracking_questions": tracking_questions()}
 
     def get_dispatch_options(self):
@@ -257,16 +262,17 @@ class Tools:
             if (kind != "order" or not original_terms or not release.sent_order_message(original)
                     or delivery_id != original_terms["delivery_id"]):
                 return {"error": "An amendment needs the original sent order and its delivery ID."}
-            if any((release.terms_for(a) or {}).get("revises_action_id") == amendment for a in
-                   actions.list_actions(("proposed", "approved", "scheduled", "escalated", "sent", "done"))):
-                return {"error": "An amendment for this original order already exists."}
+            if reason := release.amendment_deadline_blocker(
+                original_terms, commitment.get("deliver_by"), release.verified_eta(release.delivery_state(original))
+            ):
+                return {"error": reason}
         existing = actions.open_action_for(finding_id, kind)
         if kind == "confirm_terms" and delivery_id and confirmation_kind:
             existing = next((a for a in actions.list_actions(("auto", "proposed", "approved", "sent", "done"))
                              if a["finding_id"] == finding_id and a["kind"] == kind
                              and a["payload"].get("delivery_id") == delivery_id
                              and a["payload"].get("confirmation_kind") == confirmation_kind), None)
-        if existing:
+        if existing and not (amendment and existing["id"] == amendment):
             return {"error": f"{existing['id']} already open for {finding_id} ({kind})", "action": existing["title"]}
         twin = actions.open_commitment(kind, finding_id, [m.get("to_address") or m.get("to_name") for m in messages])
         if twin and not (repeat_action_id or amendment):
@@ -304,11 +310,20 @@ class Tools:
             origin = actions.commitment_for(followup[1])
         if repeat_action_id and not messages:
             return {"error": "The repeat needs one message to the original approved recipient."}
-        a = actions.propose(finding_id, what, why, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes,
-                            payload={"proposed_by": MODEL, "details": details, "from_simulated_call": simulated,
-                                     "delivery_id": delivery_id, "confirmation_kind": confirmation_kind,
-                                     **({"commitment": commitment} if commitment else {})}, messages=messages, parent=origin,
-                            repeat_commitment=bool(repeat_action_id))
+        if amendment and not messages:
+            return {"error": "The amendment needs one email to the original supplier contact for approval."}
+        with (actions.tx() if amendment else nullcontext()) as db:
+            if amendment:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute("""SELECT 1 FROM actions
+                                 WHERE status IN ('proposed','approved','scheduled','escalated','sent','done')
+                                   AND json_extract(payload, '$.commitment.revises_action_id') = ?""", (amendment,)).fetchone():
+                    return {"error": "An amendment for this original order already exists."}
+            a = actions.propose(finding_id, what, why, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes,
+                                payload={"proposed_by": MODEL, "details": details, "from_simulated_call": simulated,
+                                         "delivery_id": delivery_id, "confirmation_kind": confirmation_kind,
+                                         **({"commitment": commitment} if commitment else {})}, messages=messages, parent=origin,
+                                repeat_commitment=bool(repeat_action_id), connection=db)
         if a["status"] == "auto":
             from core import outbound
             a = outbound.dispatch(a["id"])

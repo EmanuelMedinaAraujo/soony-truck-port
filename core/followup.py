@@ -10,7 +10,7 @@ import datetime as dt
 import json
 from contextlib import closing
 
-from core import actions, rules
+from core import actions, release, rules
 
 # Booked (pickup still ahead), Asking (Dockside is sending or reading) and On the way are not stalls.
 WAITING = {"Waiting for reply", "Late", "Stuck", "Needs you"}
@@ -28,7 +28,7 @@ def last_reviews() -> dict[str, dt.datetime]:
 
 
 def deadline_for(part: dict | None, cutoff: dt.datetime | None) -> dt.datetime | None:
-    """Use the delivery deadline or the cutoff when a revision can still be proposed."""
+    """Use the last departure for a viable revision, otherwise the delivery deadline."""
     option = (part or {}).get("option")
     if option and str(part.get("default_route_id", "")).startswith("offer-"):
         delivery = option.get("deliveryState") or {}
@@ -107,18 +107,33 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
             continue
         seen.add(step.get("action_id"))
         route = next((r for r in part["routes"] if r["id"] == part["default_route_id"]), None)
+        route_steps = (route or {}).get("steps", [])
+        delivery = ((part.get("option") or {}).get("deliveryState") or {}) if route and route["id"].startswith("offer-") else {}
+        revised = delivery.get("needs_revised_terms", False)
+        staff_questions = {}
+        for pending in [*route_steps, step]:
+            if pending.get("question") and pending.get("person") and pending.get("state") in {"waiting", "Waiting for reply", "Needs you"}:
+                staff_questions[pending.get("message_id") or pending["person"]] = {
+                    "who": pending["person"], "what": pending["question"], "asked_at": pending.get("since"),
+                }
         out.append({"component_id": part["id"], "part": part["name"], "status": part["status"],
                     "for_collectors": any(a["editionId"] == priority for a in part.get("allocations", [])),
                     "usable": part["usable"], "required": part["required"],
                     "finding_id_for_new_actions": root_finding(part),
                     "route": route["name"] if route else None, "route_id": route["id"] if route else None,
-                    "open_steps": [s["name"] + ": " + s["detail"] for s in (route or {}).get("steps", []) if s["state"] != "confirmed"],
+                    "open_steps": [s["name"] + ": " + s["detail"] for s in route_steps if s["state"] != "confirmed"],
                     "waiting_on": step.get("base_text", step["text"]), "state": step["state"], "since": step["since"],
                     "action_id": step["action_id"],
-                    "last_useful_time": deadline.isoformat(timespec="minutes") if deadline else None,
-                    "delivery_state": (part.get("option") or {}).get("deliveryState") if route and route["id"].startswith("offer-") else None})
+                    "act_by": deadline.isoformat(timespec="minutes") if deadline else None,
+                    "arrival_window": release.amendment_window(delivery, cutoff) if revised else None,
+                    "verified_eta": release.verified_eta(delivery),
+                    "booking_ref": delivery.get("booking_ref"), "slot_window": delivery.get("slot_window"),
+                    "vehicle_limit": delivery.get("vehicle_limit"), "needs_revised_terms": revised,
+                    "revised_reason": delivery.get("revised_reason"), "open_staff_questions": list(staff_questions.values()),
+                    "delivery_state": delivery or None})
+    no_deadline = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
     out.sort(key=lambda item: (item["component_id"] not in constraints, not item["for_collectors"],
-                               item["status"] != "short", item["last_useful_time"] or "9999"))
+                               item["status"] != "short", rules.ts(item["act_by"]) or no_deadline))
     return out[: settings()["max_per_cycle"]]
 
 
@@ -127,19 +142,28 @@ It is {now}. Items:
 {items}
 
 How to decide, per part:
-- First call get_action on action_id (if any) and look at the open actions in get_situation, so you do not repeat what is already under way.
-- Rush delivery with delivery_state.needs_revised_terms: if can_propose_revision is false, escalate the missed deadline to the buyer.
-  Otherwise inspect delivery_state.action_id and its delivery_terms. Propose an explicitly approved order amendment with the original action
-  as revises_action_id, the same delivery_id, commercial terms and vehicle_limit_t, and a new deliver_by no later than last_useful_time.
-  Use the same original price as cost_eur for approval. The instruction amends the existing order only. If pending_revision_action_id exists,
-  review that action and continue its open checks. After the proposal, request a new unload slot by email from an authorized receiving contact
-  and request the carrier booking reference, ETA, and gross vehicle rating by email from a listed transport contact when still unverified.
-  Send each as kind 'confirm_terms', with the same delivery_id and confirmation_kind 'dock_slot' or 'book_truck'. Ask for written confirmation
-  of the revised plan and use existing requests when they cover it. Skip the generic reminder and slot rules below for this delivery.
+- First call get_action on action_id (if any) and check open actions in get_situation. Inspect any matching requests with get_action.
+  Read open_staff_questions for who was asked, what they were asked and when. Never repeat an identical open request, even if it has
+  a different finding ID.
+- Schedule each intervention by act_by, including the answer-by time and the approval due time. For a rush amendment, act_by is the last
+  departure time. The amended deliver_by is an arrival time: it must be strictly after arrival_window.after, at or before
+  arrival_window.latest, and at or after verified_eta. Use the full date, time and offset.
+- Rush delivery with needs_revised_terms: if delivery_state.can_propose_revision is false, escalate revised_reason to the buyer and
+  finish this item.
+  Inspect delivery_state.action_id and its delivery_terms. If pending_revision_action_id exists, review that action and continue its
+  open checks under its finding ID. Otherwise, with a verified_eta, propose ONE amendment through propose_action with kind 'order'
+  and a typed commitment. Set revises_action_id to the original action ID, use its delivery_id, supplier recipient, commercial terms,
+  conditions and vehicle_limit_t, and set deliver_by within the arrival window. Use the original cost_eur and category so the assigned
+  approver can sign the exact terms. Use finding_id 'followup-<finding_id_for_new_actions>-{stamp}' for the amendment.
+  Once the amendment is proposed, email an authorized receiving contact for a fresh unload slot covering verified_eta, under the
+  amendment's finding ID. The earlier slot does not establish the revised slot. If verified_eta, booking_ref or required vehicle
+  confirmation is missing, email a listed transport contact for the missing evidence and use any open request that already covers it.
+  Wait for a verified ETA before choosing arrival terms. Use kind 'confirm_terms', the same delivery_id and confirmation_kind 'dock_slot'
+  or 'book_truck' for the emails. Skip the generic reminder and slot rules below for this delivery.
 - Rush delivery with signed conditions still open: use delivery_state.contacts and the same delivery_id for the missing written checks.
   Ask about the specific missing evidence rather than repeating an unrelated reminder. Use confirmation_kind 'book_truck' or 'dock_slot'.
 - A supplier has not answered: send ONE short reminder to the same contact in their language (kind 'ask', free, goes out at once),
-  referring to the earlier message. Give a concrete answer-by time before last_useful_time. If transport is the gap, ask for the carrier's
+  referring to the earlier message. Give a concrete answer-by time before act_by. If transport is the gap, ask for the carrier's
   booking reference and ETA.
 - A delivery will need unloading in {site_name} and no unload slot action exists yet: propose kind 'dock_slot' for the expected arrival window,
   as a Discord message to {site_lead} ({site_lead_role}). Apply the configured approval and stop-window policy.
@@ -148,7 +172,7 @@ How to decide, per part:
   for the carrier's booking reference, vehicle and current ETA to {site_name}, so receiving can plan for it.
 - Only a person can do it (state 'Needs you', e.g. a phone call): escalate on Discord to the owner named in the step, or the Head of
   Procurement if none, saying exactly what to do, why it matters and by when (kind 'escalate').
-- If nothing useful can be done before last_useful_time, say so and do nothing.
+- If nothing useful can be done before act_by, say so and do nothing.
 For reminders and escalations use finding_id 'followup-<finding_id_for_new_actions>-{stamp}'. For a dock slot use finding_id_for_new_actions
 itself. Plain words, no part codes in 'what' and 'why'. Finish with one line per part: what you did."""
 

@@ -48,7 +48,7 @@ Send confirmation inquiries with the signed `delivery_id` and the relevant `conf
 
 Set `release_carrier_contacts.value` to a map of delivery IDs to verified carrier email addresses. Use `release_supplier_logistics_contacts.value` to map supplier IDs to verified logistics addresses that can confirm that supplier's deliveries. Each map accepts one address or a list for each key. Dockside takes site contacts from the site lead and deputy roles in `people.value`. It uses their verified addresses in `staff_email.value` or the configured single-signer Gmail demo routes. The Warta Trans master record contains no email, so the live demo uses Agnieszka Nowak at Karton Nowak for logistics confirmations.
 
-The rush option in `GET /api/dispatch` exposes `deliveryState` and `needsRevisedTerms`. The rush trace and follow-up agent use the release gate's verified booking, ETA, unload slot and vehicle rating. A later ETA needs a signed amendment tied to the original order and a new slot that covers the ETA. The receiving cutoff is the outer limit for an amendment. The original deadline stays in effect until the amendment goes out.
+The rush option in `GET /api/dispatch` exposes `deliveryState` and `needsRevisedTerms`. The follow-up agent schedules the intervention by `act_by`, the last departure time. It chooses an amended arrival after the original deadline, at or after the verified ETA and by the receiving cutoff. The original deadline stays in effect until the release gate has the buyer's signature on the exact amendment and a fresh unload slot covering the ETA.
 
 Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins under `staff_accounts.value`, Discord user IDs under `staff_discord_accounts.value`, and separately controlled mailboxes under `staff_email.value`. A joint approval waits for every assigned signer. To enable local demo approval, set `demo_local_operator.value` to one assigned person's name. Paid commitments are delivered by email.
 
@@ -58,7 +58,7 @@ Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins
 .venv/bin/python examples/replay_gate.py
 ```
 
-This offline replay reconstructs the historical rush offer and the 02:07 supplier acceptance in temporary SQLite databases. It uses example email addresses, a fixed launch clock and an in-memory SMTP capture. The buyer signatures, carrier booking and receiving reply are replay inputs. The second sequence reconstructs the sent order at 03:20, verifies a post-noon ETA and shows the amendment held until the new unload slot is confirmed. The order keeps its historical emergency reference while the buyer's PO number is outstanding.
+This offline replay reconstructs the historical rush offer and the 02:07 supplier acceptance in temporary SQLite databases. It uses example email addresses, a fixed launch clock and an in-memory SMTP capture. The buyer signatures, carrier booking and receiving reply are replay inputs. The second sequence runs the actual follow-up with a mocked model. It uses the verified 14:30 ETA to propose a 15:00 arrival to the assigned buyer, requests a new slot and releases the signed amendment after receiving confirms that slot. The order keeps its historical emergency reference while the buyer's PO number is outstanding.
 
 ```text
 ACT-F74B32 · Karton Nowak · 8,000 art books · €16,800 DAP Hamburg
@@ -156,6 +156,7 @@ The ordered 12:00 arrival can no longer be met. A later arrival (latest 16:00 re
   Unload slot [blocked] Sun 07:00–12:00 confirmed by Katrin Jansen · Sun 00:14. Slot window does not cover the confirmed carrier ETA.
   Vehicle [confirmed] Rated 7.5 t gross, confirmed by bookings@warta-trans.example · Sun 03:21. Order limit ≤7.5 t.
   needsRevisedTerms=true
+03:21 FOLLOW-UP PROPOSED — act by 07:00, arrive by 15:00, receiving cutoff 16:00
 03:21 AMENDMENT SIGNED — HELD — required condition missing: dock slot confirmed (no linked reply from an authorized contact)
 
 03:22 REVISED TERMS RELEASED — existing order, deliver by Sun 15:00
