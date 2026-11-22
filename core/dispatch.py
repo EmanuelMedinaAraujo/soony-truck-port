@@ -96,9 +96,15 @@ def internal_followup(action: dict, message: dict) -> dict:
     if action["kind"] == "dock_slot":
         return next_step("Waiting for reply", f"Unload slot requested from {who}; waiting for the site to confirm it.", message["sent_at"], action["id"])
     if action["kind"] in ("escalate", "ask"):
-        title = (action["title"] or "").strip().rstrip(".")
-        task = f"answer: {title[:1].lower() + title[1:]}" if title else "answer"
-    return next_step("Waiting for reply", f"Waiting for {who} to {task}.", message["sent_at"], action["id"]) | {"person": who}
+        # The request itself says best what the person is asked to do; the short title is the fallback.
+        asked = re.sub(r"^(?:(?:hi|hello|hallo)\s+)?(?:[A-Z][\w.-]*(?:\s[A-Z][\w.-]*)?,\s*)?(?:[Pp]lease|[Bb]itte)?\s*", "",
+                       _first_sentence(message.get("body"), 140)).rstrip(".!")
+        title = asked if asked and not asked.endswith("…") else (action["title"] or "").strip().rstrip(".")
+        if title:
+            text = f"Waiting for {who}: {title[:1].lower() + title[1:]}" + ("" if title.endswith("?") else ".")
+            return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {"person": who}
+    text = f"Waiting for {who} to {task}."
+    return next_step("Waiting for reply", text, message["sent_at"], action["id"]) | {"person": who}
 
 
 def message_answered(message: dict, replies: list[dict]) -> bool:
@@ -374,7 +380,7 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
         "SELECT id, finding_id, title, kind, status, updated_at, next_check_at, payload FROM actions")}
     call_rows = {row["msg_id"]: dict(row) for row in conn.execute(
         """SELECT v.*, r.summary_en, r.received_at FROM voice_calls v LEFT JOIN replies r ON r.id=v.reply_id""")}
-    for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at, provider_id FROM messages"):
+    for message in conn.execute("SELECT id, action_id, channel, to_name, to_address, status, sent_at, provider_id, body FROM messages"):
         if action := action_rows.get(message["action_id"]):
             action["messages"].append(dict(message) | {"call": call_rows.get(message["id"])})
     parent_actions = {}
