@@ -2,7 +2,7 @@
 
 ## The story in 30 seconds
 
-*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday a note for 8,000 art books was booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. Dockside caught it and ordered 8,000 replacements. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside stopped counting the books and gave the buyer one task: settle it with the supplier.
+*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. It ordered 8,000 replacements, never counted them as stock, and tracked the supplier. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside held the amendment and gave the buyer one task: settle it with the supplier.
 
 *(The figures above are the Saturday replay. The live board moves on: by Sunday morning game cards became the binding part, the art books would add no copies, and Dockside keeps their amendment on hold and points at game cards instead.)*
 
@@ -57,6 +57,10 @@ The first three prospects, as a sales plan:
 | Asmodee Germany | Logistics manager for the DACH warehouse | Through their contract packer, who serves several publishers | Replay of one Christmas launch; pilot priced per warehouse instead of per brand |
 
 **The comparison forecast.** Before the pilot starts, the buyer approves a frozen baseline: Dockside's stock-backed forecast plus every receipt already expected and every recovery action already under way without Dockside (for Soony on Saturday: the open shipments in the ERP and the tracker, at their booked arrival times). Only copies above that baseline count.
+
+*Worked example.* Saturday's ERP lists an air shipment of 28,000 game cards booked to arrive Wednesday, with no confirmed departure. In the baseline it counts at its booked time, Wednesday, so it adds nothing to Sunday's launch. If Dockside's chasing gets it confirmed on a Saturday flight and the cards are received, counted and packed into boxes that ship Sunday, those boxes are Dockside's: the baseline did not have them, and the evidence chain (Dockside's request, the carrier's confirmation, the goods receipt, the dispatch record) shows why. If the supplier had confirmed the Saturday flight on its own before Dockside asked, the baseline would be updated on the spot and the copies would not count.
+
+*Pricing across launches (a hypothesis to test).* The first launch is the €5,000 pilot. After that, a fee per critical period (each launch, ramp-up or peak season), priced at a fraction of the attributable value the replay shows for that customer's previous period.
 
 **When does the pilot pay for itself?** At Soony's €120 refund per Collector's copy, **182 attributable copies** cover the €5,000 pilot and the €16,800 rush purchase (182 × €120 = €21,840). Attributable means: absent from the frozen no-intervention forecast (which already counts expected receipts and recovery actions that were under way before Dockside), and traced from a Dockside action to a verified receipt and a dispatched box.
 
