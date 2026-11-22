@@ -412,3 +412,5 @@ img { display: block; max-width: 100%; }
 .task-state { margin-top: 6px; max-width: 80ch; }
 .blocker-line { margin-bottom: 8px; }
 .blocker-line .next-part { margin-right: 6px; }
+.verdict { margin: 2px 0 6px; color: var(--short); }
+.verdict b { font-weight: 700; }

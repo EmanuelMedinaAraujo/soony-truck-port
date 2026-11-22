@@ -2,7 +2,7 @@
 
 ## The story in 30 seconds
 
-*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. It ordered 8,000 replacements, never counted them as stock, and tracked the supplier. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside held the amendment and gave the buyer one task: settle it with the supplier.
+*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday Dockside found an 8,000-book receipt booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. Under that night's policy it ordered 8,000 replacements (today's release gate would first require the buyer's signature on the exact terms), never counted them as stock, and tracked the supplier. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside held the amendment and gave the buyer one task: settle it with the supplier.
 
 *(The figures above are the Saturday replay; the live board recalculates them from every new file, receipt and reply.)*
 
@@ -27,7 +27,7 @@ The illustrated trace can treat confirmation as a scenario input. A future hando
 
 Dockside shows the clocks that decide the outcome next to the person who has to act: the latest useful release of the order (Sun 03:00, met at 00:14), the arrival the order asked for (Sun 12:00, now unlikely), and the last departure from Poznań that still makes the 16:00 receiving cutoff (Sun 07:00).
 
-**Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**, under 1% of the €708,000 at stake in this launch. After the pilot comes a fee per critical period (launch, ramp-up, peak season) plus a share of the losses avoided, which the backtest below measures. This is a hypothesis to test with Soony. We have not yet seen a price reaction.
+**Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**, under 1% of the €708,000 at stake in this launch. After the pilot, the same fee per critical period plus a capped share of the losses avoided (see the pricing hypothesis below). This is a hypothesis to test with Soony. We have not yet seen a price reaction.
 
 **Proof before the pitch: the backtest.** Dockside keeps every file version and event, so it can replay a launch. For a prospect we replay their last launch and report when Dockside would have flagged each problem, how many buyer hours of chasing it would have replaced, and the value of the actions that were still possible at that moment. For Soony, the rush offer stayed useful only until Sunday 03:00, so every hour of earlier warning counted.
 
@@ -58,9 +58,9 @@ The first three prospects, as a sales plan:
 
 **The comparison forecast.** Before the pilot starts, the buyer approves a frozen baseline: Dockside's stock-backed forecast plus every receipt already expected and every recovery action already under way without Dockside (for Soony on Saturday: the open shipments in the ERP and the tracker, at their booked arrival times). Only copies above that baseline count.
 
-*Worked example.* Saturday's ERP lists an air shipment of 28,000 game cards booked to arrive Wednesday, with no confirmed departure. In the baseline it counts at its booked time, Wednesday, so it adds nothing to Sunday's launch. If Dockside's chasing gets it confirmed on a Saturday flight and the cards are received, counted and packed into boxes that ship Sunday, those boxes are Dockside's: the baseline did not have them, and the evidence chain (Dockside's request, the carrier's confirmation, the goods receipt, the dispatch record) shows why. If the supplier had confirmed the Saturday flight on its own before Dockside asked, the baseline would be updated on the spot and the copies would not count.
+*Worked example.* At freeze time the ERP books air shipment AWB 020-48113256 to land in Frankfurt on **Saturday**, status "booked", departure never confirmed; the supplier's shipping advice already on file says only **28,000 of 48,000** game cards were loaded. The baseline takes the records as they stood at freeze time: 28,000 cards arriving Saturday. It is not rewritten later. If the shipment turns out to be late, the baseline stays optimistic, so any recovery Dockside achieves has to beat that optimism before it counts: the attribution errs against us. If Dockside's chasing then gets the remaining 20,000 cards onto a flight that lands before the cutoff, the boxes they complete are attributable, because the frozen baseline did not contain them and each step carries a timestamp: Dockside's request, the carrier's confirmation, the goods receipt and the dispatch record.
 
-*Pricing across launches (a hypothesis to test).* The first launch is the €5,000 pilot. After that, a fee per critical period (each launch, ramp-up or peak season), priced at a fraction of the attributable value the replay shows for that customer's previous period.
+*Pricing across launches (one hypothesis to test).* €5,000 per critical period and site (a launch, a ramp-up or a peak season), plus 10% of attributable refunds or line-stop costs avoided, capped at €25,000 per period. For this launch, 2,500 attributable copies would mean €5,000 + €25,000 (10% of €300,000, at the cap).
 
 **When does the pilot pay for itself?** At Soony's €120 refund per Collector's copy, **182 attributable copies** cover the €5,000 pilot and the €16,800 rush purchase (182 × €120 = €21,840). Attributable means: absent from the frozen no-intervention forecast (which already counts expected receipts and recovery actions that were under way before Dockside), and traced from a Dockside action to a verified receipt and a dispatched box.
 
@@ -113,7 +113,7 @@ Kestrel Toys packs the Robot Builder Set in two editions at Rotterdam. The same 
 | Drop 2 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | 30 motors by cutoff |
 | Drop 3 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | Held for review. Truck board says 30, carrier manifest says 12. |
 
-Drop 2 changes three files and the verified receipt adds 100 motors to the forecast. Drop 3 changes one file and changes the next step from “On the way” to “Needs you”. Both source claims stay visible and the unsettled quantity stays out of the plan. Every drop ingests with zero issues. The original Soony rebuild still matches the saved typed rows and the offline forecast of 5,900 Collector's and 34,800 Standard copies short (the live service, which also applies the corrections in its action log, shows 32,000 Standard), with the rush offer adding at most 2,500 Collector's copies and avoiding €300,000 in refunds.
+Drop 2 changes three files and the verified receipt adds 100 motors to the forecast. Drop 3 changes one file and changes the next step from “On the way” to “Needs you”. Both source claims stay visible and the unsettled quantity stays out of the plan. Every drop ingests with zero issues. The original Soony rebuild still matches the saved typed rows and the offline forecast of 5,900 Collector's and 34,800 Standard copies short with the rush offer adding at most 2,500 Collector's copies and avoiding €300,000 in refunds.
 
 ## The three-minute demo
 
@@ -127,7 +127,7 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 
 | Criterion | Live proof |
 |---|---|
-| A pitch that sticks | Follow the art book from a corrected receipt to the supplier's reversal, and watch Dockside stop counting it and move the recommendation to the new bottleneck. |
+| A pitch that sticks | Follow the art book from a corrected receipt to the supplier's reversal: the replacements never entered stock, the art book still binds, and Dockside's next step changed from chasing dispatch to having the buyer reconcile the order. |
 | A real business case | Compare verified offer cost with marginal refund exposure and show the effect of the next bottleneck. Apply the same calculation to a seasonal retail launch. |
 | Technical depth | Pull source changes by hash, retain evidence for receipt and inspection corrections, show real multilingual supplier replies and real outbound activity. Recompute forecasts from the shared bill of materials and the current packing clock. |
 | Taste | Keep the overview quiet. Select a part to open the exact path, evidence and decision. Keep the work Dockside is doing visible without asking the buyer to manage it. |

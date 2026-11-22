@@ -116,10 +116,14 @@ function conflictCard(part, item, snapshot) {
   const anchor = option.modeledUnloadAnchorAt ?? conflict.at;
   const q = item.question;
   const task = item.next_step.task ?? q?.task;
+  // Past the departure deadline only verified departure evidence keeps a Sunday recovery alive.
+  const departed = !option.departBy || Date.now() <= Date.parse(option.departBy) || option.deliveryState?.transport_confirmed;
   const answered = task && task.status && task.status !== "open"
     ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.answered_by ?? task.person)}${task.answered_by && task.answered_by !== task.person ? ` for ${html(task.person)}` : ""} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
   return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-    <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome. ${option.copiesAdded ? `The rescue (+${number(option.copiesAdded)} copies) is at risk.` : `No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
+    ${departed ? "" : `<p class="verdict"><b>${html(at(option.departBy))} departure deadline passed. No confirmed Sunday recovery.</b>
+      ${option.copiesAdded ? `The +${number(option.copiesAdded)} copies stay a scenario until the books are received and inspected.` : ""}</p>`}
+    <span class="decision-ask"><b>${html(person)}:</b> reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome.${departed ? (option.copiesAdded ? ` The rescue (+${number(option.copiesAdded)} copies) is at risk.` : ` No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`) : ""}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
     <p class="conflict-line"><span class="state-chip" data-tone="alert">Conflict</span> ${html(at(conflict.at))} ${html(conflict.who)}: “${html(conflict.text)}.”
       <a href="/api/replies/${encodeURIComponent(conflict.message_id)}" target="_blank" rel="noreferrer">Source</a></p>
     <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${option.modeledUnloadReplyId ? ` (<a href="/api/replies/${encodeURIComponent(option.modeledUnloadReplyId)}" target="_blank" rel="noreferrer">latest reply</a>)` : ""}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
@@ -129,9 +133,9 @@ function conflictCard(part, item, snapshot) {
     <details class="question"><summary>What clears it</summary>
       <ol class="clears">
         <li>${html(person)} confirms the order reference, quantity, price and the dispatch instruction with ${html(conflict.who)}.</li>
-        <li>${html(logistics)} confirms a carrier booking, a vehicle of the allowed size and an arrival time before the cutoff.</li>
+        <li>${html(logistics)} confirms a carrier booking, a vehicle of the allowed size and an arrival time before the cutoff${departed ? "" : `, plus proof that the goods actually left ${html(option.origin ?? "the supplier")} in time (the ${html(at(option.departBy))} deadline has passed)`}.</li>
         <li>${html(siteName())} receiving confirms an unload slot for that arrival.</li></ol>
-      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, Dockside sends no amendment and counts none of these copies.</p></details></li>`;
+      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details></li>`;
 }
 
 /* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */
