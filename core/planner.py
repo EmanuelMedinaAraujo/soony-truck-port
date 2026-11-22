@@ -1,10 +1,9 @@
 """Deterministic logistics math the agent calls as tools: truck legs, Sunday ban, cut-off, what-if."""
 from __future__ import annotations
 
-import copy
 import datetime as dt
 
-from core.rules import TZ, cfg, now, ts
+from core.rules import cfg, now, ts
 
 
 def next_shift_minute(t: dt.datetime) -> dt.datetime:
@@ -18,25 +17,28 @@ def next_shift_minute(t: dt.datetime) -> dt.datetime:
 
 def plan_truck(ready_at: str | None, drive_hours: float, from_port: bool = False, vehicle_t: float = 40,
                load_hours: float = 0, origin: str = "") -> dict:
-    """Earliest arrival at DC-HAM for a truck leg, honouring the German Sunday ban and the DC shifts."""
+    """Earliest arrival at the configured site given driving restrictions and receiving shifts."""
     ban = cfg("truck_sunday_ban")
     deadline = ts(cfg("deadline"))
     cutoff = deadline - dt.timedelta(hours=cfg("receiving_buffer_hours"))
     depart = (ts(ready_at) if ready_at else now()) + dt.timedelta(hours=load_hours)
     arrive = depart + dt.timedelta(hours=drive_hours)
     notes = []
-    banned = vehicle_t > ban["min_weight_t"] and not from_port
-    if banned:
-        # Ban window on the launch Sunday (00:00-22:00): a heavy truck must stop at the border / a lay-by.
-        sun = deadline.replace(hour=0, minute=0)
-        ban_end = sun.replace(hour=22)
-        if arrive > sun and depart < ban_end:
-            notes.append(f"Sunday ban: a {vehicle_t:g} t truck may not drive in DE Sun 00:00-22:00 -> arrives Sun 22:00+ (after the 20:00 deadline)")
-            arrive = ban_end + max(dt.timedelta(0), arrive - max(depart, sun))
-    elif vehicle_t <= ban["min_weight_t"]:
-        notes.append(f"vehicle <= {ban['min_weight_t']} t: Sunday ban does not apply")
-    elif from_port:
-        notes.append("port-road combined transport within 150 km: exempt from the Sunday ban")
+    if ban:
+        if vehicle_t <= ban["min_weight_t"]:
+            notes.append(f"Vehicle <= {ban['min_weight_t']} t is exempt from the truck ban.")
+        elif from_port:
+            notes.append(f"Port-road combined transport within {ban['port_exempt_km']} km is exempt from the truck ban.")
+        else:
+            day = depart.date() + dt.timedelta(days=(ban["weekday"] - depart.weekday()) % 7)
+            start_time, end_time = (dt.time.fromisoformat(ban[key]) for key in ("from", "to"))
+            start = dt.datetime.combine(day, start_time, depart.tzinfo)
+            while start < arrive:
+                end = dt.datetime.combine(start.date(), end_time, depart.tzinfo)
+                if depart < end:
+                    notes.append(f"{ban['country']} truck ban on {start:%A %H:%M}–{end:%H:%M} applies to a {vehicle_t:g} t truck.")
+                    arrive += end - max(depart, start)
+                start += dt.timedelta(days=7)
     unload = next_shift_minute(arrive)
     if unload > arrive:
         notes.append(f"DC closed on arrival; unloading at {unload:%a %H:%M}")

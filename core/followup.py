@@ -40,7 +40,7 @@ def next_check(component_id: str, step: dict, reviews: dict[str, dt.datetime], n
                deadline: dt.datetime | None = None) -> dt.datetime | None:
     """When Dockside will next look at this item, or None if it is not waiting on anyone (or follow-ups are off)."""
     conf = settings()
-    if not conf["enabled"] or not step or (step.get("state") not in WAITING and not step.get("unverified")):
+    if not conf["enabled"] or not step or step.get("reviewRequired") or (step.get("state") not in WAITING and not step.get("unverified")):
         return None
     if deadline and now >= deadline:
         return None  # too late to change anything for launch
@@ -54,8 +54,8 @@ def next_check(component_id: str, step: dict, reviews: dict[str, dt.datetime], n
 
 
 def when(moment: dt.datetime, now: dt.datetime) -> str:
-    local = moment.astimezone(rules.TZ)
-    return f"{local:%H:%M}" if local.date() == now.astimezone(rules.TZ).date() else f"{local:%a %H:%M}"
+    local = moment.astimezone(rules.timezone())
+    return f"{local:%H:%M}" if local.date() == now.astimezone(rules.timezone()).date() else f"{local:%a %H:%M}"
 
 
 def promise(component_id: str, step: dict, reviews: dict[str, dt.datetime], now: dt.datetime,
@@ -119,11 +119,11 @@ How to decide, per part:
 - A supplier has not answered: send ONE short reminder to the same contact in their language (kind 'ask', free, goes out at once),
   referring to the earlier message. Give a concrete answer-by time before last_useful_time. If transport is the gap, ask for the carrier's
   booking reference and ETA.
-- A delivery will need unloading in Hamburg and no unload slot action exists yet: propose kind 'dock_slot' for the expected arrival window,
-  as a Discord message to Katrin Jansen (Site Lead DC-HAM). It goes ahead unless she stops it and can be moved later.
+- A delivery will need unloading in {site_name} and no unload slot action exists yet: propose kind 'dock_slot' for the expected arrival window,
+  as a Discord message to {site_lead} ({site_lead_role}). Apply the configured approval and stop-window policy.
 - A pickup is overdue: ask the supplier for the pickup time, the carrier's booking reference and ETA.
 - The supplier reported the goods on the way but nothing confirms it (state 'On the way', waiting_on mentions the tracker): ask the supplier
-  for the carrier's booking reference, vehicle and current ETA to Hamburg, so receiving can plan for it.
+  for the carrier's booking reference, vehicle and current ETA to {site_name}, so receiving can plan for it.
 - Only a person can do it (state 'Needs you', e.g. a phone call): escalate on Discord to the owner named in the step, or the Head of
   Procurement if none, saying exactly what to do, why it matters and by when (kind 'escalate').
 - If nothing useful can be done before last_useful_time, say so and do nothing.
@@ -141,5 +141,8 @@ def run(snapshot: dict, on_step=None) -> str | None:
     for item in items:  # log first: a failing model call must not cause a review storm
         actions.log_event(REVIEW_KIND, item["component_id"], f"follow-up on {item['part']}: {item['waiting_on']}")
     now = rules.now()
-    prompt = PROMPT.format(now=f"{now:%a %d %b %H:%M}", items=json.dumps(items, ensure_ascii=False, indent=1), stamp=now.strftime("%Y%m%d%H%M"))
+    site_lead_role = rules.cfg("site_lead_role")
+    prompt = PROMPT.format(now=f"{now:%a %d %b %H:%M}", items=json.dumps(items, ensure_ascii=False, indent=1),
+                           stamp=now.strftime("%Y%m%d%H%M"), site_name=rules.cfg("site_name"),
+                           site_lead=rules.cfg("people").get(site_lead_role) or site_lead_role, site_lead_role=site_lead_role)
     return agent.run(prompt, on_step, effort="medium")

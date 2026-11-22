@@ -1,0 +1,4 @@
+route_id,origin,destination,mode,carrier_id,transit_days
+LANE-1,NLUTR,RDM-01,road,NL-H1,0
+LANE-2,BEANR,NLRTM,sea,NL-H2,0
+LANE-3,NLRTM,RDM-01,road,NL-H1,0.1

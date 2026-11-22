@@ -1,0 +1,2 @@
+receipt_id,checked_in,order_ref,line,vendor_code,part_sku,expected,counted,delivery_note
+RC-01,2026-12-11,KT-101,1,VOLT,RB-MOTOR,50,500,DN-101

@@ -1,0 +1,270 @@
+{
+  "site": "RDM-01",
+  "timezone": "+01:00",
+  "customer_name": {
+    "value": "Kestrel Toys",
+    "source": "Synthetic customer brief"
+  },
+  "launch_name": {
+    "value": "Robot Builder Set",
+    "source": "Kestrel catalog"
+  },
+  "site_name": {
+    "value": "Rotterdam",
+    "source": "Kestrel depot register"
+  },
+  "site_port": {
+    "value": "NLRTM",
+    "source": "Kestrel depot register"
+  },
+  "site_aliases": {
+    "value": [
+      "Rotterdam",
+      "RDM-01"
+    ],
+    "source": "Kestrel depot register"
+  },
+  "deadline": {
+    "value": "2026-12-12T06:00:00+01:00",
+    "source": "Christmas distribution schedule"
+  },
+  "receiving_buffer_hours": {
+    "value": 2,
+    "source": "Warehouse cutoff agreement"
+  },
+  "shifts": {
+    "value": [
+      {
+        "start": "2026-12-11T18:00:00+01:00",
+        "end": "2026-12-12T06:00:00+01:00"
+      }
+    ],
+    "source": "Packing roster"
+  },
+  "priority_product": {
+    "value": "KIT-RBT-DLX",
+    "source": "Kestrel launch priorities"
+  },
+  "edition_labels": {
+    "value": {
+      "priority": "Deluxe",
+      "priority_copies": "Deluxe kits",
+      "other": "Classic"
+    },
+    "source": "Kestrel catalog"
+  },
+  "missed_copy_cost_eur": {
+    "value": {
+      "KIT-RBT-DLX": 32,
+      "KIT-RBT-CLS": 15
+    },
+    "source": "Retail refund schedule"
+  },
+  "priority_category": {
+    "value": "Electronics",
+    "source": "Kestrel procurement roster"
+  },
+  "site_lead_role": {
+    "value": "Site Lead",
+    "source": "Kestrel warehouse roster"
+  },
+  "people": {
+    "value": {
+      "Buyer:Electronics": "Jules de Vries",
+      "Head of Procurement": "Ines Bakker",
+      "Site Lead": "Lou Martens"
+    },
+    "source": "Kestrel procurement and warehouse roster"
+  },
+  "approval_ladder": {
+    "value": [
+      {
+        "role": "Buyer",
+        "max_eur": 1000
+      },
+      {
+        "role": "Head of Procurement",
+        "max_eur": null
+      }
+    ],
+    "source": "Kestrel spend policy"
+  },
+  "truck_sunday_ban": {
+    "value": null,
+    "source": "No truck restriction in this replay's delivery window"
+  },
+  "staleness_hours": {
+    "value": {
+      "road": 8,
+      "sea": 48
+    },
+    "source": "Kestrel carrier reporting agreement"
+  },
+  "followup": {
+    "value": {
+      "enabled": false
+    },
+    "source": "Offline evaluation replay"
+  },
+  "sources": {
+    "value": {
+      "paths": {
+        "products": "catalog/editions.csv",
+        "components": "catalog/parts.csv",
+        "bom": "catalog/kit_recipe.csv",
+        "carriers": "delivery/hauliers.csv",
+        "ports": "delivery/terminals.csv",
+        "sites": "delivery/depots.csv",
+        "routes": "delivery/lanes.csv",
+        "supplier_root": "vendors",
+        "supplier_profile": "vendor-card.csv",
+        "supplier_components": "assortment.csv",
+        "purchase_orders": "buying/orders-*.csv",
+        "receipts": "warehouse/receiving-log.csv",
+        "stock": "warehouse/on-hand.csv",
+        "shipments": "delivery/truck-board.csv",
+        "inbound_plan": "delivery/carrier-manifest*.csv",
+        "launch": "packing/kit-counts.csv"
+      },
+      "columns": {
+        "products": {
+          "product_id": "edition_sku",
+          "name": "title",
+          "launch_date": "shelf_date",
+          "day_one_qty": "shelf_target"
+        },
+        "components": {
+          "component_id": "part_sku",
+          "description": "part_name",
+          "category": "family"
+        },
+        "bom": {
+          "parent_id": "kit_sku",
+          "child_id": "part_sku",
+          "qty_per": "per_kit"
+        },
+        "supplier_profile": {
+          "supplier_id": "vendor_code",
+          "name": "vendor_name"
+        },
+        "supplier_components": {
+          "component_id": "part_sku"
+        },
+        "purchase_orders": {
+          "po_number": "order_ref",
+          "po_line": "line",
+          "supplier_id": "vendor_code",
+          "material_id": "part_sku",
+          "plant": "depot",
+          "quantity": "units"
+        },
+        "receipts": {
+          "gr_number": "receipt_id",
+          "gr_date": "checked_in",
+          "po_number": "order_ref",
+          "po_line": "line",
+          "supplier_id": "vendor_code",
+          "material_id": "part_sku",
+          "qty_ordered": "expected",
+          "qty_received": "counted"
+        },
+        "stock": {
+          "snapshot_date": "count_date",
+          "material_id": "sku",
+          "batch": "lot",
+          "quantity": "units"
+        },
+        "shipments": {
+          "shipment_id": "load_id",
+          "reference": "booking",
+          "supplier_id": "vendor_code",
+          "po_numbers": "orders",
+          "material_ids": "parts",
+          "eta": "expected_at",
+          "quantity": "loaded_units"
+        },
+        "inbound_plan": {
+          "reference": "booking",
+          "quantity": "manifest_units",
+          "material_id": "part_sku"
+        },
+        "launch": {
+          "product_id": "kit_sku",
+          "as_of": "counted_at",
+          "demand": "target",
+          "packed": "boxed",
+          "still_to_pack": "remaining",
+          "rate_per_hour": "hourly_output"
+        }
+      }
+    },
+    "source": "Reviewed synthetic Kestrel catalog, buying, depot and carrier exports"
+  },
+  "replay_at": {
+    "value": "2026-12-11T18:00:00+01:00",
+    "source": "Fixed replay clock across all drops"
+  },
+  "localized_site_names": {
+    "value": {},
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "cheap_fix_eur": {
+    "value": 100,
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "spend_priority_guidance": {
+    "value": "Compare proposed costs against marginal refunds avoided for either edition.",
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "assurance_example_eur": {
+    "value": 50,
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "approval_by_kind": {
+    "value": {
+      "dock_slot": [
+        "Site Lead"
+      ],
+      "quality_release": [
+        "Head of Procurement"
+      ]
+    },
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "autonomy": {
+    "value": {
+      "act_unless_stopped": {
+        "kinds": [],
+        "max_cost_eur": 0,
+        "min_value_ratio": 0,
+        "window_minutes": 15
+      },
+      "always_sign": [
+        "quality_release"
+      ]
+    },
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "voice": {
+    "value": {
+      "enabled": false,
+      "dial_out": false,
+      "demo_number": null
+    },
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "chase": {
+    "value": {
+      "enabled": false
+    },
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "staff_email": {
+    "value": {},
+    "source": "Synthetic Kestrel operating policy"
+  },
+  "master_db": {
+    "value": "customer.db",
+    "source": "Name of the rebuildable SQLite database in the customer data directory"
+  }
+}

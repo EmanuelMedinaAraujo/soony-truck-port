@@ -1,0 +1,17 @@
+{
+  "path": "vendors/MOLD/notices/port-release.txt",
+  "extracted_by": "reviewed fixture",
+  "facts": [
+    {
+      "type": "supplier_hold",
+      "supplier_id": "MOLD",
+      "po_number": "KT-104",
+      "reference": "DB-014",
+      "material_id": "RB-SHELL",
+      "qty": 100,
+      "reason": "Signed handover missing",
+      "unblock_condition": "File the signed handover",
+      "quote": "Release is on hold until our signed handover is filed."
+    }
+  ]
+}

@@ -31,10 +31,15 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-BASE = os.environ.get(
-    "SOONY_BASE", "https://start-hack-portal-cxh3crbdaef2f8gt.westeurope-01.azurewebsites.net"
-)
-ROOT = Path(os.environ.get("SOONY_DATA", Path(__file__).resolve().parent.parent / "data"))
+PROJECT = Path(__file__).resolve().parent.parent
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT))
+
+from core import customer
+
+PORTAL = customer.load()["sources"]["value"].get("portal", {})
+BASE = os.environ.get("DOCKSIDE_PORTAL_BASE") or os.environ.get("SOONY_BASE") or PORTAL.get("base_url")
+ROOT = Path(os.environ.get("DOCKSIDE_SYNC_DATA") or os.environ.get("SOONY_DATA") or PROJECT / "data")
 BLOBS, CURRENT = ROOT / "blobs", ROOT / "current"
 MANIFEST, CHANGES = ROOT / "manifest.json", ROOT / "changes.jsonl"
 MAX_ROW_EVENTS = 200  # cap per file so a reformatted CSV doesn't flood the log
@@ -142,6 +147,8 @@ def apply_file(path: str, content: bytes, sha: str, size: int, manifest: dict, t
 def sync_once(token: str) -> list[dict]:
     ts = now()
     manifest = load_manifest()
+    if not BASE:
+        raise ValueError("Configure a portal base URL in the source mapping or DOCKSIDE_PORTAL_BASE")
     listing = json.loads(_get(f"{BASE}/api/v1/files", token))
     remote = {f["path"]: f for f in listing["files"]}
     events = []
@@ -174,7 +181,8 @@ def seed_from_zip(zip_path: str) -> list[dict]:
             if info.is_dir():
                 continue
             name = info.filename
-            rel = name.split("/", 1)[1] if name.startswith("soony-data/") else name
+            archive_root = PORTAL.get("archive_root")
+            rel = name.removeprefix(f"{archive_root}/") if archive_root else name
             content = z.read(info)
             sha = hashlib.sha256(content).hexdigest()
             ev = apply_file(rel, content, sha, len(content), manifest, ts, "zip")
@@ -203,9 +211,9 @@ def main() -> None:
     if a.seed_zip:
         print(f"[{now()}] seed: {summarize(seed_from_zip(a.seed_zip))}")
         return
-    token = os.environ.get("SOONY_TOKEN")
+    token = os.environ.get("DOCKSIDE_PORTAL_TOKEN") or os.environ.get("SOONY_TOKEN")
     if not token:
-        sys.exit("set SOONY_TOKEN (team token from portal Settings)")
+        sys.exit("set DOCKSIDE_PORTAL_TOKEN or SOONY_TOKEN (team token from portal Settings)")
     while True:
         try:
             ev = sync_once(token)

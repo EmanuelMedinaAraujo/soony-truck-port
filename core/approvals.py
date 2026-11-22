@@ -37,7 +37,7 @@ def _body(a, due: dt.datetime | None) -> str:
     return (f"Hi {a['approver_name']},\n\n"
             f"What: {a['title']}\nWhy: {a['rationale']}\n"
             f"Cost: €{a['cost_eur']:,.2f}\n"
-            f"Protects: €{a['eur_protected'] or 0:,.2f} and {a['ce_copies'] or 0:,} Collector’s Edition copies.\n\n"
+            f"Protects: €{a['eur_protected'] or 0:,.2f} and {a['ce_copies'] or 0:,} {rules.cfg('edition_labels')['priority_copies']}.\n\n"
             f"{timing}\n")
 
 

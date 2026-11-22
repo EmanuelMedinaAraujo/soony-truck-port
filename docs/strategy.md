@@ -48,8 +48,8 @@ We pitch a horizontal platform: an onboarding agent for any deadline-driven supp
 | Raw ingest of every CSV, XLSX and JSON | `raw_*` tables | Yes |
 | Reading documents in any language into facts | `core/extract_docs.py` | Yes |
 | Operating rules (who signs what, deadline, cost per missing unit, autonomy) | `config/business.json`, every value with its source | The structure is generic; the content is per customer |
-| Detectors (stuck at port, ETA against route time, revision mismatch, over-receipt, qualification expiry, Sunday truck ban) | `core/rules.py` | Mostly, once parameterized |
-| Typed loaders (BOM, POs, shipments, editions) | `core/ingest.py` | No: becomes a generated mapping |
+| Detectors (stuck at port, ETA against route time, revision mismatch, over-receipt, qualification expiry, conflicting shipment quantity, truck restrictions) | `core/rules.py` | Yes, with customer policy and source evidence |
+| Typed loaders (BOM, POs, shipments, editions) | `core/ingest.py` + `sources` in the policy file | Yes, for the mapped export formats |
 | Cockpit | `web/assembly` | No: becomes a generated view spec |
 
 **Compile once.** From a data dump, policy documents and a few interviews, the onboarding agent writes three reviewable files:
@@ -64,6 +64,18 @@ We pitch a horizontal platform: an onboarding agent for any deadline-driven supp
 **Why it compounds.** Every new customer adds to a cross-customer record of supplier reliability, for example how fast a supplier answers and how far its ETAs slip. Every customer's file history also supports a backtest: replay their last launch and show which problems Dockside would have flagged earlier, and what that would have saved. That backtest is the sales argument and the basis for pricing as a share of avoided losses.
 
 For Sunday we show the platform through what already runs generically: hash-based change detection, multilingual document reading, a policy with cited sources, autonomous follow-ups, Supplier Chaser and voice calls. The cockpit stays hand-polished.
+
+## Proof: a second customer
+
+Kestrel Toys packs the Robot Builder Set in two editions at Rotterdam. The same ingest, detectors and dispatch forecast read its own SKU codes, packing schedule, source paths and column names from a [reviewed mapping](../examples/kestrel/business.json). The deadline is December 12, 2026 at 06:00 local time.
+
+| Replay | Deluxe projected | Classic projected | Refunds at risk | Biggest lever | Inbound booking RD-201 |
+|---|---:|---:|---:|---|---|
+| Drop 1 | 70/100, 30 short | 40/140, 100 short | €2,460 | 50/180 drive motors usable | 30 motors after cutoff |
+| Drop 2 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | 30 motors by cutoff |
+| Drop 3 | 100/100, 0 short | 110/140, 30 short | €450 | 150/180 drive motors usable | Held for review. Truck board says 30, carrier manifest says 12. |
+
+Drop 2 changes three files and the verified receipt adds 100 motors to the forecast. Drop 3 changes one file and changes the next step from “On the way” to “Needs you”. Both source claims stay visible and the unsettled quantity stays out of the plan. Every drop ingests with zero issues. The original Soony rebuild still matches the saved typed rows and the dispatch forecast of 5,900 Collector's and 34,800 Standard copies short, with the rush offer adding at most 2,500 Collector's copies and avoiding €300,000 in refunds.
 
 ## The three-minute demo
 

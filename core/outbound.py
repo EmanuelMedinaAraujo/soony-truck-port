@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import smtplib
 import threading
 from email.message import EmailMessage
 
 from core import actions
-from core.rules import cfg, now
+from core.rules import cfg, now, shipment_commitment_blocker
 
 DISPATCH_LOCK = threading.Lock()
 UNCONFIRMED = {"sending", "delivery_unknown"}
@@ -83,6 +84,9 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
         if action["status"] not in ("approved", "auto", "sent"):
             return action
         if action["kind"] in {"chase_supplier", "chase_escalation"} and not cfg("chase")["enabled"]:
+            return action
+        order_refs = (po for message in action["messages"] for po in json.loads(message.get("po_numbers") or "[]"))
+        if shipment_commitment_blocker(action["finding_id"], action["kind"], order_refs):
             return action
         reply = None
         if action["finding_id"].startswith("reply-"):

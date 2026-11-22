@@ -1,0 +1,5 @@
+order_ref,line,vendor_code,part_sku,depot,units,unit_price,currency,status
+KT-101,1,VOLT,RB-MOTOR,RDM-01,50,5,EUR,delivered
+KT-102,1,VOLT,RB-MOTOR,RDM-01,100,5,EUR,open
+KT-103,1,VOLT,RB-MOTOR,RDM-01,30,5,EUR,open
+KT-104,1,MOLD,RB-SHELL,RDM-01,100,2,EUR,open

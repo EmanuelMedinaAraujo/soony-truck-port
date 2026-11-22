@@ -9,7 +9,7 @@ import sqlite3
 from collections import defaultdict
 from contextlib import closing
 
-from core import actions, rules, voice
+from core import actions, customer, rules, voice
 
 
 def forecast(picture: dict, coverage: dict, bom: dict, priority: str, extra: dict | None = None) -> tuple[dict, dict]:
@@ -74,7 +74,7 @@ INTERNAL_FOLLOWUP = {
 def internal_followup(action: dict, message: dict) -> dict:
     """A message that went out by chat or as a call script: say who has to do what next."""
     who = re.split(r"\s+(?:and|\()\s*", message["to_name"] or "", maxsplit=1)[0].strip() or "the team"
-    who = re.sub(r"\b(?:CMP|SUP|SHP|DC)-[\w-]+", rules.cfg("site_name"), who)
+    who = re.sub(rf"\b{re.escape(rules.setting('site'))}\b", lambda _: rules.cfg("site_name"), who)
     if message["channel"] == "phone_script":
         call = message.get("call")
         state = "Asking"
@@ -205,7 +205,7 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
                     sent_at = message["sent_at"]
                     who = supplier or message["to_name"] or ""
                     when = rules.ts(sent_at)
-                    timing = f" at {when.astimezone(rules.TZ):%H:%M}" if when else ""
+                    timing = f" at {when.astimezone(rules.timezone()):%H:%M}" if when else ""
                     email_subject = "order request" if action["kind"] == "order" else subject
                     text = f"Sent the {email_subject} to {who}{timing}."
                     if not who or "@" in who or re.search(r"\b(?:CMP|SUP|SHP|DC)-", who) or len(text.split()) > 12:
@@ -225,7 +225,7 @@ def action_next_step(related: list[dict], supplier: str | None = None) -> dict |
     # Resolve equal-priority work by the latest transition, independent of ISO time-zone offsets.
     priority = min(rank for rank, _ in candidates)
     return max((item for rank, item in candidates if rank == priority),
-               key=lambda item: rules.ts(item["since"]) or dt.datetime.min.replace(tzinfo=rules.TZ))
+               key=lambda item: rules.ts(item["since"]) or dt.datetime.min.replace(tzinfo=rules.timezone()))
 
 
 def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: str | None, now: dt.datetime) -> tuple[str, dict]:
@@ -248,10 +248,10 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
         heard, tracked = (rules.ts(reply["received_at"]) if reply else None), rules.ts(updated)
         if reply and reply.get("summary_en") and heard and (not tracked or heard > tracked):
             # The supplier told us more than the tracker knows: show what they said.
-            return "ship", next_step("On the way", f"{supplier} reported at {heard.astimezone(rules.TZ):%a %H:%M}: "
+            return "ship", next_step("On the way", f"{supplier} reported at {heard.astimezone(rules.timezone()):%a %H:%M}: "
                                      f"{_first_sentence(reply['summary_en'])} The tracker is not updated yet.", reply["received_at"], reply["action_id"]) | {"unverified": True}
         etd = rules.ts(shipment.get("etd"))
-        late = bool(etd and etd.astimezone(rules.TZ).date() < now.astimezone(rules.TZ).date())
+        late = bool(etd and etd.astimezone(rules.timezone()).date() < now.astimezone(rules.timezone()).date())
         text = (f"Pickup was due {etd:%a} and {supplier} has not confirmed it happened." if late else
                 f"Booked with {supplier}; pickup not confirmed yet.")
         state = "Late" if late else "Booked"
@@ -261,7 +261,7 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
 
     if status in ("in_transit", "in_delivery", "delayed"):
         if shipment["makes_cutoff"] is False and not logged:
-            return "track", next_step("After launch", "Arrives after Sunday's receiving cutoff, so it does not count for the launch.", updated)
+            return "track", next_step("After launch", "Arrives after the receiving cutoff, so it does not count for the launch.", updated)
         if logged:
             return "track", logged
         if arrival and arrival < now:
@@ -269,7 +269,7 @@ def shipment_progress(shipment: dict, related: list[dict], supplier: str, hold: 
         if status == "delayed" or any("no carrier update" in flag for flag in shipment["flags"]):
             return "track", next_step("Stuck", "Get a fresh arrival estimate from the carrier.", updated)
         if shipment["makes_cutoff"] is False:
-            return "track", next_step("After launch", "Arrives after Sunday's receiving cutoff, so it does not count for the launch.", updated)
+            return "track", next_step("After launch", "Arrives after the receiving cutoff, so it does not count for the launch.", updated)
         return "track", next_step("On the way", f"Track the shipment to {rules.cfg('site_name')}.", updated)
     return "confirm", logged or next_step("Stuck", "Check shipment status with the supplier.", updated)
 
@@ -309,32 +309,40 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     arrival = shipment["arrival_at_dc"]
     received = shipment["status"] in ("delivered", "arrived_dc")
     at_port = shipment["status"] == "arrived_port"
-    hold = next((flag for flag in flags if flag.startswith("supplier hold")), None)
+    review = shipment.get("quantity_review")
+    hold = ("Conflicting shipment quantity. Hold for review." if review
+            else next((flag for flag in flags if flag.startswith("supplier hold")), None))
     moving = shipment["status"] in ("in_transit", "in_delivery", "arrived_port", "delivered", "arrived_dc")
     uncertain = next((flag for flag in flags if "truck ban" in flag or "no carrier update" in flag), None)
     latest_reply = latest_summary(related)
     transport = "blocked" if hold else "pending" if uncertain or not moving else "confirmed"
     receiving = "confirmed" if received else "blocked" if shipment["makes_cutoff"] is False else "pending"
-    if received:
+    if review:
+        receiving, receiving_note = "blocked", hold
+    elif received:
         receiving_note = "The shipment record shows this load arrived. Usable stock is counted from inventory records."
     elif arrival and shipment["makes_cutoff"] is False:
-        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.TZ):%a %d %b %H:%M}, after the receiving cutoff."
+        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}, after the receiving cutoff."
     elif arrival:
-        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.TZ):%a %d %b %H:%M}. Receiving is still open."
+        receiving_note = f"Expected {rules.ts(arrival).astimezone(rules.timezone()):%a %d %b %H:%M}. Receiving is still open."
     else:
         receiving_note = "Arrival and a receiving slot still need confirmation."
     source = suppliers.get(shipment["supplier_id"], "Supplier shipment")
     stage, next_action = shipment_progress(shipment, related, suppliers.get(shipment["supplier_id"], "the supplier"), hold, now)
+    if review:
+        stage, next_action = "confirm", next_step("Needs you", hold, shipment["updated_at"]) | {"reviewRequired": True}
     mode = {"sea": "Container", "air": "Air freight", "road": "Truck"}.get(shipment["mode"], "Shipment")
     steps = [step("Supplier release", "blocked" if hold else "confirmed" if moving else "pending",
                   hold or ("Dispatch appears in the shipment record." if moving else "The tracker shows a booking. Dispatch has yet to be confirmed."))]
     if at_port:
         steps.extend([step("Port arrival", "confirmed", "The container is at the terminal, ready for pickup."),
-                      step("Truck pickup", "pending", "A carrier pickup still needs confirmation.")])
+                      step("Truck pickup", "blocked" if review else "pending", hold if review else "A carrier pickup still needs confirmation.")])
     else:
         steps.append(step("Transport", transport, hold or uncertain or "The shipment tracker records this leg."))
     steps.append(step("Receiving", receiving, receiving_note))
     sources = [evidence(path.rsplit("/", 1)[-1], f"Shipment {ref}") for path in shipment["evidence"]]
+    if review:
+        sources = [evidence(claim["source"], f"Reports {claim['value']} units") for claim in review]
     if latest_reply:
         sources.insert(0, evidence(f"Supplier reply from {latest_reply['from_name']}", latest_reply["summary_en"]))
     return {"id": shipment["shipment_id"], "name": f"{mode} from {source}" if source != "Supplier shipment" else mode,
@@ -351,7 +359,7 @@ def embedded_components(conn: sqlite3.Connection, coverage: dict) -> dict:
         match = re.search(r"fitted by supplier into\s+([\w-]+)", note, re.IGNORECASE)
         if match and match[1] in coverage and component in coverage and coverage[component]["suspect_master_data"]:
             findings[component][match[1]] = {"componentId": match[1], "supplier": supplier,
-                                            "evidence": evidence(f"{folder}/components.csv", note.split("|", 1)[0].strip())}
+                                            "evidence": evidence(customer.supplier_path(rules.cfg("sources"), folder, "supplier_components"), note.split("|", 1)[0].strip())}
     return {component: next(iter(parents.values())) for component, parents in findings.items() if len(parents) == 1}
 
 
@@ -441,7 +449,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
     steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units."),
              step("Transport", "pending", (offer.get("transport") or "Carrier and travel time still need confirmation.").rstrip(". ")
-                  + ". Vehicle size and a legal Sunday route still need confirming."),
+                  + ". Vehicle size and any road restrictions still need confirming."),
              step("Dock slot", "pending", f"Dockside books the unload slot with {rules.cfg('site_name')}; the site lead can move or stop it."),
              step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
              step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
@@ -454,7 +462,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         if index is None:
             continue
         when = rules.ts(action.get("updated_at"))
-        stamp = f" {when.astimezone(rules.TZ):%a %H:%M}" if when else ""
+        stamp = f" {when.astimezone(rules.timezone()):%a %H:%M}" if when else ""
         answers = [r for r in replies if r.get("action_id") == action["id"] and r.get("summary_en")]
         answer = f" {answers[-1]['from_name']} answered: {_first_sentence(answers[-1]['summary_en'])}" if answers else ""
         # A request is not a confirmation: only the other side's answer can close a step, so it stays open here.
@@ -474,7 +482,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     else:
         # The supplier has answered but transport and the unload slot are still open: say who we wait for.
         heard = rules.ts(active["received_at"]) if active else None
-        last = f" (last answer {heard.astimezone(rules.TZ):%H:%M})" if heard else ""
+        last = f" (last answer {heard.astimezone(rules.timezone()):%H:%M})" if heard else ""
         next_action = next_step("Waiting for reply", f"{supplier} has {quantity:,} ready but no truck to bring them yet{last}.",
                                 active["received_at"] if active else None, active["action_id"] if active else None)
     stage = "confirm" if any(action["kind"] == "order" and action["status"] == "done"
@@ -490,24 +498,26 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
                            "sharedSteps": ["Dock slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
 
 
-def snapshot(checked_at: str | None) -> dict:
+def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = True) -> dict:
     priority = rules.cfg("priority_product")
     deadline = rules.ts(rules.cfg("deadline"))
     cutoff = deadline - dt.timedelta(hours=rules.cfg("receiving_buffer_hours"))
     now = rules.now()
 
-    with closing(actions.con()) as log:
-        action_log = linked_actions(log)
-        decisions = [dict(row) for row in log.execute("""SELECT id,title,rationale,status,approver_name,next_check_at,due_at
-                     FROM actions WHERE status IN ('proposed','escalated','scheduled') ORDER BY due_at, eur_protected DESC""")]
-        activity = readable_activity(log)
-    for decision in decisions:
-        action = actions.get(decision["id"])
-        decision["cost"] = action["cost_eur"]
-        decision["details"] = action["payload"].get("details")
-        decision["messages"] = [{key: msg[key] for key in ("to_name", "subject", "body", "body_en")} for msg in action["messages"]]
+    action_log, decisions, activity = defaultdict(list), [], {}
+    if include_activity:
+        with closing(actions.con()) as log:
+            action_log = linked_actions(log)
+            decisions = [dict(row) for row in log.execute("""SELECT id,title,rationale,status,approver_name,next_check_at,due_at
+                         FROM actions WHERE status IN ('proposed','escalated','scheduled') ORDER BY due_at, eur_protected DESC""")]
+            activity = readable_activity(log)
+        for decision in decisions:
+            action = actions.get(decision["id"])
+            decision["cost"] = action["cost_eur"]
+            decision["details"] = action["payload"].get("details")
+            decision["messages"] = [{key: msg[key] for key in ("to_name", "subject", "body", "body_en")} for msg in action["messages"]]
 
-    with closing(sqlite3.connect(f"file:{rules.DB_PATH}?mode=ro", uri=True)) as conn:
+    with closing(sqlite3.connect(f"{(db_path or rules.DB_PATH).resolve().as_uri()}?mode=ro", uri=True)) as conn:
         picture = rules.launch_picture(conn)
         coverage = rules.component_coverage(conn, picture)
         bom = defaultdict(dict)
@@ -531,8 +541,8 @@ def snapshot(checked_at: str | None) -> dict:
             orders[material].append({"supplierId": supplier, "poNumber": po})
         places = {code: {"name": name, "lat": lat, "lon": lon} for code, name, lat, lon in
                   conn.execute("SELECT locode,name,lat,lon FROM ports") if coordinates(lat, lon)}
-        site = rules.CONFIG["site"]
-        port = rules.CONFIG.get("site_port", {}).get("value")
+        site = rules.setting("site")
+        port = rules.cfg("site_port")
         if site not in places and port in places:
             places[site] = {**places[port], "name": f"{rules.cfg('site_name')} area"}
         embedded = embedded_components(conn, coverage)
@@ -579,12 +589,13 @@ def snapshot(checked_at: str | None) -> dict:
             stock_route = {"id": f"stock-{cid}", "name": f"Stock in {rules.cfg('site_name')}", "quantity": None if status == "verify" else inventory,
                            "steps": [step("Warehouse stock", "unknown" if status == "verify" else "confirmed",
                                           "Check whether this item is stocked separately." if status == "verify" else "Usable quantity after receipt corrections and quality holds.")],
-                           "evidence": [evidence("stock_snapshot.csv", "Stock snapshot adjusted for estimated consumption since the snapshot.")],
+                           "evidence": [evidence(rules.cfg("sources")["paths"]["stock"], "Stock snapshot adjusted for estimated consumption since the snapshot.")],
                            "current_stage": stage, "next_step": stock_next}
             launch_shipment = next((shipment_routes[s["shipment_id"]] for s in inbound if s["status"] not in received
-                                    and (s["planned_for_launch"] or s["status"] == "arrived_port")), None)
+                                    and not s["quantity_review"] and (s["planned_for_launch"] or s["status"] == "arrived_port")), None)
+            review_route = next((shipment_routes[s["shipment_id"]] for s in inbound if s["quantity_review"]), None)
             viable_offer = next((route for route, scenario in route_options if scenario["timingState"] != "expired"), None)
-            primary_route = (viable_offer or launch_shipment or stock_route) if status == "short" else stock_route
+            primary_route = (viable_offer or launch_shipment or review_route or stock_route) if status == "short" else stock_route
             routes = [route for route, _ in route_options] + list(shipment_routes.values()) + [stock_route]
             latest = latest_summary(gap_actions)
             components.append({"id": cid, "name": name, "status": status, "usable": inventory, "required": stock["need_total"],
@@ -593,10 +604,10 @@ def snapshot(checked_at: str | None) -> dict:
                                "adjustments": [{"detail": adj["detail"], "evidence": adj.get("evidence", [])} for adj in stock["adjustments"]],
                                "latestActivity": latest["summary_en"] if latest else None, "default_route_id": primary_route["id"],
                                "current_stage": primary_route["current_stage"],
-                               "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" else primary_route["next_step"]})
+                               "next_step": gap_next if gap_next and gap_next["state"] == "Needs you" and primary_route is not review_route else primary_route["next_step"]})
 
     from core import followup
-    reviews = followup.last_reviews()
+    reviews = followup.last_reviews() if include_activity else {}
     for part in components:  # say what Dockside does next and when (only when follow-ups are switched on)
         last_useful = followup.deadline_for(part, cutoff)
         default = next((route for route in part["routes"] if route["id"] == part["default_route_id"]), None)

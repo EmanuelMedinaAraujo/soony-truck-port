@@ -1,0 +1,4 @@
+locode,name,country,lat,lon,mode
+NLRTM,Rotterdam,NL,51.95,4.14,sea
+BEANR,Antwerp,BE,51.26,4.41,sea
+NLUTR,Utrecht,NL,52.09,5.12,road

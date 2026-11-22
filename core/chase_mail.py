@@ -3,46 +3,47 @@ from __future__ import annotations
 
 import re
 
+from core import rules
 from core.chase_evidence import day, quantity
 
 
 # Render supplier mail directly from the PO so previews and live mail are identical.
 WORDING = {
     "en": (
-        "Could you confirm the following for delivery to Hamburg?",
+        "Could you confirm the following for delivery to {site}?",
         "Thank you.",
-        "A quick follow-up on the Hamburg delivery below.",
+        "A quick follow-up on the {site} delivery below.",
         "For line {line} ({name}), please confirm how many of the {qty} units will arrive and when, including any split deliveries. "
         "The requested delivery date on our order is {date}.",
         "Please also confirm the artwork or drawing revision.",
     ),
     "de": (
-        "Können Sie uns die folgenden Angaben zur Lieferung nach Hamburg bestätigen?",
+        "Können Sie uns die folgenden Angaben zur Lieferung nach {site} bestätigen?",
         "Vielen Dank.",
-        "Eine kurze Nachfrage zur Lieferung nach Hamburg.",
+        "Eine kurze Nachfrage zur Lieferung nach {site}.",
         "Bitte bestätigen Sie für Position {line} ({name}), wie viele der {qty} Stück wann eintreffen, auch bei Teillieferungen. "
         "Der gewünschte Liefertermin laut Bestellung ist der {date}.",
         "Bitte bestätigen Sie auch den Stand der Druckdatei oder Zeichnung.",
     ),
     "pl": (
-        "Czy mogą Państwo potwierdzić poniższe informacje o dostawie do Hamburga?",
+        "Czy mogą Państwo potwierdzić poniższe informacje o dostawie do {site}?",
         "Dziękujemy.",
-        "Wracamy z krótkim pytaniem o dostawę do Hamburga.",
+        "Wracamy z krótkim pytaniem o dostawę do {site}.",
         "Dla pozycji {line} ({name}) prosimy potwierdzić, ile z {qty} sztuk dotrze i kiedy, również przy dostawach częściowych. "
         "Termin dostawy w zamówieniu to {date}.",
         "Prosimy również o potwierdzenie wersji grafiki lub rysunku.",
     ),
     "zh": (
-        "请确认以下发往汉堡的交货信息。",
+        "请确认以下发往{site}的交货信息。",
         "谢谢。",
-        "我们想跟进以下汉堡交货信息。",
+        "我们想跟进以下{site}交货信息。",
         "请确认第 {line} 行（{name}）的 {qty} 件货物何时送达，每批各有多少件。订单要求的交货日期是 {date}。",
         "也请确认印刷文件或图纸的版本。",
     ),
     "ko": (
-        "다음 함부르크 납품 정보를 확인해 주시겠습니까?",
+        "다음 {site} 납품 정보를 확인해 주시겠습니까?",
         "감사합니다.",
-        "아래 함부르크 납품 건을 다시 문의드립니다.",
+        "아래 {site} 납품 건을 다시 문의드립니다.",
         "{line}번 항목({name})의 {qty}개에 대해 도착 일정과 수량을 확인 부탁드립니다. "
         "분할 납품 시 각 납품의 수량과 일정을 알려 주세요. 주문서의 요청 납품일은 {date}입니다.",
         "인쇄 파일 또는 도면의 버전도 확인해 주세요.",
@@ -52,7 +53,8 @@ WORDING = {
 
 def _body(language, lines, reminder):
     opening, closing, follow_up, question, revision = WORDING[language]
-    paragraphs = [follow_up if reminder else opening]
+    site = rules.cfg("localized_site_names").get(language, rules.cfg("site_name"))
+    paragraphs = [(follow_up if reminder else opening).format(site=site)]
     for line, kinds in lines:
         text = question.format(line=line.key[2], name=line.name, qty=f"{line.qty:g}", date=line.need.isoformat())
         if line.revision or "contradicting_revision" in kinds:
@@ -66,16 +68,16 @@ def _body(language, lines, reminder):
                 "ko": "어떤 주문 확인서가 유효한지와 변경 사항도 알려 주세요.",
             }[language]
         paragraphs.append(text)
-    paragraphs.extend([closing, "Dockside | Soony"])
+    paragraphs.extend([closing, f"Dockside | {rules.cfg('customer_name')}"])
     return "\n\n".join(paragraphs)
 
 
 SUBJECTS = {
-    "en": "Purchase order {po} — Hamburg delivery",
-    "de": "Bestellung {po} — Lieferung nach Hamburg",
-    "pl": "Zamówienie {po} — dostawa do Hamburga",
-    "zh": "采购订单 {po} — 汉堡交货",
-    "ko": "발주서 {po} — 함부르크 납품",
+    "en": "Purchase order {po} — {site} delivery",
+    "de": "Bestellung {po} — Lieferung nach {site}",
+    "pl": "Zamówienie {po} — dostawa do {site}",
+    "zh": "采购订单 {po} — {site}交货",
+    "ko": "발주서 {po} — {site} 납품",
 }
 
 
@@ -85,9 +87,10 @@ def draft(lines, *, reminder=False, address=None, subject=None):
     language = (supplier.get("language") or "en").strip().casefold()
     if language not in WORDING:
         language = "en"
+    site = rules.cfg("localized_site_names").get(language, rules.cfg("site_name"))
     return {"channel": "email", "to_name": supplier.get("contact_name") or supplier.get("name") or line.key[0],
             "to_address": address or supplier["contact_email"], "language": language,
-            "subject": subject or SUBJECTS[language].format(po=line.key[1]),
+            "subject": subject or SUBJECTS[language].format(po=line.key[1], site=site),
             "body": _body(language, lines, reminder),
             "body_en": _body("en", lines, reminder) if language != "en" else None,
             "po_numbers": [line.key[1]]}
@@ -107,11 +110,10 @@ def _quoted_date(token):
     return day(f"{year:04d}-{month:02d}-{day_of_month:02d}")
 
 
-# Auto-resolution requires a clear commitment to arrival in Hamburg. Estimates,
+# Auto-resolution requires a clear commitment to arrival at the configured site. Estimates,
 # dispatches, split shipments and commitments conditional on anything go to review.
 AFFIRMATIVE = re.compile(r"\b(?:we confirm|wir bestätigen|potwierdzamy)\b|我们确认|我方确认|확인합니다", re.I)
 ARRIVAL = re.compile(r"\b(?:arriv\w*|deliver\w*|eintreff\w*|liefer\w*|dotr\w*|dostaw\w*)\b|送达|到达|납품|도착", re.I)
-HAMBURG = re.compile(r"\b(?:Hamburg|Hamburga|DC-HAM)\b|汉堡|함부르크", re.I)
 HEDGING = re.compile(
     r"\b(?:no|not|cannot|can't|won't|unable|if|estimate\w*|expect\w*|plan\w*|partial|split|balance|remaining|subject to|"
     r"nicht|voraussichtlich|geplant|sofern|falls|nie|szacuj\w*|planuj\w*|jeżeli|warunk\w*)\b"
@@ -140,7 +142,9 @@ def interpret(reply, lines):
 
 
 def _confirmation(quote, reply, line, multiple):
-    if "?" in quote or "？" in quote or not AFFIRMATIVE.search(quote) or not HAMBURG.search(quote):
+    site_names = [re.escape(alias) for alias in rules.cfg("site_aliases")]
+    site_pattern = r"(?<![A-Za-z0-9])(?:" + "|".join(site_names) + r")(?![A-Za-z0-9])"
+    if "?" in quote or "？" in quote or not AFFIRMATIVE.search(quote) or not re.search(site_pattern, quote, re.I):
         return None
     arrival = ARRIVAL.search(quote)
     dates = list(DATE_IN_QUOTE.finditer(quote))

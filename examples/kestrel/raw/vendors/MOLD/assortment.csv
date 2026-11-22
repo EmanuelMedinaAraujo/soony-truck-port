@@ -1,0 +1,5 @@
+part_sku,share,unit_price,currency,lead_time_days,primary
+RB-FRAME,1,5,EUR,2,Y
+RB-GEAR,1,5,EUR,2,Y
+RB-SCREW,1,5,EUR,2,Y
+RB-SHELL,1,5,EUR,2,Y

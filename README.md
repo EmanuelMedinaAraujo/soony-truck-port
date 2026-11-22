@@ -35,3 +35,19 @@ Set `ELEVENLABS_API_KEY` in `.env` to use the provider and enable **Try it live*
 Free actions run automatically. Paid actions email the responsible approver once. Eligible actions have a 15-minute stop window once the email is sent. Other paid actions wait for explicit approval. Each email link opens a confirmation page before recording the decision. A stop-window link expires at the end of its window. Links for actions that require approval expire after seven days.
 
 Set `PUBLIC_URL` and the SMTP settings in `.env`. Add known recipients under `staff_email.value` in `config/business.json`. The demo routes staff mail to Gmail plus-addresses derived from `MAIL_FROM`. Successful sends appear in action history and recent activity.
+
+## Second customer in a day
+
+Run the same typed ingest, detectors and dispatch forecast for Kestrel Toys' Robot Builder Set before its Rotterdam departure on December 12 at 06:00 local time.
+
+```sh
+.venv/bin/python examples/run_customer.py examples/kestrel
+```
+
+Each run uses a temporary working tree and SQLite database with a fixed replay clock. The runner reads the checked-in document facts and performs no network calls. Pass `--through 2` to stop after the second drop.
+
+To set up another replay, copy the structure of [Kestrel's mapping](examples/kestrel/business.json). Review the site, deadline, shifts, priority edition and cost per missing unit against the customer's operating policy. In `sources.value.paths`, map each source to its file path relative to `raw/` or to the glob for a set of files. Supplier profile and catalog paths are relative to each supplier's folder. In `sources.value.columns`, map canonical field names to the headers in the exports. Unmapped headers use their canonical names. The launch-status input accepts CSV or XLSX and matches edition IDs against the product catalog. Put the initial exports in `raw/`, reviewed document facts in `doc_facts/` and each subsequent set of changed files in `drops/<number>/`, using the original relative paths. The replay applies each drop on top of the prior one.
+
+- **Drop 1** finds a receipt booked as 500 motors against an order for 50. It excludes 450 from usable stock. Deluxe is 30 short and Classic is 100 short.
+- **Drop 2** adds a verified receipt of 100 motors and brings the remaining truck ETA forward. Deluxe is fully covered and Classic is 30 short. The on-time truck's 30 motors are still in transit.
+- **Drop 3** adds an independent carrier manifest for the same booking. It reports 12 motors against the truck board's 30. Dockside shows both claims and holds the shipment for review. The confirmed forecast stays at 0 Deluxe and 30 Classic short.

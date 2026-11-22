@@ -1,10 +1,20 @@
 {
   "_comment": "Business rules learned from interviews and documents. Every value carries its source so the agent can cite it. Edit here, never in code.",
   "site": "DC-HAM",
-  "site_port": {"value": "DEHAM", "source": "UN/LOCODE of the nearest port, used to place the site on the map when the site has no coordinates"},
-  "site_name": {"value": "Hamburg", "source": "org_chart_v2.pdf / onboarding notes: distribution center Hamburg (DC-HAM)"},
+  "site_port": {
+    "value": "DEHAM",
+    "source": "UN/LOCODE of the nearest port, used to place the site on the map when the site has no coordinates"
+  },
+  "site_name": {
+    "value": "Hamburg",
+    "source": "org_chart_v2.pdf / onboarding notes: distribution center Hamburg (DC-HAM)"
+  },
   "voice": {
-    "value": {"enabled": true, "dial_out": false, "demo_number": null},
+    "value": {
+      "enabled": true,
+      "dial_out": false,
+      "demo_number": null
+    },
     "source": "Dockside automatically rehearses calls with ElevenLabs or a local mock. Telephone mode uses only a configured demo destination on an ElevenLabs SIP line."
   },
   "timezone": "+01:00",
@@ -162,5 +172,131 @@
       "internal_emails": {}
     },
     "source": "Supplier Chaser runs in the Dockside service. Procurement escalations use Discord unless an internal email is configured by name."
+  },
+  "customer_name": {
+    "value": "Soony",
+    "source": "Challenge briefing"
+  },
+  "launch_name": {
+    "value": "Grand Heist 6",
+    "source": "Challenge briefing"
+  },
+  "edition_labels": {
+    "value": {
+      "priority": "Collector's Edition",
+      "priority_copies": "Collector's copies",
+      "other": "Standard"
+    },
+    "source": "Product catalog"
+  },
+  "priority_category": {
+    "value": "Collector's Items",
+    "source": "Soony organization chart"
+  },
+  "site_lead_role": {
+    "value": "Site Lead DC-HAM (dock slots)",
+    "source": "Soony organization chart"
+  },
+  "site_aliases": {
+    "value": [
+      "Hamburg",
+      "Hamburga",
+      "DC-HAM",
+      "汉堡",
+      "함부르크"
+    ],
+    "source": "Site names used in carrier and supplier communications"
+  },
+  "sources": {
+    "source": "Reviewed against the Soony portal export and launch workbooks.",
+    "value": {
+      "paths": {
+        "products": "soony/master/products.csv",
+        "components": "soony/master/components.csv",
+        "component_updates": "soony/master/components_update_*.csv",
+        "bom": "soony/master/bom.csv",
+        "bom_deltas": "soony/master/bom_delta_*.csv",
+        "carriers": "soony/master/logistics_providers.csv",
+        "ports": "soony/master/ports.csv",
+        "sites": "soony/master/sites.csv",
+        "routes": "soony/master/routes.csv",
+        "supplier_root": "suppliers",
+        "supplier_profile": "profile.csv",
+        "supplier_profile_json": "profile.json",
+        "supplier_components": "components.csv",
+        "supplier_deltas": "components_delta*.csv",
+        "purchase_orders": "soony/erp/purchase_orders_*.csv",
+        "receipts": "soony/erp/goods_receipts.csv",
+        "stock": "soony/erp/stock_snapshot.csv",
+        "shipments": "soony/erp/open_shipments.csv",
+        "shipment_tracker": "soony/logistics/*.xlsx",
+        "inbound_plan": "soony/context/*.xlsx",
+        "launch": "soony/context/*.xlsx",
+        "receiving": "soony/receiving",
+        "news": "soony/news",
+        "mail": "soony/mail",
+        "inbox": "soony/inbox"
+      },
+      "columns": {
+        "shipment_tracker": {
+          "shipment_id": "Shipment",
+          "reference": "Container/AWB",
+          "status": "Status",
+          "eta": "ETA",
+          "etd": "ETD",
+          "note": "Comment"
+        },
+        "inbound_plan": {
+          "reference": "Reference",
+          "quantity": "Quantity",
+          "status": "Status",
+          "eta": "ETA",
+          "material_id": "Part"
+        },
+        "launch": {
+          "product_id": "Product",
+          "demand": "Day-one demand",
+          "packed": "Packed",
+          "still_to_pack": "Still to pack",
+          "rate_per_hour": "Rate per hour"
+        }
+      },
+      "inbound_sheet": "Inbound",
+      "supplier_folder_separator": "_",
+      "legacy_sap_po": {
+        "supplier_id_format": "SUP-{number:04d}",
+        "line_divisor": 10,
+        "status_codes": {
+          "GL": "delivered",
+          "LO": "open"
+        }
+      },
+      "document_po_pattern": "45[0-9]{8}",
+      "portal": {
+        "base_url": "https://start-hack-portal-cxh3crbdaef2f8gt.westeurope-01.azurewebsites.net",
+        "archive_root": "soony-data"
+      },
+      "material_prefixes": [
+        "CMP",
+        "FG",
+        "PRM"
+      ]
+    }
+  },
+  "localized_site_names": {
+    "value": {
+      "pl": "Hamburga",
+      "zh": "汉堡",
+      "ko": "함부르크"
+    },
+    "source": "Site spelling in templates and supplier replies"
+  },
+  "spend_priority_guidance": {
+    "value": "Standard has low margin and sells next week. Avoid air freight and rush orders for Standard. Propose cheap drayage, a dock slot, a call or a terms confirmation for either edition.",
+    "source": "memo_launch_priorities.docx and buyer interview"
+  },
+  "master_db": {
+    "value": "soony.db",
+    "source": "Name of the rebuildable SQLite database in the customer data directory"
   }
 }

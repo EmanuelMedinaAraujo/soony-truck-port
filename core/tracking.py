@@ -159,7 +159,7 @@ def schedule_progress(now: dt.datetime, etd: str | None, eta: str | None) -> flo
         return None
     if not departed or not arrives or arrives <= departed:
         return None
-    now = now if now.tzinfo else now.replace(tzinfo=rules.TZ)
+    now = now if now.tzinfo else now.replace(tzinfo=rules.timezone())
     return min(1, max(0, (now - departed) / (arrives - departed)))
 
 
@@ -207,7 +207,7 @@ def reported_position(shipment: dict, stops: list[dict]) -> dict | None:
         return None
     point = point_of(position)
     # A coarse coastline does not resolve the approach to many berths. The
-    # Hamburg terminal and truck pickup also share the port's ERP coordinates.
+    # The terminal and truck pickup also share the port's ERP coordinates.
     sea = shipment["mode"] == "sea"
     inland = sea and is_on_land(point) and all(distance_km(point, point_of(stop)) > 20 for stop in stops)
     plausibility = "implausible" if inland else "unconfirmed" if shipment["status"] == "booked" else "plausible"
@@ -382,7 +382,7 @@ def match_flights(shipment: dict, now: dt.datetime, line: tuple[Point, ...], *, 
         return result
 
     etd = int(departure.timestamp())
-    now = now if now.tzinfo else now.replace(tzinfo=rules.TZ)
+    now = now if now.tzinfo else now.replace(tzinfo=rules.timezone())
     mock = os.getenv("TRACKING_MOCK") == "1"
     if mock:
         source_status, rows = "mock", []

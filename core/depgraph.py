@@ -26,10 +26,7 @@ TERMS = [
     (re.compile(r"\bDAP\s+([A-Z][\w-]+)"), r"delivery to \1 (DAP)"),
     (re.compile(r"\bEXW\s+([A-Z][\w-]+)"), r"pickup at \1 (EXW)"),
     (re.compile(r"\bFCA\s+([A-Z][\w-]+)"), r"handover to our carrier in \1 (FCA)"),
-    (re.compile(r"\bBuyer order\b"), "Soony's order"),
-    (re.compile(r"\bBuyer\b"), "Soony"),
     (re.compile(r"\bcompleted PPAP\b"), "a completed quality approval (PPAP)"),
-    (re.compile(r"\bbuyer\b"), "Soony"),
     (re.compile(r"\bULDs?\b"), "air cargo containers"),
     (re.compile(r"\bpcs\b"), "pieces"),
 ]
@@ -39,6 +36,9 @@ def plain(text: str | None) -> str | None:
     """Supplier jargon in plain words: delivery terms, 'Buyer', ULDs; tidy doubled full stops."""
     if not text:
         return text
+    customer_name = rules.cfg("customer_name")
+    text = re.sub(r"\bBuyer order\b", lambda _: f"{customer_name}'s order", text)
+    text = re.sub(r"\b[Bb]uyer\b", lambda _: customer_name, text)
     for pattern, replacement in TERMS:
         text = pattern.sub(replacement, text)
     text = re.sub(r"\.{2,}", ".", text)
@@ -99,19 +99,20 @@ def supplier_risks(conn, supplied_parts):
 
 def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str]]:
     """(short card line, full sentence) per problem, most serious first; a single ('', ...) entry when all is well."""
+    if claims := shipment.get("quantity_review"):
+        return [(0, "Hold for review", rules.shipment_review_detail(claims))]
     found = []
     for flag in shipment["flags"]:
         if flag.startswith("supplier hold"):
             reason, _, condition = flag.removeprefix("supplier hold:").partition("->")
             found.append((0, "Held by the supplier", plain(f"Held by the supplier: {reason.strip()}." + (f" Released when: {condition.strip()}." if condition.strip() else ""))))
         elif "no truck booked" in flag:
-            found.append((1, "Waiting at the port", "Waiting at the port. No truck is booked to Hamburg yet."))
+            found.append((1, "Waiting at the port", f"Waiting at the port. No truck is booked to {rules.cfg('site_name')} yet."))
         elif "passed but still 'booked'" in flag:
             due = rules.ts(shipment["etd"])
             found.append((3, "Not picked up yet", f"Not picked up yet: pickup was due {due:%a %d %b} but the carrier hasn't confirmed it, so the arrival moves later." if due else "Not picked up yet."))
         elif "truck ban" in flag:
-            moment = re.search(r"Sunday (\d\d:\d\d)", flag)
-            found.append((4, "Sunday truck ban", f"Arrives Sunday{' ' + moment[1] if moment else ''}, when trucks over 7.5 t may not drive in Germany. Needs a van, a permit or a Saturday arrival."))
+            found.append((4, "Truck ban", flag[:1].upper() + flag[1:] + "."))
         elif "no carrier update" in flag:
             hours = re.search(r"(\d+) h", flag)
             found.append((6, "No carrier update", f"No carrier update for {hours[1] if hours else 'many'} hours."))
@@ -230,8 +231,8 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
         holder = coverage.get(fitted_into[0], {}) if fitted_into else own
         short = holder.get("gap", 0) < 0 and not holder.get("suspect_master_data")
         nodes[component_id].update(status="ok", detail=None)
-        verdict = (f"{-holder['gap']:,} short in Hamburg." if short else
-                   "Enough usable stock in Hamburg for the launch. The issues below don't affect it.")
+        verdict = (f"{-holder['gap']:,} short in {rules.cfg('site_name')}." if short else
+                   f"Enough usable stock in {rules.cfg('site_name')} for the launch. The issues below don't affect it.")
 
         def calm(status):
             return status if short or status == "ok" else "info"
@@ -390,7 +391,7 @@ def annotate(graph: dict, component: dict | None) -> dict:
         if node["kind"] not in {"risk", "shipment"} or node["id"].startswith("later:"):
             continue
         if not graph.get("short"):
-            node["doing"] = "Nothing to do: Hamburg already has enough of this part."
+            node["doing"] = f"Nothing to do: {rules.cfg('site_name')} already has enough of this part."
         elif node["id"] in by_route:
             node["doing"] = route_doing(by_route[node["id"]])
         else:

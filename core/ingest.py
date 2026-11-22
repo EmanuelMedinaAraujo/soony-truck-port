@@ -16,12 +16,18 @@ import io
 import json
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
+
+from core import customer, rules
+
 DATA = ROOT / "data"
 CURRENT = DATA / "current"
-DB_PATH = DATA / "soony.db"
+DB_PATH = rules.DB_PATH
 
 SCHEMA = """
 CREATE TABLE sources(path TEXT PRIMARY KEY, kind TEXT, sha256 TEXT, last_changed TEXT);
@@ -167,7 +173,25 @@ def pdf_text(path: Path) -> str:
 
 
 # ---------- loaders ----------
-def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
+def build(db_path: Path = DB_PATH, current: Path = CURRENT, *, facts_dir: Path | None = None) -> dict:
+    sources = rules.cfg("sources")
+    paths, columns = sources["paths"], sources.get("columns", {})
+    facts_dir = facts_dir if facts_dir is not None else current.parent / "doc_facts"
+
+    def mapped(key, rows):
+        aliases = columns.get(key, {})
+        for row in rows:
+            yield {**row, **{field: row[header] for field, header in aliases.items() if header in row}}
+
+    def read(key, path=None):
+        return mapped(key, read_csv(path if path is not None else current / paths[key]))
+
+    def matches(key, root=current):
+        return sorted(root.glob(paths[key])) if paths.get(key) else []
+
+    def workbook_rows(key, rows, field):
+        return mapped(key, header_rows(rows, columns.get(key, {}).get(field, field)))
+
     tmp = db_path.with_suffix(".building")
     tmp.unlink(missing_ok=True)
     con = sqlite3.connect(tmp)
@@ -181,7 +205,8 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
         con.execute("INSERT INTO observations VALUES (?,?,?,?,?,?,?)",
                     (entity, eid, field, None if value is None else str(value), source, as_of, note))
 
-    manifest = json.loads((DATA / "manifest.json").read_text()) if (DATA / "manifest.json").exists() else {}
+    manifest_path = current.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     files = sorted(p for p in current.rglob("*") if p.is_file())
     for p in files:
         rel = str(p.relative_to(current))
@@ -200,8 +225,6 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
         except Exception as e:
             issue(rel, f"raw load failed: {e}")
 
-    S = current / "soony"
-
     def safe(fn):
         try:
             fn()
@@ -211,24 +234,24 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
             issue(fn.__name__, f"{type(e).__name__}: {e}")
 
     def master():
-        for r in read_csv(S / "master/products.csv"):
+        for r in read("products"):
             con.execute("INSERT INTO products VALUES (?,?,?,?,?,?)", (r["product_id"], r["name"], r["lifecycle"], r["launch_date"],
                         num(r.get("day_one_qty")), num(r.get("std_cost_eur"), False)))
-        comps = {r["component_id"]: r for r in read_csv(S / "master/components.csv")}
-        for f in sorted((S / "master").glob("components_update_*.csv")):
-            for u in read_csv(f):
+        comps = {r["component_id"]: r for r in read("components")}
+        for f in matches("component_updates"):
+            for u in read("component_updates", f):
                 c = comps.get(u["component_id"])
                 if not c:
                     issue(str(f), f"update for unknown component {u['component_id']}")
                     continue
-                obs("component", u["component_id"], u["field"], c.get(u["field"]), "soony/master/components.csv")
-                obs("component", u["component_id"], u["field"], u["new"], str(f.relative_to(S.parent)), note=f"changed_by {u.get('changed_by')}")
+                obs("component", u["component_id"], u["field"], c.get(u["field"]), paths["components"])
+                obs("component", u["component_id"], u["field"], u["new"], str(f.relative_to(current)), note=f"changed_by {u.get('changed_by')}")
                 c[u["field"]] = u["new"]
         for c in comps.values():
             con.execute("INSERT INTO components VALUES (?,?,?,?,?)", (c["component_id"], c["description"], c["category"], c.get("critical"), c.get("drawing_rev")))
-        bom = {(r["parent_id"], r["child_id"]): dict(r) for r in read_csv(S / "master/bom.csv")}
-        for f in sorted((S / "master").glob("bom_delta_*.csv")):
-            for d in read_csv(f):
+        bom = {(r["parent_id"], r["child_id"]): dict(r) for r in read("bom")}
+        for f in matches("bom_deltas"):
+            for d in read("bom_deltas", f):
                 k = (d["parent_id"], d["child_id"])
                 b = bom.setdefault(k, {"parent_id": k[0], "child_id": k[1], "qty_per": d.get("qty_per_new")})
                 if d.get("action") == "remove":
@@ -239,35 +262,35 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
         for b in bom.values():
             con.execute("INSERT INTO bom VALUES (?,?,?,?,?,?,?)", (b["parent_id"], b["child_id"], num(b["qty_per"]), b.get("rev"),
                         b.get("use_up_old_rev"), b.get("rev_effective_from"), b.get("change_id")))
-        for r in read_csv(S / "master/logistics_providers.csv"):
+        for r in read("carriers"):
             con.execute("INSERT INTO carriers VALUES (?,?,?,?,?)", (r["carrier_id"], r["name"], r["city"], r["country"], r["modes"]))
-        for r in read_csv(S / "master/ports.csv"):
+        for r in read("ports"):
             con.execute("INSERT INTO ports VALUES (?,?,?,?,?,?)", (r["locode"], r["name"], r["country"], num(r["lat"], False), num(r["lon"], False), r["mode"]))
-        for r in read_csv(S / "master/sites.csv"):
+        for r in read("sites"):
             con.execute("INSERT INTO sites VALUES (?,?,?,?)", (r["site_id"], r["name"], num(r["lat"], False), num(r["lon"], False)))
-        for r in read_csv(S / "master/routes.csv"):
+        for r in read("routes"):
             con.execute("INSERT INTO routes VALUES (?,?,?,?,?,?,?)", (r["route_id"], r["origin"], r["destination"], r["mode"], r["carrier_id"], num(r["transit_days"]), r.get("via")))
 
     def suppliers():
-        for folder in sorted((current / "suppliers").iterdir()):
-            prof = folder / "profile.csv"
+        for folder in sorted(p for p in (current / paths["supplier_root"]).iterdir() if p.is_dir()):
+            prof = folder / paths["supplier_profile"]
             if not prof.exists():
-                issue(str(folder), "no profile.csv")
+                issue(str(folder), f"no {prof.name}")
                 continue
-            comps = folder / "components.csv"
-            sid = folder.name.split("_")[0]
-            for r in read_csv(comps) if comps.exists() else []:
+            comps = folder / paths["supplier_components"]
+            sid = customer.supplier_id(sources, folder.name)
+            for r in read("supplier_components", comps) if comps.exists() else []:
                 con.execute("INSERT INTO supplier_components VALUES (?,?,?,?,?,?,?,?,?,?)", (sid, r["component_id"], r.get("description"),
                             num(r.get("share"), False), num(r.get("unit_price"), False), r.get("currency"), num(r.get("lead_time_days")),
                             num(r.get("moq")), r.get("primary"), r.get("note")))
-            for r in read_csv(prof):
+            for r in read("supplier_profile", prof):
                 con.execute("INSERT OR REPLACE INTO suppliers VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (r["supplier_id"], r["name"], r["country"], r["city"],
                             r.get("incoterm"), r.get("status"), r.get("qualification_status"), r.get("contact_name"), r.get("contact_email"),
                             r.get("phone"), r.get("preferred_language"), folder.name))
                 for f in ("status", "qualification_status", "incoterm", "contact_email"):
                     obs("supplier", r["supplier_id"], f, r.get(f), str(prof.relative_to(current)))
-            pj = folder / "profile.json"
-            if pj.exists():
+            pj = folder / paths["supplier_profile_json"] if paths.get("supplier_profile_json") else None
+            if pj and pj.exists():
                 d = json.loads(pj.read_text())
                 sp = d.get("supplier", d)
                 f = flatten(sp)
@@ -285,8 +308,8 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                 for k in ("qualification.validUntil", "qualification.extendedBy", "notes"):
                     if f.get(k) is not None:
                         obs("supplier", sid, k, f.get(k), rel, as_of)
-            for dfile in sorted(folder.glob("components_delta*.csv")):
-                for r in read_csv(dfile):
+            for dfile in matches("supplier_deltas", folder):
+                for r in read("supplier_deltas", dfile):
                     rel = str(dfile.relative_to(current))
                     for fld in ("lead_time_days", "share", "primary"):
                         new = r.get(f"{fld}_new") if f"{fld}_new" in r else r.get(fld)
@@ -303,16 +326,17 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                                     (f"{r.get('action', 'note')}: {r['note']}", sid, r["component_id"]))
 
     def pos():
-        for f in sorted((S / "erp").glob("purchase_orders_*.csv")):
-            rel = str(f.relative_to(S.parent))
-            for r in read_csv(f):
-                if "EBELN" in r:  # legacy SAP export: German decimals, US dates, bare supplier numbers
+        legacy = sources.get("legacy_sap_po")
+        for f in matches("purchase_orders"):
+            rel = str(f.relative_to(current))
+            for r in read("purchase_orders", f):
+                if legacy and "EBELN" in r:  # legacy SAP export: German decimals, US dates, bare supplier numbers
                     sup = r["LIFNR"].strip()
-                    sup = f"SUP-{int(sup):04d}" if sup.isdigit() else sup
-                    line = int(r["EBELP"]) // 10 if r["EBELP"].isdigit() else r["EBELP"]
+                    sup = legacy["supplier_id_format"].format(number=int(sup)) if sup.isdigit() else sup
+                    line = int(r["EBELP"]) // legacy["line_divisor"] if r["EBELP"].isdigit() else r["EBELP"]
                     row = (r["EBELN"], line, sup, r["MATNR"], r["WERKS"], num(r["MENGE"], True), num(r["NETPR"], True), None,
                            date_iso(r["BEDAT"]), date_iso(r["EINDT"]), date_iso(r.get("ZZCONF")), date_iso(r.get("WEDAT")),
-                           {"GL": "delivered", "LO": "open"}.get(r.get("ZZSTAT"), r.get("ZZSTAT")), r.get("ERNAM"), None, None, rel)
+                           legacy["status_codes"].get(r.get("ZZSTAT"), r.get("ZZSTAT")), r.get("ERNAM"), None, None, rel)
                 else:
                     row = (r["po_number"], num(r["po_line"]), r["supplier_id"], r["material_id"], r["plant"], num(r["quantity"], False),
                            num(r["unit_price"], False), r.get("currency"), r.get("order_date"), r.get("requested_date"), r.get("promised_date"),
@@ -320,78 +344,103 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                 con.execute("INSERT INTO purchase_orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
     def receipts():
-        for r in read_csv(S / "erp/goods_receipts.csv"):
+        for r in read("receipts"):
             con.execute("INSERT OR REPLACE INTO goods_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)", (r["gr_number"], r["gr_date"], r["po_number"],
                         num(r["po_line"]), r["supplier_id"], r["material_id"], num(r["qty_ordered"], False), num(r["qty_received"], False),
                         r.get("delivery_note"), r.get("inspector"), r.get("remark")))
-        for r in read_csv(S / "erp/stock_snapshot.csv"):
+        for r in read("stock"):
             con.execute("INSERT INTO stock VALUES (?,?,?,?,?)", (r["snapshot_date"], r["material_id"], r.get("batch") or None,
                         num(r["quantity"], False), r.get("last_count")))
 
     def shipments():
-        f = S / "erp/open_shipments.csv"
-        rel = str(f.relative_to(S.parent))
-        for r in read_csv(f):
-            con.execute("INSERT INTO shipments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)", (r["shipment_id"], r["carrier_id"], r["mode"],
+        rel = paths["shipments"]
+        for r in read("shipments"):
+            quantity = num(r.get("quantity"), False)
+            con.execute("INSERT INTO shipments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (r["shipment_id"], r["carrier_id"], r["mode"],
                         r["reference"], r["supplier_id"], r["po_numbers"], r["material_ids"], r["route_id"], r["origin"], r["destination"],
-                        r.get("via"), r.get("dest_site"), r["etd"], r["eta"], r["status"], num(r.get("last_lat"), False),
-                        num(r.get("last_lon"), False), r["updated_at"], r.get("note")))
+                        r.get("via"), r.get("dest_site") or rules.setting("site"), r["etd"], r["eta"], r["status"], num(r.get("last_lat"), False),
+                        num(r.get("last_lon"), False), r["updated_at"], r.get("note"), quantity))
             for fld in ("status", "eta", "etd"):
                 obs("shipment", r["shipment_id"], fld, r[fld].replace("_", " "), rel, r["updated_at"])
+            if quantity is not None:
+                obs("shipment", r["shipment_id"], "quantity", quantity, rel, r["updated_at"])
         by_ref = {r[0]: r[1] for r in con.execute("SELECT reference, shipment_id FROM shipments")}
-        # The team's spreadsheets (tracker + launch plan) are other sources of the same facts.
-        for f in sorted((S / "logistics").glob("*.xlsx")):
-            rel = str(f.relative_to(S.parent))
+        for f in matches("shipment_tracker"):
+            rel = str(f.relative_to(current))
             for sheet, rows in xlsx_sheets(f).items():
-                for r in header_rows(rows, "Shipment"):
-                    sid = r.get("Shipment") or by_ref.get(r.get("Container/AWB"))
+                for r in workbook_rows("shipment_tracker", rows, "shipment_id"):
+                    sid = r.get("shipment_id") or by_ref.get(r.get("reference"))
                     if not sid:
                         continue
-                    for fld, col in (("status", "Status"), ("eta", "ETA"), ("etd", "ETD")):
-                        obs("shipment", sid, fld, date_iso(r.get(col)) if fld != "status" else r.get(col), f"{rel}#{sheet}", None, r.get("Comment"))
-        # Any planning workbook with an Inbound sheet keyed by reference (no launch- or product-specific file name).
-        for plan in sorted((S / "context").glob("*.xlsx")):
-            rel = str(plan.relative_to(S.parent))
-            for r in header_rows(xlsx_sheets(plan).get("Inbound", []), "Reference"):
-                sid = by_ref.get(str(r.get("Reference")))
+                    for fld in ("status", "eta", "etd"):
+                        value = date_iso(r.get(fld)) if fld != "status" else r.get(fld)
+                        obs("shipment", sid, fld, value, f"{rel}#{sheet}", None, r.get("note"))
+
+        sheet = sources.get("inbound_sheet")
+        for f in matches("inbound_plan"):
+            rel = str(f.relative_to(current))
+            if f.suffix.lower() == ".xlsx":
+                rows = workbook_rows("inbound_plan", xlsx_sheets(f).get(sheet, []), "reference")
+                rel = f"{rel}#{sheet}"
+            else:
+                rows = read("inbound_plan", f)
+            for r in rows:
+                sid = by_ref.get(str(r.get("reference")))
                 if not sid:
-                    issue(rel, f"inbound reference not in ERP shipments: {r.get('Reference')}")
+                    issue(rel, f"inbound reference not in ERP shipments: {r.get('reference')}")
                     continue
-                obs("shipment", sid, "quantity", num(r.get("Quantity")), f"{rel}#Inbound", None, r.get("Part"))
-                obs("shipment", sid, "status", r.get("Status"), f"{rel}#Inbound")
-                obs("shipment", sid, "eta", date_iso(r.get("ETA")), f"{rel}#Inbound")
-                con.execute("UPDATE shipments SET quantity=? WHERE shipment_id=?", (num(r.get("Quantity")), sid))
+                quantity = num(r.get("quantity"))
+                obs("shipment", sid, "quantity", quantity, rel, None, r.get("material_id"))
+                obs("shipment", sid, "status", r.get("status"), rel)
+                obs("shipment", sid, "eta", date_iso(r.get("eta")), rel)
+                if quantity is not None:
+                    con.execute("UPDATE shipments SET quantity=COALESCE(quantity, ?) WHERE shipment_id=?", (quantity, sid))
 
     def launch():
-        """Launch status from every workbook in context/ that has an Edition/Product table; keep all, newest wins later."""
-        for f in sorted((S / "context").glob("*.xlsx")):
-            rel = str(f.relative_to(S.parent))
-            for sheet, rows in xlsx_sheets(f).items():
-                body = header_rows(rows, "Product")
-                if not body:
+        """Read launch status for product IDs in the master catalog."""
+        product_ids = {pid for pid, in con.execute("SELECT product_id FROM products")}
+
+        def record(body, rel, default_as_of=None):
+            for r in body:
+                pid = r.get("product_id")
+                if pid not in product_ids:
                     continue
-                title = next((str(c) for c in rows[0] if c), "")
-                as_of = parse_as_of(title)
-                for r in body:
-                    pid = r.get("Product")
-                    if not pid or not str(pid).startswith("FG-"):
-                        continue
-                    con.execute("INSERT INTO launch_status VALUES (?,?,?,?,?,?,?)", (pid, as_of, num(r.get("Day-one demand")), num(r.get("Packed")),
-                                num(r.get("Still to pack")), num(r.get("Rate per hour")), f"{rel}#{sheet}"))
-                    obs("launch", pid, "packed", num(r.get("Packed")), f"{rel}#{sheet}", as_of)
+                as_of = parse_as_of(r["as_of"]) if r.get("as_of") else default_as_of
+                if not as_of:
+                    issue(rel, f"launch status for {pid} has no recognized timestamp")
+                    continue
+                packed = num(r.get("packed"))
+                con.execute("INSERT INTO launch_status VALUES (?,?,?,?,?,?,?)", (pid, as_of, num(r.get("demand")), packed,
+                            num(r.get("still_to_pack")), num(r.get("rate_per_hour")), rel))
+                obs("launch", pid, "packed", packed, rel, as_of)
+
+        for f in matches("launch"):
+            rel = str(f.relative_to(current))
+            if f.suffix.lower() == ".xlsx":
+                for sheet, rows in xlsx_sheets(f).items():
+                    if rows:
+                        title = next((str(c) for c in rows[0] if c), "")
+                        record(workbook_rows("launch", rows, "product_id"), f"{rel}#{sheet}", parse_as_of(title))
+            else:
+                record(read("launch", f), rel)
 
     def documents():
-        for p in sorted((S / "news").rglob("*")) if (S / "news").exists() else []:
-            if p.is_file():
-                con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (str(p.relative_to(current)), None, "news", None, p.read_text(errors="replace")))
-        for p in sorted((current / "suppliers").rglob("*.pdf")) + sorted((S / "receiving").rglob("*.pdf")):
+        if news := paths.get("news"):
+            for p in sorted((current / news).rglob("*")):
+                if p.is_file():
+                    con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (str(p.relative_to(current)), None, "news", None, p.read_text(errors="replace")))
+        supplier_root = current / paths["supplier_root"]
+        supplier_docs = sorted(supplier_root.rglob("*.pdf")) + sorted(
+            p for p in supplier_root.rglob("*") if p.is_file() and p.suffix.lower() in (".txt", ".md", ".eml"))
+        receiving_docs = sorted((current / paths["receiving"]).rglob("*.pdf")) if paths.get("receiving") else []
+        for p in supplier_docs + receiving_docs:
             rel = str(p.relative_to(current))
-            parts = p.relative_to(current).parts
-            sup = parts[1].split("_")[0] if parts[0] == "suppliers" else None
-            m = re.search(r"(45\d{8})", p.name)
-            con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (rel, sup, p.parent.name, m.group(1) if m else None, pdf_text(p)))
-        facts_dir = DATA / "doc_facts"
-        for jf in sorted(facts_dir.glob("*.json")) if facts_dir.exists() else []:
+            sup = customer.supplier_id(sources, p.relative_to(supplier_root).parts[0]) if p.is_relative_to(supplier_root) else None
+            pattern = sources.get("document_po_pattern")
+            match = re.search(pattern, p.name) if pattern else None
+            body = pdf_text(p) if p.suffix.lower() == ".pdf" else p.read_text(errors="replace")
+            con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (rel, sup, p.parent.name, match.group(0) if match else None, body))
+        for jf in sorted(facts_dir.glob("*.json")):
             d = json.loads(jf.read_text())
             for fact in d.get("facts", []):
                 con.execute("INSERT INTO doc_facts VALUES (?,?,?,?)", (d["path"], fact.get("type"), json.dumps(fact, ensure_ascii=False), d.get("extracted_by")))
@@ -407,9 +456,8 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
 
 def parse_as_of(title: str) -> str | None:
     """'... status 2026-11-20 18:00 ...' or '... · Saturday 13:00 · ...' -> ISO timestamp (launch week)."""
-    from core import rules
     deadline = rules.ts(rules.cfg("deadline"))
-    tz = deadline.tzinfo if deadline else rules.TZ
+    tz = deadline.tzinfo if deadline else rules.timezone()
     m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})", title)
     if m:
         return dt.datetime.fromisoformat(f"{m.group(1)}T{int(m.group(2).split(':')[0]):02d}:{m.group(2).split(':')[1]}").replace(tzinfo=tz).isoformat()

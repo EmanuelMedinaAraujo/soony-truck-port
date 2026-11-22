@@ -11,33 +11,61 @@ import json
 import os
 import re
 import sqlite3
-from contextlib import closing
+from contextvars import ContextVar
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+from core import customer
+
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "soony.db"
-CONFIG = json.loads((ROOT / "config" / "business.json").read_text())
+CONFIG = customer.load()
+DB_PATH = ROOT / "data" / CONFIG["master_db"]["value"]
+_customer = ContextVar("customer", default=None)
+_replay_time = ContextVar("replay_time", default=None)
+
+
+@contextmanager
+def replay(config: dict, at: dt.datetime):
+    """Use a customer policy and clock for an isolated deterministic replay."""
+    policy_token = _customer.set(config)
+    clock_token = _replay_time.set(at)
+    try:
+        yield
+    finally:
+        _replay_time.reset(clock_token)
+        _customer.reset(policy_token)
+
+
+def setting(key):
+    config = _customer.get()
+    return (CONFIG if config is None else config)[key]
 
 
 def cfg(key):
-    return CONFIG[key]["value"]
+    return setting(key)["value"]
 
 
-TZ = dt.timezone(dt.timedelta(hours=1))
+def timezone() -> dt.tzinfo:
+    return dt.datetime.fromisoformat("2000-01-01T00:00:00" + setting("timezone")).tzinfo
+
+
+TZ = timezone()
 
 
 def now() -> dt.datetime:
-    """Wall clock, or SOONY_NOW for replays / demo rehearsal."""
+    """Replay time, wall clock, or SOONY_NOW for live demo rehearsal."""
+    if at := _replay_time.get():
+        return at
     v = os.environ.get("SOONY_NOW")
-    return dt.datetime.fromisoformat(v) if v else dt.datetime.now(TZ)
+    return dt.datetime.fromisoformat(v) if v else dt.datetime.now(timezone())
 
 
 def ts(s: str | None) -> dt.datetime | None:
     if not s:
         return None
-    d = dt.datetime.fromisoformat(s) if "T" in s else dt.datetime.fromisoformat(s + "T12:00:00")
-    return d if d.tzinfo else d.replace(tzinfo=TZ)
+    d = dt.datetime.fromisoformat(s if "T" in s else s + "T12:00:00")
+    return d if d.tzinfo else d.replace(tzinfo=timezone())
 
 
 @dataclass
@@ -59,22 +87,21 @@ def plain(desc: str | None, fallback: str = "") -> str:
     if not desc:
         return fallback
     d = re.sub(r"\s*\(.*?\)", "", desc)
-    d = re.sub(r"\s*[–-]?\s*Grand Heist \d+", "", d).strip(" –-")
+    d = re.sub(rf"\s*[–-]?\s*{re.escape(cfg('launch_name'))}", "", d).strip(" –-")
     d = re.sub(r'\s*".*?"', "", d).strip()
     return d[:1].upper() + d[1:] if d else fallback
 
 
 def approver_for(eur: float, category: str | None = None) -> dict:
     people = cfg("people")
-    for tier in cfg("approval_ladder"):
+    ladder = cfg("approval_ladder")
+    for i, tier in enumerate(ladder):
         if tier["max_eur"] is None or eur < tier["max_eur"]:
             role = tier["role"]
             name = people.get(f"{role}:{category}") if category else None
-            if role in ("Buyer", "Category Lead") and category and name is None:
-                # vacant seat (e.g. Collector's Category Lead this weekend) -> escalate one tier
-                if role == "Category Lead":
-                    nxt = cfg("approval_ladder")[2]["role"]
-                    return {"role": nxt, "name": people.get(nxt), "note": f"Category Lead {category} vacant -> escalated"}
+            if role == "Category Lead" and category and name is None and i + 1 < len(ladder):
+                nxt = ladder[i + 1]["role"]
+                return {"role": nxt, "name": people.get(nxt), "note": f"Category Lead {category} vacant -> escalated"}
             return {"role": role, "name": name or people.get(role), "limit_eur": tier["max_eur"]}
     return {"role": "unknown"}
 
@@ -100,7 +127,7 @@ def launch_picture(con) -> dict:
     latest = {}
     for pid, as_of, demand, packed, todo, rate, src in con.execute("SELECT * FROM launch_status ORDER BY as_of"):
         latest[pid] = dict(product_id=pid, as_of=as_of, demand=demand, packed=packed, still_to_pack=todo, rate=rate, source=src)
-    snap = {m: q for m, q in con.execute("SELECT material_id, quantity FROM stock WHERE material_id LIKE 'FG-%'")}
+    snap = {m: q for m, q in con.execute("SELECT material_id, quantity FROM stock") if m in latest}
     for pid, p in latest.items():
         start = max(t_now, ts(p["as_of"]))
         # packing continues between as_of and now at the stated rate
@@ -120,6 +147,7 @@ def component_coverage(con, picture: dict) -> dict:
     bom = {}
     for parent, child, qty, rev, use_up, eff, chg in con.execute("SELECT * FROM bom WHERE parent_id IN (%s)" % ",".join("?" * len(picture)), list(picture)):
         bom.setdefault(child, {})[parent] = dict(qty=qty, rev=rev, use_up=use_up, eff=eff, change=chg)
+    paths = cfg("sources")["paths"]
     gr = {r[0]: dict(zip(("gr_number", "gr_date", "po_number", "po_line", "supplier_id", "material_id", "qty_ordered", "qty_received", "delivery_note", "inspector", "remark"), r))
           for r in con.execute("SELECT * FROM goods_receipts")}
     rev_facts = {(f.get("po_number"), f.get("material_id")): f for f in facts(con, "artwork_revision")}
@@ -147,7 +175,7 @@ def component_coverage(con, picture: dict) -> dict:
                     usable -= cut
                     reasons.append(dict(kind="over_receipt", cut=cut, detail=f"GR {batch}: received {g['qty_received']:,} vs ordered {g['qty_ordered']:,}"
                                         + (f"; delivery note {g['delivery_note']} hand-corrected to {corrected:,}" if c else "; planning with ordered qty"),
-                                        evidence=["soony/erp/goods_receipts.csv"] + ([c["_path"]] if c else [])))
+                                        evidence=[paths["receipts"]] + ([c["_path"]] if c else [])))
                 insp = inspections.get(batch)
                 if insp and str(insp.get("result", "")).lower().startswith("reject"):
                     reasons.append(dict(kind="quality_reject", cut=usable, detail=f"Lot {batch} failed incoming inspection: {insp.get('summary', '')}".strip(),
@@ -180,6 +208,31 @@ def component_coverage(con, picture: dict) -> dict:
 
 
 # ---------------------------------------------------------------- inbound
+def shipment_quantity_reviews(con: sqlite3.Connection) -> dict:
+    """Return conflicting quantity claims with their original provenance."""
+    return {sid: json.loads(claims) for sid, claims in con.execute(
+        """SELECT entity_id, claims FROM conflicts
+           WHERE entity='shipment' AND field='quantity' ORDER BY entity_id"""
+    )}
+
+
+def shipment_commitment_blocker(finding_id: str, kind: str, po_numbers=()) -> str | None:
+    """Block commitments tied to a shipment with an unresolved quantity disagreement."""
+    if kind not in {"order", "book_truck", "dock_slot", "expedite", "data_fix"} or not DB_PATH.is_file():
+        return None
+    po_numbers = set(po_numbers)
+    with closing(sqlite3.connect(f"{DB_PATH.resolve().as_uri()}?mode=ro", uri=True)) as con:
+        reviews = shipment_quantity_reviews(con)
+        for sid, orders in con.execute("SELECT shipment_id, po_numbers FROM shipments"):
+            if sid in reviews and (finding_id in {f"ship-{sid}", f"track-{sid}"} or po_numbers.intersection((orders or "").split("|"))):
+                return f"Shipment {sid} is held for review because sources disagree on quantity."
+    return None
+
+
+def shipment_review_detail(claims: list[dict]) -> str:
+    return "; ".join(f"{claim['source']} reports {claim['value']}" for claim in claims)
+
+
 def inbound(con, coverage: dict) -> list[dict]:
     t_now, deadline = now(), ts(cfg("deadline"))
     cutoff = deadline - dt.timedelta(hours=cfg("receiving_buffer_hours"))
@@ -188,10 +241,12 @@ def inbound(con, coverage: dict) -> list[dict]:
     advice = {f.get("reference"): f for f in facts(con, "shipping_advice")}
     holds = facts(con, "supplier_hold")
     cols = [d[0] for d in con.execute("SELECT * FROM shipments LIMIT 0").description]
+    reviews = shipment_quantity_reviews(con)
+    shipment_path = cfg("sources")["paths"]["shipments"]
     out = []
     for row in con.execute("SELECT * FROM shipments"):
         s = dict(zip(cols, row))
-        flags, ev = [], ["soony/erp/open_shipments.csv"]
+        flags, ev = [], [shipment_path]
         r = routes.get(s["route_id"], {})
         etd, eta = ts(s["etd"]), ts(s["eta"])
         upd = ts(s["updated_at"])
@@ -231,8 +286,15 @@ def inbound(con, coverage: dict) -> list[dict]:
         # 5) Sunday truck ban on the final road leg (port-road combined transport exempt)
         ban = cfg("truck_sunday_ban")
         road_from_port = last_leg and ports.get(s["destination"]) == "sea"
-        if at_dc and at_dc.weekday() == ban["weekday"] and at_dc.hour < 22 and (s["mode"] in ("air", "road")) and not road_from_port:
-            flags.append(f"arrives Sunday {at_dc:%H:%M}: DE Sunday truck ban (>{ban['min_weight_t']} t) applies to the road leg -> van <=7.5 t, permit, or arrive Saturday")
+        if (ban and at_dc and at_dc.weekday() == ban["weekday"]
+                and dt.time.fromisoformat(ban["from"]) <= at_dc.time() < dt.time.fromisoformat(ban["to"])
+                and s["mode"] in ("air", "road") and not road_from_port):
+            flags.append(f"arrives {at_dc:%A %H:%M}: {ban['country']} truck ban (>{ban['min_weight_t']} t) applies to the road leg")
+        review = reviews.get(s["shipment_id"])
+        if review:
+            flags.append("Conflicting shipment quantity. Hold for review.")
+            ev = list(dict.fromkeys([*ev, *(claim["source"] for claim in review)]))
+            qty, at_dc = None, None
         mats = (s["material_ids"] or "").split("|")
         critical_for = [m for m in mats if m in coverage and coverage[m]["gap"] < 0]
         erp_eta = ts(s["eta"])
@@ -243,7 +305,7 @@ def inbound(con, coverage: dict) -> list[dict]:
                         via=s["via"] or r.get("via"), dest_site=s["dest_site"],
                         etd=s["etd"], eta_erp=s["eta"], arrival_at_dc=at_dc.isoformat() if at_dc else None,
                         makes_cutoff=(at_dc <= cutoff) if at_dc else None, cutoff=cutoff.isoformat(), flags=flags, evidence=ev,
-                        fills_gap_of=critical_for, planned_for_launch=planned_for_launch, last_lat=s["last_lat"], last_lon=s["last_lon"], updated_at=s["updated_at"]))
+                        fills_gap_of=critical_for, planned_for_launch=planned_for_launch, quantity_review=review, last_lat=s["last_lat"], last_lon=s["last_lon"], updated_at=s["updated_at"]))
     return out
 
 
@@ -257,6 +319,8 @@ def ce_copies_short(coverage: dict, picture: dict) -> tuple[int, str | None]:
         short = c["need"][prio] - c["alloc"][prio]
         if short > worst:
             worst, comp = short, c["component"]
+    if prio not in picture:
+        return int(worst), comp
     cap_short = max(0, -picture[prio]["slack_copies"])
     if cap_short > worst:
         return cap_short, "line capacity"
@@ -274,14 +338,17 @@ def _evaluate(con: sqlite3.Connection) -> dict:
     inb = inbound(con, cov)
     prio = cfg("priority_product")
     price = cfg("missed_copy_cost_eur")[prio]
+    paths = cfg("sources")["paths"]
+    labels = cfg("edition_labels")
     findings: list[Finding] = []
     names = dict(con.execute("SELECT supplier_id, name FROM suppliers").fetchall())
     sup_name = lambda sid: names.get(sid, sid)
 
     short, binding = ce_copies_short(cov, pic)
-    findings.append(Finding("ce-at-risk", "launch", "critical" if short else "info",
-                            f"{short:,} Collector's copies at risk (EUR {short * price:,.0f} refunds)" if short else "Collector's Edition fully covered",
-                            f"Binding constraint: {plain(cov[binding]['description']) if binding in cov else binding}. CE slack on the cell: {pic[prio]['slack_copies']:,} copies "
+    if prio in pic:
+        findings.append(Finding("ce-at-risk", "launch", "critical" if short else "info",
+                            f"{short:,} {labels['priority_copies']} at risk (EUR {short * price:,.0f} refunds)" if short else f"{labels['priority']} fully covered",
+                            f"Binding constraint: {plain(cov[binding]['description']) if binding in cov else binding}. {labels['priority']} slack on the cell: {pic[prio]['slack_copies']:,} copies "
                             f"({pic[prio]['hours_left']} pack hours left).", prio, short * price, short))
 
     for c in cov.values():
@@ -289,11 +356,12 @@ def _evaluate(con: sqlite3.Connection) -> dict:
         if c["suspect_master_data"]:
             notes = con.execute("SELECT s.folder, sc.note FROM supplier_components sc JOIN suppliers s USING(supplier_id) WHERE component_id=? AND note<>''",
                                 (c["component"],)).fetchall()
-            explain = " ".join(f"Supplier says: \"{n}\" ({f}/components.csv)." for f, n in notes)
+            supplier_files = [customer.supplier_path(cfg("sources"), folder, "supplier_components") for folder, _ in notes]
+            explain = " ".join(f'Supplier says: "{note}" ({path}).' for (_, note), path in zip(notes, supplier_files))
             findings.append(Finding(f"master-{c['component']}", "data", "medium" if notes else "high",
                                     f"{plain(c['description'])}: listed as a separate part but never ordered or stocked",
                                     (explain + " " if explain else "") + "BOM line treats it as a separate part; excluded from the risk maths. Fix the BOM after launch.",
-                                    c["component"], evidence=["soony/master/bom.csv", "soony/erp/stock_snapshot.csv"] + [f"suppliers/{f}/components.csv" for f, _ in notes],
+                                    c["component"], evidence=[paths["bom"], paths["stock"], *supplier_files],
                                     action=dict(type="ask", to=cfg("people")["Head of Procurement"], question=f"Is {c['component']} ({c['description']}) really a separate part of {prio}?")))
             continue
         for adj in c["adjustments"]:
@@ -304,15 +372,21 @@ def _evaluate(con: sqlite3.Connection) -> dict:
                                     evidence=adj.get("evidence", [])))
         if c["gap"] < 0:
             findings.append(Finding(f"gap-{c['component']}", "gap", "critical" if ce_short > 0 else "high",
-                                    f"{plain(c['description'])}: {-c['gap']:,} short" + (f", stops {ce_short:,} Collector's copies" if ce_short > 0 else " for Standard"),
+                                    f"{plain(c['description'])}: {-c['gap']:,} short" + (f", stops {ce_short:,} {labels['priority_copies']}" if ce_short > 0 else f" for {labels['other']}"),
                                     f"Need {c['need_total']:,}, usable {c['usable_now']:,} (ERP {c['erp_stock']:,}, consumed since snapshot {c['consumed_since_snapshot']:,}).",
                                     c["component"], ce_short * price if ce_short > 0 else 0, max(ce_short, 0)))
 
     for s in inb:
+        if claims := s["quantity_review"]:
+            findings.append(Finding(f"ship-{s['shipment_id']}", "review", "high",
+                                    f"{s['reference']}: conflicting shipment quantity. Hold for review.",
+                                    shipment_review_detail(claims), s["shipment_id"],
+                                    evidence=list(dict.fromkeys(claim["source"] for claim in claims))))
+            continue
         if not (s["fills_gap_of"] or s["status"] == "arrived_port"):
             continue
         if not s["planned_for_launch"] and s["status"] != "arrived_port":
-            continue  # was never going to make Sunday; not news
+            continue  # The baseline ETA already missed the launch cutoff.
         sev = "critical" if s["makes_cutoff"] is not True and s["fills_gap_of"] else "high"
         verdict = "makes the cut-off" if s["makes_cutoff"] else (("waiting at the port, no truck booked" if s["status"] == "arrived_port" else "held at the supplier") if s["arrival_at_dc"] is None else "misses the cut-off")
         findings.append(Finding(f"ship-{s['shipment_id']}", "shipment", sev, f"{', '.join(plain(cov[m]['description']) for m in s['materials'] if m in cov) or s['mode']} by {s['mode']} ({s['reference']}): {verdict}",
@@ -328,7 +402,7 @@ def _evaluate(con: sqlite3.Connection) -> dict:
                                     f"{sup_name(o.get('supplier_id'))} offers {o.get('qty'):,} {plain(cov[mat]['description']).lower()}s, closes {closes:,} of the gap",
                                     f"{o.get('lead_time_note', '')} Valid until {o.get('valid_until', '?')}. Cost ≈ EUR {cost:,.0f} vs EUR {min(closes, ce_short) * price:,.0f} refunds avoided.",
                                     mat, min(closes, ce_short) * price, min(closes, ce_short), evidence=[o["_path"]],
-                                    action=dict(type="order_and_truck", cost_eur=cost, approver=approver_for(cost, "Collector's Items"))))
+                                    action=dict(type="order_and_truck", cost_eur=cost, approver=approver_for(cost, cfg("priority_category")))))
 
     # Supplier health: status changes and expired qualifications, weighted by the CE parts the supplier delivers.
     t_now = now()
@@ -348,7 +422,7 @@ def _evaluate(con: sqlite3.Connection) -> dict:
         ce_parts = [c for c in parts if c in cov and prio in cov[c]["need"]]
         note = (obs.get("notes") or (None,))[0]
         findings.append(Finding(f"supplier-{sid}", "supplier", "high" if ce_parts else "medium", f"{name} ({sid}): " + "; ".join(problems),
-                                (f"Vendor master note: {note} " if note else "") + (f"Delivers Collector's parts: {', '.join(ce_parts)}." if ce_parts else ""),
+                                (f"Vendor master note: {note} " if note else "") + (f"Delivers parts for {labels['priority']}: {', '.join(ce_parts)}." if ce_parts else ""),
                                 sid, evidence=[e for e in ev if e]))
 
     order = {"critical": 0, "high": 1, "medium": 2, "info": 3}

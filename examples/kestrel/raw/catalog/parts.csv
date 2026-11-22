@@ -1,0 +1,7 @@
+part_sku,part_name,family
+RB-FRAME,Chassis,Plastics
+RB-MOTOR,Drive motor,Electronics
+RB-GEAR,Gear set,Plastics
+RB-SCREW,Fastener,Hardware
+RB-SHELL,Robot shell,Plastics
+RB-SENSE,Motion sensor,Electronics

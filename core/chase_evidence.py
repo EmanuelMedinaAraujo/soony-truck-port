@@ -336,7 +336,7 @@ def detect() -> Snapshot:
         supplier, _, line_no, material = key
         need = day(po["requested_date"])
         if po["status"] != "open" or (only_launch and (
-            po["plant"] != rules.CONFIG["site"] or material not in (launch_bom.keys() | products.keys())
+            po["plant"] != rules.setting("site") or material not in (launch_bom.keys() | products.keys())
             or (need and need > deadline)
         )):
             continue

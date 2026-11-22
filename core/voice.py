@@ -24,15 +24,16 @@ FIELDS = {
     "confirmed": ("boolean", "Did the callee explicitly confirm the requested plan? Leave unset if unclear."),
     "pickup_or_delivery_time": ("string", "Confirmed pickup or delivery date, time and time zone, if given."),
     "booking_reference": ("string", "Exact booking or handover reference the callee gave, if any."),
-    "eta_hamburg": ("string", "ETA for Hamburg, including the date and time zone when known."),
+    # Retain the field name used by stored call transcripts and existing provider agents.
+    "eta_hamburg": ("string", "ETA at the destination site, including the date and time zone when known."),
     "open_issues": ("string", "Outstanding questions, conditions, blockers and promised next updates."),
 }
 GREETINGS = {
-    "en": "Hello, this is Dockside, Soony's voice assistant at the Hamburg distribution center. Is now a good time for a quick question?",
-    "de": "Guten Tag, hier ist Dockside, der Sprachassistent von Soony im Hamburger Logistikzentrum. Haben Sie kurz Zeit für eine Frage?",
-    "pl": "Dzień dobry, tu Dockside, asystent głosowy centrum dystrybucyjnego Soony w Hamburgu. Czy mogę zadać krótkie pytanie?",
-    "ko": "안녕하세요. Soony 함부르크 물류센터의 음성 비서 Dockside입니다. 잠시 질문드려도 될까요?",
-    "zh": "您好，我是 Soony 汉堡配送中心的语音助理 Dockside。现在方便回答一个简短的问题吗？",
+    "en": "Hello, this is Dockside, {customer}'s voice assistant at the {site} distribution center. Is now a good time for a quick question?",
+    "de": "Guten Tag, hier ist Dockside, der Sprachassistent von {customer} am Logistikstandort {site}. Haben Sie kurz Zeit für eine Frage?",
+    "pl": "Dzień dobry, tu Dockside, asystent głosowy centrum dystrybucyjnego firmy {customer} w lokalizacji {site}. Czy mogę zadać krótkie pytanie?",
+    "ko": "안녕하세요. {customer} {site} 물류센터의 음성 비서 Dockside입니다. 잠시 질문드려도 될까요?",
+    "zh": "您好，我是 {customer} {site}配送中心的语音助理 Dockside。现在方便回答一个简短的问题吗？",
 }
 CALL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS voice_calls(
@@ -153,7 +154,10 @@ def _language(m: dict) -> str:
 def _agent_payload(m: dict, name: str, voice_id: str) -> dict:
     language = _language(m)
     details = json.loads(m["payload"] or "{}").get("details") or ""
-    prompt = f"""You are Dockside, an AI voice assistant calling on behalf of Soony's Hamburg distribution center (DC-HAM).
+    company, site = rules.cfg("customer_name"), rules.cfg("site_name")
+    greeting = GREETINGS.get(language, "Dockside, {customer} {site}.").format(
+        customer=company, site=rules.cfg("localized_site_names").get(language, site))
+    prompt = f"""You are Dockside, an AI voice assistant calling on behalf of {company}'s {site} distribution center ({rules.setting('site')}).
 Ask if you have reached {m['to_name']} or someone authorized to answer for them before sharing the call details.
 Speak {language}. Be polite and concise. Ask one question at a time and cover every point in the call brief.
 Collect concrete answers and repeat back dates, local times, quantities and references to verify them.
@@ -172,7 +176,7 @@ Call brief:
         "name": name,
         "conversation_config": {
             "agent": {"prompt": {"prompt": prompt}, "language": language,
-                      "first_message": GREETINGS.get(language, "Dockside, Soony Hamburg.")},
+                      "first_message": greeting},
             "tts": {"voice_id": voice_id, "model_id": "eleven_flash_v2" if language == "en" else "eleven_flash_v2_5"},
         },
         "platform_settings": {
