@@ -6,7 +6,7 @@ At the kickoff, Soony's Head of Procurement told us: *"We find out at the dock."
 
 That is what happened. A delivery note for 8,000 art books was booked as **80,000**, so the stock list looked full. In reality **5,900 numbered Collector's copies** could not be packed. Soony refunds €120 for each one, so **€708,000** was at stake, and nobody saw it until Saturday.
 
-Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Everything it did is in the action log. The only decisions it hands to a person are the ones that cost money.
+Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give, such as the right PO reference.
 
 **The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers in their language, chases confirmations, requests unload slots from the site, prepares and runs calls (simulated until a phone line is connected), and escalates to the right person when only a person can help. Anything that costs money waits for the assigned approver to sign the exact terms.
 
@@ -37,21 +37,22 @@ Dockside shows the clocks that decide the outcome next to the person who has to 
 |---|---|
 | Wed 18 Nov | Goods receipt 5000413065 books **80,000** art books against an order line of **8,000** ("over delivery accepted"). From here the stock list overstates art books by 72,000. |
 | Sat 21 Nov, about 16:00 | Soony's files are published on the portal. Dockside's service starts its first pass at 17:57. |
-| Sat 17:59 | **Two minutes into its first pass**, Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock. In the same pass it reserves Karton Nowak's 8,000 ready art books at no cost and proposes the order. |
-| Sun 00:14 | The formal order goes out, before the **Sun 03:00** limit after which vans could no longer reach Hamburg by the receiving cutoff. Transport and the unload slot are still unconfirmed at this point. |
-| Sun 02:07 | Karton Nowak accepts the written order and releases the books to its logistics team. Still open: the carrier booking and arrival time, the unload slot, and the PO reference Soony's buyer has to give. Dockside keeps chasing each of them; the goods must leave Poznań by 07:00. |
+| Sat 17:59 | **Two minutes into its first pass**, Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock in its forecast (the ERP record stays as booked). In the same pass it asks Karton Nowak to reserve the 8,000 ready art books at no cost and proposes the order. |
+| Sun 00:14 | The formal order goes out when its 15-minute stop window elapses, under the policy in force that night (no signature for paid actions in the buyer limit), before the **Sun 03:00** limit. Today's release gate would have held it until Paul Winter signed the exact terms and the carrier and site had confirmed; `examples/replay_gate.py` replays exactly this order under the current rules. |
+| Sun 00:18 | Karton Nowak acknowledges the order and asks for the correct PO reference, because the one quoted was already delivered. Dockside asks Paul Winter. |
+| Sun 02:07 | Karton Nowak accepts the written order and hands the books to its own logistics team (not yet to a carrier). Still open: the carrier booking and arrival time, the unload slot, and the PO reference Soony's buyer has to give. Dockside keeps chasing each of them; the goods must leave Poznań by 07:00. |
 | Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). The 4,900 usable books last about five and a half hours at 900 Collector's boxes an hour; then packing stops, too late for a rush order. |
 
 **The next ten customers.** They share three traits: a date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages. We start with one segment where all three are extreme: **tabletop and board game publishers in the German-speaking market**. Each has hundreds of components per box, Asian and Polish print and plastics suppliers, and two immovable dates a year (the SPIEL fair in Essen in October and the Christmas retail cutoff).
 
-Target list: Kosmos, Pegasus Spiele, Ravensburger, Schmidt Spiele, HABA, Asmodee Germany, Hutter Trade, Feuerland Spiele, Frosted Games and Queen Games. The offer to each is the same: send us the files from your last fair or Christmas launch, and within a day we replay it and show which problems Dockside would have caught, when, and what was still possible at that moment. That replay is what the Kestrel example already does offline. After that comes the €5,000 pilot on the next launch.
+Target list: Kosmos, Pegasus Spiele, Ravensburger, Schmidt Spiele, HABA, Asmodee Germany, Hutter Trade, Feuerland Spiele, Frosted Games and Queen Games. The offer to each is the same: send us the files from your last fair or Christmas launch, and within a day we replay it and show which problems Dockside would have caught, when, and what was still possible at that moment. The Kestrel example shows that replay offline on a reviewed sample customer. The first buyer we ask to pay is Soony's Head of Procurement, Dr. Maren Vogt, for the next launch. After that comes the €5,000 pilot on the next launch.
 
 Adjacent segments follow with the same product: video game physical editions and their packing partners, toy kits before Christmas, and contract packers serving several brands, where one onboarding serves many launches.
 
 **What the pilot must prove (acceptance criteria).**
-1. Time from a file or email becoming available to an actionable alert: under 15 minutes (measured in the action log; at Soony, 2 minutes from the first pass).
+1. Time from a file or email becoming available to an actionable alert: under 15 minutes. Measured as two intervals: availability to Dockside's pass (at Soony about two hours, because the service started then) and pass to alert (two minutes).
 2. Buyer minutes spent chasing suppliers per open issue: at least halved, measured against a one-week baseline the buyers log before the pilot.
-3. Copies dispatched that would otherwise have been short, counted from verified receipts linked to Dockside's actions.
+3. At least 1,000 copies dispatched that would otherwise have been short, counted from verified receipts linked to Dockside's actions **and** the dispatch records of the finished boxes.
 4. Zero paid commitments sent without the assigned approver's signature on the exact terms.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
