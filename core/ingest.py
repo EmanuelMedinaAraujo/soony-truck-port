@@ -57,7 +57,7 @@ CREATE VIEW conflicts AS
   GROUP BY entity, entity_id, field HAVING COUNT(DISTINCT lower(value)) > 1;
 """
 
-LAUNCH_WEEK = {"monday": 16, "tuesday": 17, "wednesday": 18, "thursday": 19, "friday": 20, "saturday": 21, "sunday": 22}
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
 # ---------- parsing helpers ----------
@@ -349,8 +349,8 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
                         continue
                     for fld, col in (("status", "Status"), ("eta", "ETA"), ("etd", "ETD")):
                         obs("shipment", sid, fld, date_iso(r.get(col)) if fld != "status" else r.get(col), f"{rel}#{sheet}", None, r.get("Comment"))
-        plan = S / "context/launch_plan_GH6.xlsx"
-        if plan.exists():
+        # Any planning workbook with an Inbound sheet keyed by reference (no launch- or product-specific file name).
+        for plan in sorted((S / "context").glob("*.xlsx")):
             rel = str(plan.relative_to(S.parent))
             for r in header_rows(xlsx_sheets(plan).get("Inbound", []), "Reference"):
                 sid = by_ref.get(str(r.get("Reference")))
@@ -407,12 +407,18 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT) -> dict:
 
 def parse_as_of(title: str) -> str | None:
     """'... status 2026-11-20 18:00 ...' or '... · Saturday 13:00 · ...' -> ISO timestamp (launch week)."""
+    from core import rules
+    deadline = rules.ts(rules.cfg("deadline"))
+    tz = deadline.tzinfo if deadline else rules.TZ
     m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})", title)
     if m:
-        return f"{m.group(1)}T{m.group(2)}:00+01:00"
-    m = re.search(r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2}:\d{2})", title, re.I)
-    if m:
-        return f"2026-11-{LAUNCH_WEEK[m.group(1).lower()]:02d}T{m.group(2)}:00+01:00"
+        return dt.datetime.fromisoformat(f"{m.group(1)}T{int(m.group(2).split(':')[0]):02d}:{m.group(2).split(':')[1]}").replace(tzinfo=tz).isoformat()
+    m = re.search(r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2}):(\d{2})", title, re.I)
+    if m and deadline:
+        # A weekday in a status title means the last such day on or before the deadline (the launch week).
+        back = (deadline.weekday() - WEEKDAYS.index(m.group(1).lower())) % 7
+        day = (deadline - dt.timedelta(days=back)).date()
+        return dt.datetime(day.year, day.month, day.day, int(m.group(2)), int(m.group(3)), tzinfo=tz).isoformat()
     return None
 
 
