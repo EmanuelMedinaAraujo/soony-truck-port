@@ -2,11 +2,9 @@
 
 ## The story in 30 seconds
 
-Soony's Head of Procurement at the kickoff: *"We find out at the dock."* Hamburg books what is on the paper.
+*"We find out at the dock,"* Soony's Head of Procurement told us. On Saturday a note for 8,000 art books was booked as **80,000**: 5,900 Collector's copies short, €708,000 in refunds. Dockside caught it and ordered 8,000 replacements. At 02:07 the supplier accepted; at 04:17 it wrote it had no dispatch instruction. Dockside stopped counting the books and gave the buyer one task: settle it with the supplier.
 
-**Saturday:** a delivery note for 8,000 art books was booked as **80,000**. The stock list looked full; in reality **5,900 numbered Collector's copies** could not be packed, **€708,000** in refunds. Dockside caught the extra zero against the order and the scanned note, found 8,000 ready books at a Polish supplier, and ordered them: up to **2,500 copies** recoverable if they arrive usable before the cutoff (statues limit the rest).
-
-**Sunday 02:07** the supplier wrote that it treats the order as placed. **04:17** the same supplier wrote that it has no dispatch instruction and no carrier booking. Dockside put the two emails side by side, stopped counting the 2,500 copies, modeled the arrival at 17:17, after the 16:00 cutoff, and gave the buyer one task: reconcile the order and the dispatch instruction with the supplier, and record the outcome. A tired team at 4 a.m. reports the rescue as on track. Dockside reported the conflict.
+*(The figures above are the Saturday replay. The live board moves on: by Sunday morning game cards became the binding part, the art books would add no copies, and Dockside keeps their amendment on hold and points at game cards instead.)*
 
 Everything it did is in the action log. It hands a person only what needs a person: spending, signed on the exact terms, and facts only Soony can give.
 
@@ -70,7 +68,7 @@ Adjacent segments follow with the same product: video game physical editions and
 3. At least 1,000 copies dispatched that would otherwise have been short, counted from verified receipts linked to Dockside's actions **and** the dispatch records of the finished boxes.
 4. Zero paid commitments sent without the assigned approver's signature on the exact terms.
 
-**How we measure it (proposed for the buyer's sign-off before the pilot starts).** On day one we freeze Dockside's forecast without any intervention (the stock-backed view it already shows) and store it with the action log. Every copy counted as recovered must trace from that frozen gap through a Dockside action, a verified receipt and a finished-box dispatch record. Copies that would have shipped anyway stay out. For the next prospect we also time the onboarding itself: hours from receiving their files to the first replayed alert.
+**How we measure it (proposed for the buyer's sign-off before the pilot starts).** On day one we freeze the comparison forecast defined above (stock on hand, plus receipts already expected and recovery actions already under way, at their booked times) and store it with the action log, dated and with the quantities and arrival times it assumed. Every copy counted as recovered must trace from that frozen gap through a Dockside action, a verified receipt and a finished-box dispatch record. Copies that would have shipped anyway stay out. For the next prospect we also time the onboarding itself: hours from receiving their files to the first replayed alert.
 
 **Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
 
@@ -115,9 +113,11 @@ Drop 2 changes three files and the verified receipt adds 100 motors to the forec
 
 ## The three-minute demo
 
-1. Open the dependency overview and select Art Book. The buyer sees the active path from supplier stock through transport and receiving into Collector’s dispatch. The shared game card appears once across both editions.
-2. Open the evidence and show the corrected goods receipt, the real supplier reply and the checks still open. Then show the cost against the copies gained and the clocks beside the buyer's open question. The art books unlock at most 2,500 copies under the current model because statues become the next constraint.
-3. Show the action already taken and the live decision queue. An email records that Dockside asked. A reply records what the supplier actually confirmed. A verified receiving record changes the supply picture. When a real approval is required, show who can act and by when.
+1. **The pain (30 s).** Maren's quote, then the receipt booked as 80,000 against an 8,000 note, and the art book trace: 5,900 Collector's copies short on Saturday.
+2. **The reversal (60 s).** The order row: sent 00:14, accepted 02:07, disputed 04:17, each with its source email. The decision card: one task for Paul, the modeled arrival against the 16:00 cutoff, what clears it. Nothing is counted or sent while the conflict is open.
+3. **The board moves (30 s).** The header now names game cards as the biggest lever and the art books add +0: Dockside recalculates the bottleneck from the bill of materials and the packing clock, and the recommendation follows it.
+4. **Why it's safe (30 s).** The release-gate replay: unsigned or changed terms are held, 07:01 without proof of departure is held, the exact signed terms are what leaves.
+5. **The business (30 s).** €5,000 pilot, 182 attributable copies break even, Kestrel shows the same runtime on another customer, the first three publishers and how we reach them.
 
 ## What the jury can verify
 
