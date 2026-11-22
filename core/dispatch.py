@@ -667,7 +667,7 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
         if len(now_next) == 3:
             break
     return {"now": now.isoformat(timespec="seconds"), "deadline": deadline.isoformat(), "cutoff": cutoff.isoformat(),
-            "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
+            "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "display": rules.CONFIG.get("display", {}).get("value", {}), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
             "components": components, "now_next": now_next, "decisions": decisions, "activity": activity,
             "notes": ["The dispatch estimate counts modeled packed stock, usable parts on site and remaining packing capacity.",
                       "The recovery estimate assumes the parts arrive usable by the receiving cutoff and the line can pack them in time.",

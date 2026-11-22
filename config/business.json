@@ -1,6 +1,17 @@
 {
   "_comment": "Business rules learned from interviews and documents. Every value carries its source so the agent can cite it. Edit here, never in code.",
   "site": "DC-HAM",
+  "display": {
+    "value": {
+      "parts": {"CMP-GAM-001": ["game-card", "Game card"], "CMP-GAM-003": ["clear-case", "Clear case"],
+                "CMP-GAM-004": ["sleeve", "Cover sleeve"], "CMP-GAM-006": ["steel-case", "Steel case"],
+                "CMP-GAM-007": ["box", "Collector’s box"], "CMP-GAM-008": ["art-book", "Art book"],
+                "CMP-GAM-009": ["poster", "Map poster"], "CMP-GAM-010": ["statue", "Statue"],
+                "CMP-GAM-011": ["leaflet", "Code leaflet"], "CMP-MAG-005": [null, "Lid magnet"]},
+      "editions": {"FG-GH6-CE": "collector-edition", "FG-GH6-STD": "standard-edition"}
+    },
+    "source": "Short part names and artwork from Lio's deep-dive deck, slides 17–19. Per customer; parts without an entry show their catalog name."
+  },
   "site_port": {
     "value": "DEHAM",
     "source": "UN/LOCODE of the nearest port, used to place the site on the map when the site has no coordinates"

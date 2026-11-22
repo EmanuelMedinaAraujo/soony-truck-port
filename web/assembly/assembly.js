@@ -8,15 +8,9 @@ const at = date => `${weekday.format(new Date(date))} ${time.format(new Date(dat
 const number = value => value == null ? "Unconfirmed" : numbers.format(value);
 const money = value => value == null ? "Unconfirmed" : euros.format(value);
 
-// Component and edition artwork extracted from the supplied deep-dive deck, slides 17–19.
-const artwork = {
-  "CMP-GAM-001": ["game-card", "Game card"], "CMP-GAM-003": ["clear-case", "Clear case"],
-  "CMP-GAM-004": ["sleeve", "Cover sleeve"], "CMP-GAM-006": ["steel-case", "Steel case"],
-  "CMP-GAM-007": ["box", "Collector’s box"], "CMP-GAM-008": ["art-book", "Art book"],
-  "CMP-GAM-009": ["poster", "Map poster"], "CMP-GAM-010": ["statue", "Statue"],
-  "CMP-GAM-011": ["leaflet", "Code leaflet"], "CMP-MAG-005": [null, "Lid magnet"],
-};
-const editionArtwork = {"FG-GH6-CE": "collector-edition", "FG-GH6-STD": "standard-edition"};
+// Short names and artwork per customer come from the customer config (display), not from code.
+const artwork = new Proxy({}, {get: (_, id) => state?.display?.parts?.[id]});
+const editionArtwork = new Proxy({}, {get: (_, id) => state?.display?.editions?.[id]});
 const states = {covered: "Covered", short: "Short on site", verify: "Check record", confirmed: "Confirmed",
   pending: "Pending", blocked: "Blocked", unknown: "Unconfirmed", assumed: "Assumed confirmed"};
 const negotiator = "https://github.com/ManuelLerchner/HACKLeague2026-lio";
