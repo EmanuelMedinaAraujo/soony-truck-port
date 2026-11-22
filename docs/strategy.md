@@ -1,6 +1,14 @@
 # Dockside and the Sunday dispatch
 
-**The supplier can find 8,000 art books. How many more games will actually leave on Sunday?** Dockside follows the offer through legal transport, dock release and the packing line. It recalculates how many finished copies that offer could add, then works through the open steps and shows the buyer any decision that needs them.
+## The story in 30 seconds
+
+At the kickoff, Soony's Head of Procurement told us: *"We find out at the dock."* Hamburg books what is on the paper, and *"half of what we know is in a PDF somebody scanned."*
+
+That is what happened. A delivery note for 8,000 art books was booked as **80,000**, so the stock list looked full. In reality **5,900 numbered Collector's copies** could not be packed. Soony refunds €120 for each one, so **€708,000** was at stake, and nobody saw it until Saturday.
+
+Dockside found the extra zero by matching the receipt against the purchase order and the scanned note. It then found a Polish supplier offer for 8,000 ready art books, worked out that they could add **2,500 copies** before statues become the next limit, sent the formal order, and asked Hamburg for an unload slot. Everything it did is in the action log. The only decisions it hands to a person are the ones that cost money.
+
+**The product:** an agent that keeps a launch's supply on track. It reads every file, scan and email in any language, finds what will stop boxes from leaving, and works the problem itself: it asks suppliers, chases confirmations, places calls, books unload slots, and escalates when only a person can help.
 
 ## The case for paying
 
@@ -19,7 +27,16 @@ The illustrated trace can treat confirmation as a scenario input. A future hando
 
 An illustrative €3,000 standby van would break even if it improved the chance of getting those copies onto the trucks by at least **one percentage point**. Both options still need a dock slot, an authorized order and usable receipt. The buyer supplies a real premium or sees the threshold for the example. Dockside shows the latest viable release time from the offer lead times and displays the evidence the estimate uses.
 
-Test a €5,000 pilot for one launch at one site with buyers who have a hard retail commitment. This is a pricing hypothesis. Discovery should test willingness to pay against avoided losses and buyer time saved. A seasonal toy launch is a next prospect with the same multipart packing, shared parts and receiving constraints. The forecast already takes product, component, priority, price and timing inputs. A second live customer would still need site-specific connectors, approval policy and operating data.
+**Who pays and how much.** The buyer is the Head of Procurement, Dr. Maren Vogt's role. The users are the buyers and the site lead in Hamburg. A pilot is **€5,000 for one launch at one site**: less than one hour of the exposure above, priced below the level that needs a tender. After the pilot comes a fee per critical period (launch, ramp-up, peak season) plus a share of the losses avoided, which the backtest below measures. This is a hypothesis to test with Soony. We have not yet seen a price reaction.
+
+**Proof before the pitch: the backtest.** Dockside keeps every file version and event, so it can replay a launch. For a prospect we replay their last launch and report when Dockside would have flagged each problem, how many buyer hours of chasing it would have replaced, and the value of the actions that were still possible at that moment. For Soony, the extra zero was visible at the Saturday 13:00 drop. The rush offer was valid until Sunday 03:00.
+
+**The next ten customers** share three traits: a fixed date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages.
+- Game publishers and their packing partners: special and collector's editions every quarter.
+- Toy makers before Christmas: multi-part kits with a fixed shelf date.
+- Consumer electronics launches: accessories and packaging from many suppliers.
+- Trading cards and collectibles: numbered runs with refunds per missing unit.
+- Contract packers and fulfilment centres: one site serving many brands, so the onboarding cost is paid once.
 
 ## The platform: compile an operation once, then let the agent run it
 
