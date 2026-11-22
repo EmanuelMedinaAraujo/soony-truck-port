@@ -36,19 +36,19 @@ An illustrative €3,000 standby van would break even if it improved the chance 
 | When | What the evidence shows |
 |---|---|
 | Wed 18 Nov | Goods receipt 5000413065 books **80,000** art books against an order line of **8,000** ("over delivery accepted"). From here the stock list overstates art books by 72,000. |
-| Sat 21 Nov, about 16:00 | The files reach Dockside (portal snapshot). |
-| Sat 17:59 | Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock. In the same pass it reserves Karton Nowak's 8,000 ready art books at no cost and proposes the order. |
-| Sun 00:14 | The formal order goes out after transport checks. It is released before the **Sun 03:00** limit, after which the vans could not reach Hamburg before the receiving cutoff. |
+| Sat 21 Nov, about 16:00 | Soony's files are published on the portal. Dockside's service starts its first pass at 17:57. |
+| Sat 17:59 | **Two minutes into its first pass**, Dockside flags the receipt as impossible against the order and the delivery note, and corrects usable stock. In the same pass it reserves Karton Nowak's 8,000 ready art books at no cost and proposes the order. |
+| Sun 00:14 | The formal order goes out, before the **Sun 03:00** limit after which vans could no longer reach Hamburg by the receiving cutoff. Transport and the unload slot are still unconfirmed at this point. |
+| Sun 02:07 | Karton Nowak accepts the written order and releases the books to its logistics team. Still open: the carrier booking and arrival time, the unload slot, and the PO reference Soony's buyer has to give. Dockside keeps chasing each of them; the goods must leave Poznań by 07:00. |
 | Without Dockside | The gap shows only when the art book shelf runs empty during packing ("we find out at the dock"). The 4,900 usable books last about five and a half hours at 900 Collector's boxes an hour; then packing stops, too late for a rush order. |
 
-What we still have to measure with Soony: the hours buyers spend chasing today (the onboarding notes say "every day, by phone"), and their reaction to the €5,000 price.
+**The next ten customers.** They share three traits: a date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages. We start with one segment where all three are extreme: **tabletop and board game publishers in the German-speaking market**. Each has hundreds of components per box, Asian and Polish print and plastics suppliers, and two immovable dates a year (the SPIEL fair in Essen in October and the Christmas retail cutoff).
 
-**The next ten customers** share three traits: a fixed date retail will not move, products assembled from many parts that share supply, and suppliers who report by PDF and email in several languages.
-- Game publishers and their packing partners: special and collector's editions every quarter.
-- Toy makers before Christmas: multi-part kits with a fixed shelf date.
-- Consumer electronics launches: accessories and packaging from many suppliers.
-- Trading cards and collectibles: numbered runs with refunds per missing unit.
-- Contract packers and fulfilment centres: one site serving many brands, so the onboarding cost is paid once.
+Target list: Kosmos, Pegasus Spiele, Ravensburger, Schmidt Spiele, HABA, Asmodee Germany, Hutter Trade, Feuerland Spiele, Frosted Games and Queen Games. The offer to each is the same: send us the files from your last fair or Christmas launch, and within a day we replay it and show which problems Dockside would have caught, when, and what was still possible at that moment. That replay is what the Kestrel example already does offline. After that comes the €5,000 pilot on the next launch.
+
+Adjacent segments follow with the same product: video game physical editions and their packing partners, toy kits before Christmas, and contract packers serving several brands, where one onboarding serves many launches.
+
+**Still to validate with Soony.** The hours buyers spend chasing today (the onboarding notes say "every day, by phone") and their reaction to the €5,000 price.
 
 ## The platform: compile an operation once, then let the agent run it
 
