@@ -942,12 +942,19 @@ def _order_conflict(action, claims, transport, contacts, terms, now):
             and (terms.get("vehicle_limit_t") is None or transport.get("vehicle_rating_t") is not None)):
         return None
     buyer = action.get("approver_name") or "Buyer"
-    logistics = ", ".join(contacts.get("transport_confirmed", {}).values()) or "the supplier logistics contact or carrier"
+    addresses = list(contacts.get("transport_confirmed", {}).values())
+    logistics = ", ".join(addresses) or "the supplier logistics contact or carrier"
+    # In the sentence people read, name the person: the supplier contact who wrote, or the carrier's logistics desk.
+    own = str(terms.get("recipient") or "").rsplit("@", 1)[-1].casefold()
+    spoken = ", ".join(dict.fromkeys(
+        value if "@" not in str(value) else
+        f"{dispute['who']} (supplier logistics)" if own and str(value).rsplit("@", 1)[-1].casefold() == own else
+        "the carrier's logistics desk" for value in addresses)) or logistics
     return dispute | {
         "owner_reconcile": buyer,
         "owner_logistics": logistics,
         "clears_when": (f"{buyer} reconciles the order reference, quantity, price and dispatch release with the supplier. "
-                        f"{logistics} verifies a booking, eligible vehicle and current ETA by the {cutoff:%H:%M} receiving cutoff. "
+                        f"{spoken} verifies a booking, eligible vehicle and current ETA by the {cutoff:%H:%M} receiving cutoff. "
                         "Receiving must confirm an unload slot for that ETA before release."),
     }
 
