@@ -156,7 +156,7 @@ def readable_activity(log, limit: int = 10) -> dict:
     rows = log.execute("""SELECT e.ts, e.kind, e.ref, e.text, a.title FROM events e LEFT JOIN actions a ON a.id = e.ref
                           WHERE e.kind IN ('email_sent','approval_email_sent','reply','action_auto','action_approved','action_done','data_drop','docs_read')
                           ORDER BY e.ts DESC, e.rowid DESC LIMIT 60""").fetchall()
-    replies = log.execute("""SELECT action_id, from_name, received_at, summary_en, subject
+    replies = log.execute("""SELECT action_id, from_name, received_at, summary_en, subject, id
                              FROM replies WHERE COALESCE(simulated, 0)=0
                              ORDER BY julianday(received_at) DESC, rowid DESC""").fetchall()
     sent_to = {r[0]: r[1] for r in log.execute("SELECT action_id, to_name FROM messages WHERE channel='email' ORDER BY created_at")}
@@ -165,6 +165,7 @@ def readable_activity(log, limit: int = 10) -> dict:
     emailed = {ref for _, kind, ref, _, _ in rows if kind == "email_sent"}
     since = rules.now() - dt.timedelta(hours=24)
     for ts, kind, ref, text, title in rows:
+        reply_id = None
         title = (title or "").strip().rstrip(".")
         what = title[:1].lower() + title[1:] if title else ""
         if kind == "email_sent":
@@ -182,6 +183,8 @@ def readable_activity(log, limit: int = 10) -> dict:
                 reply = next(iter(candidates), None)
             who = (reply[1] if reply else text.split(" replied", 1)[0]) or "Supplier"
             line = f"{who} replied: {_first_sentence(reply[3])}" if reply and reply[3] else f"{who} replied" + (f" about: {what}" if what else "") + "."
+            if reply:
+                reply_id = reply[5]
         elif kind == "action_auto":
             line = f"Dockside started: {what}." if what and ref not in emailed and ref not in call_only else None
         elif kind == "action_approved":
@@ -198,7 +201,10 @@ def readable_activity(log, limit: int = 10) -> dict:
         if not line:
             continue
         if len(items) < limit and (not items or items[-1]["text"] != line):
-            items.append({"ts": ts, "text": line})
+            item = {"ts": ts, "text": line}
+            if reply_id:
+                item["replyId"] = reply_id
+            items.append(item)
     # Count records, not log lines, over the whole window: one email is one message row, one reply one reply row.
     def count(sql: str) -> int:
         return sum(1 for (stamp,) in log.execute(sql) if (moment := rules.ts(stamp)) and moment >= since)
@@ -401,7 +407,8 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
     return {"id": shipment["shipment_id"], "name": f"{mode} from {source}" if source != "Supplier shipment" else mode,
             "quantity": shipment["quantity"] if len(shipment["materials"]) == 1 else None,
             "steps": steps, "evidence": sources, "tracking": shipment_tracking(shipment, places, hold),
-            "current_stage": stage, "next_step": next_action, "last_email_at": sent_email.isoformat() if sent_email else None}
+            "current_stage": stage, "next_step": next_action, "last_email_at": sent_email.isoformat() if sent_email else None,
+            "supplierReply": {"id": latest_reply["id"], "from": latest_reply["from_name"]} if latest_reply else None}
 
 
 def linked_actions(conn: sqlite3.Connection) -> dict:
@@ -901,7 +908,9 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
         if len(now_next) == 3:
             break
     return {"now": now.isoformat(timespec="seconds"), "deadline": deadline.isoformat(), "cutoff": cutoff.isoformat(),
-            "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "display": rules.CONFIG.get("display", {}).get("value", {}), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
+            "checkedAt": checked_at, "siteName": rules.cfg("site_name"), "siteTimezone": rules.setting("timezone"),
+            "launchName": rules.cfg("launch_name"),
+            "customerName": rules.cfg("customer_name"), "display": rules.CONFIG.get("display", {}).get("value", {}), "priorityId": priority, "focusComponentId": focus, "editions": [editions[key] for key in ordered],
             "components": components, "now_next": now_next, "decisions": decisions, "activity": activity,
             "roleOwners": rules.CONFIG.get("role_owners", {}).get("value", {}),
             "notes": ["The dispatch estimate counts modeled packed stock, usable parts on site and remaining packing capacity.",

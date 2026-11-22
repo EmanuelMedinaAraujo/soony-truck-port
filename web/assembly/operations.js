@@ -396,8 +396,13 @@ function renderOperations(snapshot) {
   const decisions = (snapshot.decisions ?? []).filter(decision => !carded.has(decision.id) ||
     (decision.cost > 0 && ["proposed", "scheduled", "escalated"].includes(decision.status)));
   actionDetails = new Map(decisions.map(decision => [decision.id, decision]));
-  $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "action" : "actions"}` : "No decisions or holds";
-  const rows = decisions.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}${decision.terminal || decision.held_reason
+  // Open spending decisions already sit in the strip at the top; list only the held and closed ones here.
+  const shownAbove = decision => decision.cost > 0 && !decision.terminal && ["proposed", "escalated", "scheduled"].includes(decision.status);
+  const others = decisions.filter(decision => !shownAbove(decision));
+  $("attention").textContent = `${number(others.length)} ${others.length === 1 ? "action" : "actions"}`;
+  $("operations").querySelector("header").hidden = !others.length;
+  $("decision-list").hidden = !others.length;
+  const rows = others.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}${decision.terminal || decision.held_reason
     ? ` <span class="side-note">${html(decision.terminal ? "Closed" : "On hold")}</span>` : ""}</li>`).join("");
   const next = rows;
   if (next !== queueKey) {
@@ -430,12 +435,28 @@ function renderOperations(snapshot) {
     const {summary, items} = snapshot.activity;
     $("activity-summary").textContent = `Recent activity · ${summary}`;
     $("activity-list").innerHTML = items.length ? items.map(event =>
-      `<li><time datetime="${html(event.ts)}">${html(at(event.ts))}</time> ${html(roleText(event.text))}</li>`).join("") : "<li>No activity recorded yet.</li>";
+      `<li><time datetime="${html(event.ts)}">${html(at(event.ts))}</time> ${html(roleText(event.text))}
+      ${event.replyId ? ` <a href="/api/replies/${encodeURIComponent(event.replyId)}/view">Open reply</a>` : ""}</li>`).join("") : "<li>No activity recorded yet.</li>";
   }
 }
 
 function initOperations(reload) {
   initChat();
+  const replyDialog = $("reply-dialog");
+  const replyDocument = $("reply-document");
+  let replyTrigger;
+  document.addEventListener("click", event => {
+    const link = event.target.closest('a[href^="/api/replies/"][href$="/view"]');
+    if (!link || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    replyTrigger = link;
+    replyDocument.src = link.href;
+    replyDialog.showModal();
+  });
+  replyDialog.addEventListener("close", () => {
+    replyDocument.removeAttribute("src");
+    replyTrigger?.focus({preventScroll: true});
+  });
   const dialog = $("action-dialog");
   const dialogContent = $("action-dialog-content");
   const decisionResult = $("decision-result");
@@ -519,34 +540,109 @@ function initOperations(reload) {
   });
 }
 
+function initVoiceQuestion(input, answer) {
+  const button = $("record-question");
+  const read = $("read-answer");
+  const status = $("voice-status");
+  let recorder;
+  let discard = false;
+  let timeout;
+  const playback = window.speechSynthesis;
+  if (navigator.mediaDevices?.getUserMedia && window.MediaRecorder) button.hidden = false;
+  read.addEventListener("click", () => {
+    playback.cancel();
+    const utterance = new SpeechSynthesisUtterance(answer.textContent);
+    utterance.lang = document.documentElement.lang || "en";
+    playback.speak(utterance);
+  });
+  button.addEventListener("click", async () => {
+    if (recorder?.state === "recording") {
+      recorder.stop();
+      return;
+    }
+    button.disabled = true;
+    status.textContent = "";
+    discard = false;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      if (discard) {
+        stream.getTracks().forEach(track => track.stop());
+        button.disabled = false;
+        return;
+      }
+      const capture = new MediaRecorder(stream);
+      recorder = capture;
+      const chunks = [];
+      capture.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      capture.onstop = async () => {
+        clearTimeout(timeout);
+        stream.getTracks().forEach(track => track.stop());
+        button.textContent = "Speak a question";
+        button.disabled = true;
+        try {
+          if (discard) return;
+          status.textContent = "Transcribing your question…";
+          const response = await fetch("/api/chat/transcribe", {
+            method: "POST", body: new Blob(chunks, {type: capture.mimeType || chunks[0]?.type})
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Try typing your question.");
+          if (!discard) {
+            input.value = result.question;
+            input.focus();
+            status.textContent = "Review your question, then choose Ask.";
+          }
+        } catch (error) {
+          if (!discard) status.textContent = error.message || "Try typing your question.";
+        } finally {
+          button.disabled = false;
+          recorder = undefined;
+        }
+      };
+      capture.start();
+      button.textContent = "Stop recording";
+      button.disabled = false;
+      status.textContent = "Listening…";
+      timeout = setTimeout(() => { if (capture.state === "recording") capture.stop(); }, 20_000);
+    } catch {
+      stream?.getTracks().forEach(track => track.stop());
+      button.disabled = false;
+      if (!discard) status.textContent = "Allow microphone access or type your question.";
+    }
+  });
+  return {
+    answerReady: ready => {
+      read.hidden = !playback || !ready;
+      status.textContent = "";
+      playback?.cancel();
+    },
+    close: () => {
+      discard = true;
+      if (recorder?.state === "recording") recorder.stop();
+      status.textContent = "";
+      playback?.cancel();
+    },
+  };
+}
+
 function initChat() {
   const chat = $("dockside-chat");
   const opener = $("open-chat");
-  const toggle = $("toggle-chat");
-  const content = $("chat-content");
   const input = $("question");
+  const speech = initVoiceQuestion(input, $("answer"));
 
-  function setExpanded(expanded) {
-    content.hidden = !expanded;
-    chat.classList.toggle("is-collapsed", !expanded);
-    toggle.setAttribute("aria-expanded", String(expanded));
-    toggle.textContent = expanded ? "Minimize" : "Expand";
-    (expanded ? input : toggle).focus({preventScroll: true});
+  function setOpen(open) {
+    if (!open) speech.close();
+    chat.hidden = !open;
+    opener.setAttribute("aria-expanded", String(open));
+    (open ? input : opener).focus({preventScroll: true});
   }
 
-  opener.addEventListener("click", () => {
-    chat.hidden = false;
-    opener.setAttribute("aria-expanded", "true");
-    setExpanded(true);
-  });
-  toggle.addEventListener("click", () => setExpanded(content.hidden));
-  $("close-chat").addEventListener("click", () => {
-    chat.hidden = true;
-    opener.setAttribute("aria-expanded", "false");
-    opener.focus({preventScroll: true});
-  });
+  opener.addEventListener("click", () => setOpen(chat.hidden));
+  $("close-chat").addEventListener("click", () => setOpen(false));
   chat.addEventListener("keydown", event => {
-    if (event.key === "Escape" && !content.hidden) setExpanded(false);
+    if (event.key === "Escape") setOpen(false);
   });
   $("ask-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -555,12 +651,14 @@ function initChat() {
     const question = input.value.trim();
     if (button.disabled || !question) return;
     button.disabled = true;
+    speech.answerReady(false);
     answer.textContent = "Checking shipment and packing records…";
     try {
       const response = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({q: question})});
       const result = await response.json();
       if (typeof result.answer !== "string" || !result.answer.trim()) throw new Error();
       answer.textContent = result.answer;
+      speech.answerReady(response.ok);
     } catch {
       answer.textContent = "Dockside couldn’t answer. Try again in a moment.";
     } finally {

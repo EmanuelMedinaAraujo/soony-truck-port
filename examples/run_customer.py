@@ -16,6 +16,19 @@ if __package__ in (None, ""):
 from core import customer, dispatch, ingest, rules
 
 
+def apply_drop(source: Path, current: Path) -> list[str]:
+    changed = []
+    for path in sorted(p for p in source.rglob("*") if p.is_file()):
+        relative = path.relative_to(source)
+        target = current / relative
+        if target.exists() and filecmp.cmp(path, target, shallow=False):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        changed.append(relative.as_posix())
+    return changed
+
+
 def run_customer(folder: Path, through: int | None = None) -> list[dict]:
     config = customer.load(folder / "business.json")
     at = dt.datetime.fromisoformat(config["replay_at"]["value"])
@@ -33,15 +46,7 @@ def run_customer(folder: Path, through: int | None = None) -> list[dict]:
         for number, source in drops:
             if through is not None and number > through:
                 break
-            changed = []
-            for path in sorted(p for p in source.rglob("*") if p.is_file()):
-                rel = path.relative_to(source)
-                dest = current / rel
-                if dest.exists() and filecmp.cmp(path, dest, shallow=False):
-                    continue
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, dest)
-                changed.append(rel.as_posix())
+            changed = apply_drop(source, current)
             built = ingest.build(db, current, facts_dir=folder / "doc_facts")
             reports.append(dict(customer=rules.cfg("customer_name"), drop=number, changed=changed, build=built,
                                 evaluation=rules.evaluate(db), dispatch=dispatch.snapshot(None, db_path=db, include_activity=False)))

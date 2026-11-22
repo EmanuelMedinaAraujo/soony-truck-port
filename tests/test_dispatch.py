@@ -203,7 +203,7 @@ def test_snapshot_reports_the_configured_dispatch_deadline():
     from core import dispatch, rules
     if not rules.DB_PATH.exists():
         pytest.skip("needs the local Soony snapshot")
-    snap = dispatch.snapshot(None)
+    snap = dispatch.snapshot(None, include_activity=False)
     deadline = rules.ts(rules.cfg("deadline"))
     assert rules.ts(snap["deadline"]) == deadline
     assert rules.ts(snap["cutoff"]) < deadline

@@ -35,7 +35,12 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
 -->
 <main class="shell">
   <header class="dispatch-heading">
-    <h1>Sunday dispatch</h1>
+    <div>
+      <div class="workspace-line">
+        <p class="workspace-name" id="workspace-name" hidden></p>
+      </div>
+      <h1 id="launch-title">Dispatch</h1>
+    </div>
     <div class="deadline"><span class="deadline-label">Trucks leave</span><strong id="deadline">Loading</strong><span id="cutoff"></span></div>
   </header>
 
@@ -55,7 +60,7 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
     <p id="chaser-count" class="side-note"></p>
   </section>
 
-  <section id="overview" aria-label="Shared supply and the two editions">
+  <section id="overview" aria-label="Parts and dispatch targets">
     <p class="loading" id="initial">Loading the assembly plan.</p>
     <div class="assembly" id="assembly" hidden></div>
     <footer class="graph-footer" id="legend" hidden>
@@ -69,24 +74,33 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
 
   <section class="inspector" id="inspector" aria-labelledby="part-heading" hidden></section>
   <section class="operations" id="operations" aria-labelledby="operations-title">
-    <header><h2 id="operations-title" tabindex="-1">Actions</h2><p id="attention">Checking for decisions</p></header>
+    <header><h2 id="operations-title" tabindex="-1">Held and closed actions</h2><p id="attention">Checking for decisions</p></header>
     <ul id="decision-list" class="decision-list"></ul>
     <div class="activity-row" id="activity-row">
       <details class="operation-details"><summary id="activity-summary">Recent activity</summary><ol id="activity-list"></ol></details>
-      <button class="secondary-button" id="open-chat" type="button" aria-controls="dockside-chat" aria-expanded="false">Ask Dockside</button>
     </div>
   </section>
 </main>
+<button class="chat-launcher" id="open-chat" type="button" aria-controls="dockside-chat" aria-expanded="false" aria-label="Ask Dockside" title="Ask Dockside">
+  <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+    <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/>
+    <path d="M7 8.5h10M7 12.5h7" stroke-linecap="round"/>
+  </svg>
+</button>
 <section class="dockside-chat" id="dockside-chat" aria-labelledby="chat-title" hidden>
   <header>
     <h2 id="chat-title">Ask Dockside</h2>
-    <button class="text-button" id="toggle-chat" type="button" aria-controls="chat-content" aria-expanded="true">Minimize</button>
     <button class="chat-close" id="close-chat" type="button" aria-label="Close chat">&times;</button>
   </header>
   <div class="chat-content" id="chat-content">
     <p id="answer" role="status" class="answer"></p>
     <form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label>
-      <input id="question" required placeholder="What could hold up the art books?"><button class="action-button" type="submit">Ask</button></form>
+      <input id="question" required placeholder="What could hold up dispatch?"><button class="action-button" type="submit">Ask</button></form>
+    <div class="voice-controls">
+      <button class="secondary-button" id="record-question" type="button" hidden>Speak a question</button>
+      <button class="text-button" id="read-answer" type="button" hidden>Read answer aloud</button>
+      <p class="side-note" id="voice-status" role="status"></p>
+    </div>
   </div>
 </section>
 <dialog id="action-dialog" class="action-dialog" aria-labelledby="action-dialog-title">
@@ -96,6 +110,13 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
   </header>
   <div id="action-dialog-content"></div>
   <p id="decision-result" class="operation-result" role="status"></p>
+</dialog>
+<dialog id="reply-dialog" class="action-dialog reply-dialog" aria-labelledby="reply-title">
+  <header>
+    <h2 id="reply-title">Supplier reply</h2>
+    <form method="dialog"><button class="secondary-button" autofocus>Close reply</button></form>
+  </header>
+  <iframe id="reply-document" title="Original supplier reply and English translation" sandbox></iframe>
 </dialog>
 </body>
 </html>

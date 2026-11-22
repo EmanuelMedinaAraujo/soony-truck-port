@@ -334,7 +334,7 @@ def test_historical_release_gate_replay():
     result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
     assert result.stdout == subprocess.check_output(command, cwd=root, text=True)
     documented, new_proof = result.stdout.split("\n\n07:01 REVISED TERMS RELEASED", 1)
-    assert documented.strip() in (root / "README.md").read_text()
+    assert documented.strip() in (root / "docs" / "operations.md").read_text()
     assert "CARRIER POSITION AT 06:40 NEAR ORIGIN — HELD — position too close to origin" in new_proof
     assert "CARRIER POSITION OUTSIDE GEOFENCE — VERIFIED" in new_proof
     assert "Gate and cockpit: Truck left by 06:40 (position RPL-POS-0640)." in new_proof

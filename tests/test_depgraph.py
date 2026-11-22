@@ -7,8 +7,16 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from core.depgraph import annotate, part_graph
+from core.depgraph import annotate, part_graph, shipment_reasons
 from core.ingest import SCHEMA
+
+
+def test_conflicting_shipment_reasons_include_both_sources():
+    reasons = shipment_reasons({"quantity_review": [
+        {"source": "truck-board.csv", "value": 30},
+        {"source": "carrier-manifest.csv", "value": 12},
+    ]}, None)
+    assert reasons == [("Hold for review", "truck-board.csv reports 30; carrier-manifest.csv reports 12")]
 
 
 class PartGraphTest(unittest.TestCase):

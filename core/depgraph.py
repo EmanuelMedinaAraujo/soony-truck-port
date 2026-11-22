@@ -100,7 +100,7 @@ def supplier_risks(conn, supplied_parts):
 def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str]]:
     """(short card line, full sentence) per problem, most serious first; a single ('', ...) entry when all is well."""
     if claims := shipment.get("quantity_review"):
-        return [(0, "Hold for review", rules.shipment_review_detail(claims))]
+        return [("Hold for review", rules.shipment_review_detail(claims))]
     found = []
     for flag in shipment["flags"]:
         if flag.startswith("supplier hold"):

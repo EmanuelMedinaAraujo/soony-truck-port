@@ -2,9 +2,14 @@ const $ = id => document.getElementById(id);
 const html = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[char]);
 const numbers = new Intl.NumberFormat("en-GB", {maximumFractionDigits: 2});
 const euros = new Intl.NumberFormat("en-GB", {style: "currency", currency: "EUR", maximumFractionDigits: 0});
-const time = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Berlin", hour: "2-digit", minute: "2-digit"});
-const weekday = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Berlin", weekday: "short"});
-const at = date => `${weekday.format(new Date(date))} ${time.format(new Date(date))}`;
+const time = new Intl.DateTimeFormat("en-GB", {timeZone: "UTC", hour: "2-digit", minute: "2-digit"});
+const weekday = new Intl.DateTimeFormat("en-GB", {timeZone: "UTC", weekday: "short"});
+function at(date) {
+  const offset = state?.siteTimezone ?? "+01:00";
+  const minutes = (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(4, 6))) * (offset[0] === "-" ? -1 : 1);
+  const siteTime = new Date(Date.parse(date) + minutes * 60_000);
+  return `${weekday.format(siteTime)} ${time.format(siteTime)}`;
+}
 const number = value => value == null ? "Unconfirmed" : numbers.format(value);
 const money = value => value == null ? "Unconfirmed" : euros.format(value);
 
@@ -32,6 +37,7 @@ let chaserCases = [];
 let chaserRequestOpen = false;
 let mapLand;
 let loadingMap = false;
+let scrollToMap = false;
 
 function partArt(component) {
   return art(artwork[component.id]?.[0]) || (component.includedIn ? '<i class="magnet-icon" aria-hidden="true"></i>' : "");
@@ -110,13 +116,18 @@ function updateOverview() {
     const shared = state.components.filter(part => part.shared && !part.includedIn);
     const lanes = state.editions.map(edition => lane(edition, state.components.filter(part =>
       !part.shared && !part.includedIn && part.allocations.some(allocation => allocation.editionId === edition.id))));
-    $("assembly").innerHTML = `<svg class="wiring" aria-hidden="true"></svg>${shared.length ? `<section class="shared" aria-label="Shared by both editions">
-      <h2>Shared by both</h2><div class="shared-parts">${shared.map(partButton).join("")}</div></section>` : ""}${lanes.join("")}`;
+    $("assembly").innerHTML = `<svg class="wiring" aria-hidden="true"></svg>${shared.length ? `<section class="shared" aria-labelledby="shared-parts-title">
+      <h2 id="shared-parts-title">Shared parts</h2><div class="shared-parts">${shared.map(partButton).join("")}</div></section>` : ""}${lanes.join("")}`;
     if (focus) partControl(focus)?.focus({preventScroll: true});
   }
+  $("assembly").classList.toggle("records-mode", !Object.keys(state.display?.parts ?? {}).length);
   $("initial").hidden = true;
   $("assembly").hidden = false;
   $("legend").hidden = false;
+  $("launch-title").textContent = state.launchName || "Dispatch";
+  $("workspace-name").textContent = state.customerName || siteName();
+  $("workspace-name").hidden = false;
+  document.title = `Dockside | ${$("launch-title").textContent}`;
   $("deadline").textContent = at(state.deadline);
   $("cutoff").textContent = `Receiving cutoff in ${siteName()} ${at(state.cutoff)}`;
   drawLinks();
@@ -209,7 +220,17 @@ function renderTransportMap() {
   const target = $("transport-map");
   if (target && route && mapLand !== undefined) {
     target.innerHTML = mapFigure(route.tracking, mapLand, route.id, route.name);
+    revealMap();
   }
+}
+
+function revealMap() {
+  const map = $("transport-map");
+  if (!scrollToMap || !map?.querySelector("svg")) return;
+  scrollToMap = false;
+  requestAnimationFrame(() => {
+    map.scrollIntoView({block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+  });
 }
 
 async function loadMap() {
@@ -306,15 +327,18 @@ function renderInspector(force = false, focusShipment = null) {
   const offer = Boolean((parent ?? part).option && route?.id.startsWith("offer-"));
   const showConfirmation = offer || route?.tracking?.status === "booked";
   const stockText = part.status === "verify" ? "Part record needs checking" : `${number(part.usable)} usable in ${siteName()}, ${number(part.required)} needed`;
-  const partNote = parent ? `Fitted into the ${nameOf(parent)} by ${part.includedIn.supplier}.` : stockText;
+  // Stock counts appear in the dependency verdict below, so the heading only carries notes the verdict lacks.
+  const partNote = parent ? `Fitted into the ${nameOf(parent)} by ${part.includedIn.supplier}.` : part.status === "verify" ? stockText : "";
   const shipmentDetails = renderEconomics(parent ?? part, route) + renderShipmentHistory(route, line) + renderRouteDetails(route, showConfirmation);
   const wasOpen = new Set([...inspector.querySelectorAll("details[open]")].map(node => node.dataset.detail));
   inspector.innerHTML = `<div class="inspector-head"><div class="inspector-banner">${partArt(part)}
       <div><h2 id="part-heading" tabindex="-1">${html(nameOf(part))}</h2>
-      <p>${html(partNote)}</p></div>
+      ${partNote ? `<p>${html(partNote)}</p>` : ""}</div>
       <button class="text-button" id="close-part" type="button">Close trace</button></div>
     <div class="shipment-head"><h3>Where it stands</h3>
       <div class="next-step-line progress-now" id="shipment-step" data-step="${html(line)}" aria-live="polite">${line}</div>
+      ${route?.supplierReply ? `<p><a href="/api/replies/${encodeURIComponent(route.supplierReply.id)}/view">Open supplier reply</a>
+        ${route.supplierReply.from ? `<span class="side-note">${html(route.supplierReply.from)}</span>` : ""}</p>` : ""}
       ${shipmentDetails ? `<details class="detail-block shipment-details" data-detail="shipment ${html(route?.id)}">
         <summary>Shipment details</summary>${shipmentDetails}</details>` : ""}</div>
     </div>
@@ -322,8 +346,12 @@ function renderInspector(force = false, focusShipment = null) {
     ${map ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(map.tracking, mapLand, map.id, map.name) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
     <div class="info-grid"><div>
-    ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
-      `<li>${html(adjustment.detail)}${adjustment.evidence.length ? `<br><small>${adjustment.evidence.map(html).join(", ")}</small>` : ""}</li>`).join("")}</ul></details>` : ""}</div>
+    ${part.adjustments.length ? `<div class="stock-check" id="stock-check"><h3>Inventory check</h3><ul>${part.adjustments.map(adjustment =>
+      `<li>${html(adjustment.detail.replace(/(\d)\.0\b/g, "$1"))}</li>`).join("")}</ul></div>
+    <details class="detail-block" data-detail="inventory checks"><summary>Show the source documents</summary><ul>${part.adjustments.map(adjustment =>
+      adjustment.evidence.map(path => /\.(jpe?g|png|webp)$/i.test(path)
+        ? `<li class="evidence-item"><small>${html(path)}</small><a href="/api/evidence/${path.split("/").map(encodeURIComponent).join("/")}" target="_blank" rel="noopener"><img class="evidence-photo" alt="Photo of ${html(path)}" src="/api/evidence/${path.split("/").map(encodeURIComponent).join("/")}"></a></li>`
+        : `<li><small>${html(path)}</small></li>`).join("")).join("")}</ul></details>` : ""}</div>
     <div>${parent ? `<p class="side-note">${html(siteName())} receives and counts this part as part of the ${html(nameOf(parent))}.</p>` :
     `<details class="detail-block" data-detail="allocation"><summary>Edition allocations</summary><ul>${part.allocations.map(allocation =>
       `<li>${html(editionName(allocation.editionId))} has ${number(allocation.allocated)} of ${number(allocation.required)} allocated</li>`).join("")}</ul></details>`}</div></div>`;
@@ -340,8 +368,9 @@ function renderInspector(force = false, focusShipment = null) {
       if (!shipment || (!opening && mapShipment !== shipmentId)) return false;
       if (opening) routeSelection = shipmentId;
       mapShipment = opening && shipment.tracking ? shipmentId : null;
+      scrollToMap = Boolean(mapShipment);
       renderInspector(true, shipmentId);
-      $("transport-map")?.scrollIntoView({block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+      revealMap();
       return true;
     },
   });
@@ -362,12 +391,13 @@ function selectPart(id, fromNextSteps = false) {
   selection = id;
   routeSelection = null;
   mapShipment = null;
+  scrollToMap = false;
   const control = selection && partControl(selection);
   for (const node of document.querySelectorAll("[data-part]")) node.setAttribute("aria-expanded", String(node === control));
   drawLinks();
   renderInspector(true);
   if (selection) {
-    $("inspector").scrollIntoView({block: "start"});
+    $("inspector").scrollIntoView({block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
     $("part-heading").focus({preventScroll: true});
   }
   else if (previous) (nextStepsButton || partControl(previous))?.focus();

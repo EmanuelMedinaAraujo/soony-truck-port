@@ -4,6 +4,7 @@ Run: .venv/bin/uvicorn server.app:app --env-file .env --port 8765
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -356,6 +357,17 @@ def dispatch_view():
     return snapshot
 
 
+@app.get("/api/evidence/{path:path}")
+def evidence_file(path: str):
+    """Serve a source photo or scan that a dispatch check cites, so staff can read the original."""
+    base = ingest.CURRENT.resolve()
+    target = (base / path).resolve()
+    if not target.is_relative_to(base) or target.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"} \
+            or not target.is_file():
+        raise HTTPException(404, "Evidence file not found")
+    return FileResponse(target)
+
+
 @app.get("/api/replies/{message_id}")
 def get_reply(message_id: str):
     with actions.read() as log:
@@ -377,6 +389,12 @@ def reply_source(message_id: str):
     body = reply["body"] or ""
     companion = ""
     language = inbox.reply_language(body)
+    if language in (None, "en") and len(re.findall(r"[\uac00-\ud7af]", body)) >= 8:
+        language = "ko"
+    if language is None and reply["msg_id"]:
+        with actions.read() as log:
+            source_message = log.execute("SELECT language FROM messages WHERE id=?", (reply["msg_id"],)).fetchone()
+        language = source_message["language"] if source_message else None
     if language != "en":
         with actions.read() as log:
             cached = log.execute("SELECT body_en FROM reply_translations WHERE reply_id=?", (message_id,)).fetchone()
@@ -394,7 +412,7 @@ def reply_source(message_id: str):
         original_words = body.casefold().split()
         if not english or english.casefold().split() == original_words:
             label = "English summary"
-            english = (reply["summary_en"] or "").strip() if language else ""
+            english = (reply["summary_en"] or "").strip()
         if english and english.casefold().split() != original_words:
             companion = f'<section><h2>{label}</h2><p class="message">{escape(english)}</p></section>'
     subject = escape(reply["subject"] or "Supplier reply")
@@ -616,6 +634,41 @@ def chat(a: Ask):
         return JSONResponse({"answer": str(e), "steps": [], "error": e.kind}, status_code=503)
     actions.log_event("chat", None, a.q[:200])
     return {"answer": ans, "steps": steps}
+
+
+@app.post("/api/chat/transcribe")
+async def transcribe_question(request: Request):
+    from fastapi.concurrency import run_in_threadpool
+    from openai import APIError, OpenAI
+
+    media = request.headers.get("content-type", "").split(";", 1)[0]
+    extensions = {"audio/webm": "webm", "audio/mp4": "mp4", "audio/ogg": "ogg"}
+    if media not in extensions:
+        raise HTTPException(415, "Use the microphone in Ask Dockside or type your question.")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Microphone transcription is unavailable. Type your question instead.")
+    recording = io.BytesIO()
+    async for chunk in request.stream():
+        if recording.tell() + len(chunk) > 2 * 1024 * 1024:
+            raise HTTPException(413, "Record a shorter question.")
+        recording.write(chunk)
+    if not recording.tell():
+        raise HTTPException(400, "Record your question before stopping the microphone.")
+    recording.seek(0)
+    client = OpenAI(timeout=15, max_retries=0)
+    try:
+        transcript = await run_in_threadpool(
+            client.audio.transcriptions.create,
+            model="gpt-4o-mini-transcribe",
+            file=(f"question.{extensions[media]}", recording, media),
+        )
+    except APIError:
+        raise HTTPException(503, "Microphone transcription failed. Try again or type your question.") from None
+    finally:
+        client.close()
+    if not (question := transcript.text.strip()):
+        raise HTTPException(422, "No question was heard. Try again or type it.")
+    return {"question": question[:2000]}
 
 
 @app.post("/api/cycle")

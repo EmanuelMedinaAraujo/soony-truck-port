@@ -67,9 +67,9 @@ def _schema_lines(c) -> str:
 SCHEMA_DOC = _schema_doc()
 NULLSTR, NULLNUM = {"type": ["string", "null"]}, {"type": ["number", "null"]}
 TOOLS = [
-    tool("get_situation", "Launch picture, priority copies/EUR at risk, top findings and open actions. Call first.", {}),
-    tool("get_dispatch_options", "Stock-backed dispatch estimates and marginal copies/refunds from current on-time recovery offers. "
-         "Call before pricing a rush purchase or a standby option.", {}),
+    tool("get_situation", "Launch findings, packed progress and action history. Use get_dispatch_options for the current dispatch forecast and next decisions.", {}),
+    tool("get_dispatch_options", "Current stock-backed dispatch, next decisions and conditional recovery estimates. "
+         "Use current_priorities for decisions that need a human and recoveries for what-if questions.", {}),
     tool("get_shipment", "Full detail for one shipment incl. flags, evidence files and conflicting sources.", {"shipment_id": {"type": "string"}}),
     tool("get_action", "Read an existing action's terms, approval history and message delivery status.", {"action_id": {"type": "string"}}),
     tool("get_chaser_cases", "Read active Supplier Chaser cases before writing to a supplier. Supply the supplier ID and purchase order when known.",
@@ -182,8 +182,13 @@ class Tools:
 
     def get_dispatch_options(self):
         data = dispatch.snapshot(None)
+        parts = {part["id"]: part for part in data["components"]}
         return {"editions": data["editions"], "cutoff": data["cutoff"],
                 "recoveries": [{"component": c["name"], **c["option"]} for c in data["components"] if c["option"]],
+                "current_priorities": [
+                    {"component": parts[item["component_id"]]["name"], **item["next_step"]}
+                    for item in data["now_next"]
+                ],
                 "assumptions": data["notes"]}
 
     def get_shipment(self, shipment_id):
@@ -421,8 +426,12 @@ def run(user_msg: str, on_step=None, model: str | None = None, effort: str = "me
     tools = [t for t in TOOLS if t["name"] not in {"propose_action", "note_reply"}] if read_only else TOOLS
     instructions = system_prompt()
     if read_only:
-        instructions += ("\n\nFor dashboard questions about whether dispatch will meet demand or how many copies will ship, "
+        instructions += ("\n\nFor questions about dispatch quantities, blockers, or a decision someone needs to make, "
                          "call get_dispatch_options. Report each requested edition's projected and short figures from that tool. "
+                         "Use current_priorities for the latest next step and who owns it. "
+                         "Prefer those current next steps over proposals, historical actions, or older findings. "
+                         "Treat raw booked quantities as source claims. Never describe disputed receipts, reservations, or "
+                         "unverified shipments as physically in stock. "
                          "Packed figures describe progress so far. Keep them separate from the dispatch forecast. "
                          "Use short paragraphs or bullets in plain text without Markdown formatting.")
     for _ in range(MAX_STEPS):
