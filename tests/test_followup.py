@@ -388,7 +388,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert all(questions.find(mid)["superseded"] for mid in replaced)
 
 
-def test_recorded_cancellation_queues_approval(tmp_path, monkeypatch):
+def test_recorded_cancellation_queues_no_fee_request(tmp_path, monkeypatch):
     from core import inbox, outbound, questions
 
     replay = replay_gate
@@ -409,19 +409,20 @@ def test_recorded_cancellation_queues_approval(tmp_path, monkeypatch):
         inbox.mark_handled("denial", "Supplier reports no dispatch instruction.")
         summary = agent.handle_replies()
         action, = [a for a in actions.list_actions() if a["kind"] == "cancel_order"]
-        assert action["id"] in summary and action["status"] == "proposed"
+        assert action["id"] in summary and action["status"] == "auto"
         assert agent._propose_recorded_cancellation(reply["id"]) == action["id"]
         assert action["messages"][0]["status"] == "draft"
-        assert outbound.dispatch(action["id"])["messages"][0]["status"] == "draft"
-        assert release.decision_state(action)["can_approve"]
-        signed = actions.decide(action["id"], "approve", action["approver_name"], source="dashboard",
-                                commitment_digest=release.approval_digest(action))
-        assert release.check(signed) == (True, None)
-        assert signed["messages"][0]["to_address"] == supplier["to_address"]
+        assert not release.decision_state(action)["can_approve"]
+        assert release.check(action) == (True, None)
+        assert "authorizes no fee" in action["messages"][0]["body"]
+        assert action["messages"][0]["to_address"] == supplier["to_address"]
+        with actions.tx() as db:
+            db.execute("UPDATE staff_tasks SET status='closed' WHERE id=?", (task["id"],))
+        assert outbound.dispatch(action["id"])["held_reason"] == "the original order or recorded cancellation outcome changed"
 
 
 @pytest.mark.parametrize("choice", ["keep_monday", "cancel"])
-def test_post_deadline_decision_is_separate_and_signed(tmp_path, monkeypatch, choice):
+def test_post_deadline_separates_spending_approval_from_no_fee_cancellation(tmp_path, monkeypatch, choice):
     from core import questions
 
     replay = replay_gate
@@ -452,14 +453,17 @@ def test_post_deadline_decision_is_separate_and_signed(tmp_path, monkeypatch, ch
         with pytest.raises(ValueError, match="no longer open"):
             questions.answer(task, "Paul Winter", choice)
         proposal = actions.get(reply["proposal_id"])
-        assert proposal["status"] == "proposed"
         assert proposal["messages"][0]["status"] == "draft"
-        assert not release.check(proposal)[0]
-        signed = replay.sign(proposal)
         if choice == "cancel":
-            assert signed["kind"] == "cancel_order"
-            assert release.check(signed) == (True, None)
+            assert proposal["kind"] == "cancel_order"
+            assert proposal["status"] == "auto"
+            assert not reply["approval_requested"]
+            assert release.check(proposal) == (True, None)
         else:
+            assert proposal["status"] == "proposed"
+            assert reply["approval_requested"]
+            assert not release.check(proposal)[0]
+            signed = replay.sign(proposal)
             terms = release.terms_for(signed)
             assert terms["deliver_by"] == "2026-11-23T16:00:00+01:00"
             assert terms["depart_by"] == "2026-11-23T07:00:00+01:00"

@@ -177,7 +177,8 @@ def terms_for(action: dict) -> dict | None:
     return terms if isinstance(terms, dict) and terms.get("version") == TERMS_VERSION else None
 
 
-def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
+def render_instruction(terms: dict, repeat: bool = False, *, no_additional_cost: bool = False,
+                       legacy_cancellation: bool = False) -> tuple[str, str]:
     if terms["instruction"] == "cancel_order":
         ref = terms["order_reference"]
         text = f"Cancel the existing order {ref}. Do not dispatch it. Please confirm receipt of this cancellation."
@@ -185,12 +186,31 @@ def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
             "pl": f"Prosimy anulować zamówienie {ref} i nie wysyłać towaru. Prosimy o potwierdzenie otrzymania anulowania.",
             "de": f"Bitte stornieren Sie die Bestellung {ref} und versenden Sie die Ware nicht. Bitte bestätigen Sie den Erhalt der Stornierung.",
         }.get(terms["language"])
+        if not legacy_cancellation:
+            text += " This request authorizes no fee. If a fee applies, reply with the amount before processing."
+            no_fee = {
+                "pl": "Jeśli anulowanie wiąże się z opłatą, prosimy podać jej kwotę przed anulowaniem. Nie wyrażamy zgody na opłatę.",
+                "de": "Falls eine Gebühr anfällt, teilen Sie uns den Betrag vor der Stornierung mit. Wir genehmigen keine Gebühr.",
+            }.get(terms["language"])
+            if translation and no_fee:
+                translation += " " + no_fee
         return f"Cancel order {ref}", "\n\n".join(filter(None, (translation, text, terms_block(terms))))
     verb = INSTRUCTIONS[terms["instruction"]]
     key = terms["commitment_id"]
     subject = f"{'Repeat · ' if repeat else ''}{verb} · {key}"
     opening = (f"Repeat of {key}. Carry out the existing instruction below. Do not create an additional order or booking."
                if repeat else f"{verb} according to these terms.")
+    cost_limit = None
+    if no_additional_cost:
+        cost_limit = "Proceed only at no additional cost. If a fee applies, send a quote first."
+        local_limit = {
+            "de": "Nur ohne zusätzliche Kosten ausführen. Falls eine Gebühr anfällt, senden Sie zuerst ein Angebot.",
+            "pl": "Prosimy wykonać tylko bez dodatkowych kosztów. Jeśli obowiązuje opłata, prosimy najpierw o wycenę.",
+            "ko": "추가 비용이 없는 경우에만 진행해 주세요. 비용이 발생하면 먼저 견적을 보내 주세요.",
+            "zh": "仅在无额外费用的情况下执行。如有费用，请先提供报价。",
+        }.get(terms["language"])
+        if local_limit:
+            cost_limit = f"{local_limit}\n{cost_limit}"
     if original := terms.get("revises_action_id"):
         subject = f"Amend delivery terms only · {original}"
         opening = (f"Amend delivery terms for existing instruction {original}. "
@@ -200,12 +220,12 @@ def render_instruction(terms: dict, repeat: bool = False) -> tuple[str, str]:
             "pl": f"Zmiana wyłącznie warunków dostawy dla istniejącego zamówienia {original}. Nie tworzyć dodatkowego zamówienia ani rezerwacji.",
         }.get(terms["language"])
         return (f"{amendment} · {subject}" if amendment else subject,
-                "\n".join(line for line in (amendment, opening, "", terms_block(terms)) if line is not None))
+                "\n".join(line for line in (amendment, opening, cost_limit, "", terms_block(terms)) if line is not None))
     if local := LOCAL_INSTRUCTIONS.get(terms["language"]):
         verb_local = local[terms["instruction"]]
         subject = f"{verb_local} · {subject}"
         opening = f"{LOCAL_REPEAT[terms['language']] if repeat else verb_local + '.'}\n{opening}"
-    return subject, f"{opening}\n\n{terms_block(terms)}"
+    return subject, "\n".join(line for line in (opening, cost_limit, "", terms_block(terms)) if line is not None)
 
 
 def setting(key, default):
@@ -473,8 +493,9 @@ def _number_candidates(raw: str) -> set[Decimal]:
 def _body_blocker(terms, message):
     if terms["instruction"] == "cancel_order":
         subject, body = render_instruction(terms)
-        if message["subject"] != subject or message["body"] != body or message.get("body_en"):
-            return "cancellation draft differs from the approved instruction"
+        _, legacy_body = render_instruction(terms, legacy_cancellation=True)
+        if message["subject"] != subject or message["body"] not in {body, legacy_body} or message.get("body_en"):
+            return "cancellation draft differs from the recorded instruction"
         return None
     qty, unit, total = (Decimal(str(terms[k])) for k in ("quantity", "unit_price", "total_price"))
     currencies = {"€": "EUR", "$": "USD", "£": "GBP", "₩": "KRW", "ZŁ": "PLN", "RMB": "CNY",
@@ -515,7 +536,7 @@ def _cancellation_blocker(action, terms):
             or parseaddr(terms["recipient"])[1] != terms["recipient"] or "@" not in terms["recipient"]
             or (messages[0]["to_address"] or "").casefold() != terms["recipient"]
             or action["payload"].get("commitment_digest") != fingerprint(terms)):
-        return "cancellation needs a signed instruction for the original order and recipient"
+        return "cancellation needs a recorded instruction for the original order and recipient"
     return _body_blocker(terms, messages[0])
 
 
@@ -540,6 +561,8 @@ def proposal_blocker(action: dict, *, check_departure=True) -> str | None:
     if not terms:
         return "typed commitment is missing"
     try:
+        if not math.isfinite(action["cost_eur"]) or action["cost_eur"] < 0:
+            return "commitment cost must be a non-negative amount"
         if terms["instruction"] == "cancel_order":
             return _cancellation_blocker(action, terms)
         if _expired(terms):
@@ -1511,6 +1534,8 @@ def _duplicate(log, action, terms) -> str | None:
             continue
         if (prior.get("commitment_id") or prior.get("key")) == terms["commitment_id"]:
             return other["id"]
+        if terms["instruction"] == "cancel_order":
+            continue
         if prior.get("part") != terms["part"] or prior.get("supplier_id") != terms["supplier_id"]:
             continue
         same_instruction = prior_kind == terms["instruction"] or {prior_kind, terms["instruction"]} <= {"order", "dispatch"}
@@ -1527,17 +1552,26 @@ def _duplicate(log, action, terms) -> str | None:
 def _authorized_repeat(log, action, terms):
     origin = actions._get(log, action["payload"]["repeat_commitment"])
     reference = terms_for(origin) if origin else None
-    if not reference or origin["payload"].get("repeat_commitment") or reference != terms:
+    if (not reference or origin["payload"].get("repeat_commitment") or reference != terms
+            or terms["instruction"] == "cancel_order"):
         return False
-    subject, body = render_instruction(reference)
-    return (origin["status"] in {"sent", "done"} and _signed(origin, fingerprint(reference)) and
+    subject, body = render_instruction(reference, no_additional_cost=origin["cost_eur"] == 0)
+    if (
+        origin["cost_eur"] == 0
+        and _signed(origin, fingerprint(reference))
+    ):  # Previously signed no-cost instructions were rendered without the fee clause.
+        _, signed_body = render_instruction(reference)
+    else:
+        signed_body = body
+    return (origin["status"] in {"auto", "sent", "done"} and
+            (origin["cost_eur"] == 0 or _signed(origin, fingerprint(reference))) and
             any(m["status"] == "sent" and m["channel"] == "email"
-                and m["body"] == body and m["subject"] == subject
+                and m["body"] in {body, signed_body} and m["subject"] == subject
                 and (m["to_address"] or "").casefold() == terms["recipient"] for m in origin["messages"]))
 
 
 def check(action: dict) -> tuple[bool, str | None]:
-    """Verify the exact approved instruction and current evidence before each send."""
+    """Verify the exact instruction, spending approval and current evidence before each send."""
     reason = proposal_blocker(action, check_departure=False)
     if reason:
         return False, reason
@@ -1545,13 +1579,15 @@ def check(action: dict) -> tuple[bool, str | None]:
         terms = terms_for(action)
         with actions.tx() as log:
             if terms["instruction"] == "cancel_order":
-                if action["status"] not in {"approved", "sent"} or not _signed(action, fingerprint(terms)):
-                    return False, "verified approval for this cancellation is missing"
+                if action["status"] not in {"auto", "approved", "sent"}:
+                    return False, "cancellation is not queued for release"
+                if other := _duplicate(log, action, terms):
+                    return False, f"duplicate of {other}; the cancellation already went out or delivery is unconfirmed"
                 reason = _cancellation_authorization(log, terms)
                 return reason is None, reason
             if action["payload"].get("repeat_commitment"):
                 if action["status"] not in {"auto", "sent"} or not _authorized_repeat(log, action, terms):
-                    return False, "repeat needs the exact terms of an explicitly approved and sent commitment"
+                    return False, "repeat needs the exact terms of a previously authorized and sent commitment"
                 origin = actions._get(log, action["payload"]["repeat_commitment"])
                 if conflict := delivery_state(origin, log=log)["conflict"]:
                     return False, conflict_reason(conflict)
@@ -1560,8 +1596,12 @@ def check(action: dict) -> tuple[bool, str | None]:
                     return False, reason
                 if other := _duplicate(log, action, terms):
                     return False, f"duplicate of {other}; the commitment already went out or delivery is unconfirmed"
-                if action["status"] not in {"approved", "sent"} or not _signed(action, fingerprint(terms)):
+                if action["cost_eur"] > 0 and (
+                    action["status"] not in {"approved", "sent"} or not _signed(action, fingerprint(terms))
+                ):
                     return False, "verified approval for these exact terms is missing"
+                if action["cost_eur"] == 0 and action["status"] not in {"auto", "approved", "sent"}:
+                    return False, "no-cost instruction is not queued for release"
             if not _fresh(log):
                 return False, "evidence stale"
             file_blocker = _file_blocker(action, terms)
@@ -1628,7 +1668,7 @@ def decision_state(action: dict) -> dict:
     else:
         owner = action.get("owner") or "Buyer"
         clears = "Review the current evidence and submit a corrected shipment instruction for approval."
-    return {"terminal": terminal, "can_approve": not (terminal or blocker) and action["status"] in
+    return {"terminal": terminal, "can_approve": (action["cost_eur"] or 0) > 0 and not (terminal or blocker) and action["status"] in
             {"proposed", "scheduled", "escalated"}, "held_reason": reason,
             "hold_owner": owner if reason and not terminal else None,
             "hold_clears": clears if reason and not terminal else None, "confirmation_evidence": matches,

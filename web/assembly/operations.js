@@ -13,6 +13,32 @@ function renderRefreshButton() {
   button.textContent = busy ? "Refreshing…" : "Refresh";
 }
 const pendingDecisions = new Set();
+let actionDetails = new Map();
+let stepDetails = new Map();
+let openDetail = null;
+
+function detailButton(id, title, cost = 0) {
+  return `<button type="button" class="detail-trigger" data-detail="${html(id)}" aria-haspopup="dialog">
+    ${html(title)}${cost > 0 ? ` <span class="action-price">${money(cost)}</span>` : ""}
+  </button>`;
+}
+
+function stepRow(id, title, content, partId = id) {
+  const key = `step:${id}`;
+  const shipment = `<p class="shipment-link"><button type="button" class="detail-trigger" data-show-shipment="${html(partId)}">View shipment</button></p>`;
+  stepDetails.set(key, {title, content: content + shipment});
+  return `<li>${detailButton(key, title)}</li>`;
+}
+
+function stepHeadline(part, step) {
+  const name = nameOf(part);
+  if (step.task?.kind === "post_deadline") return step.task.status === "open"
+    ? `Choose delivery or cancellation for ${name}` : `Follow up on the ${name} order`;
+  if (part.option?.deliveryState?.conflict) return `Reconcile the ${name} order`;
+  if (step.reviewRequired) return `Review the ${name} shipment`;
+  if (step.options?.length) return `Confirm the purchase order for ${name}`;
+  return step.person ? `Confirm next steps for ${name}` : `Check delivery of ${name}`;
+}
 
 const nextStepTones = {
   "Needs you": "alert", "Stuck": "alert", "Late": "alert", "Waiting for reply": "waiting",
@@ -37,14 +63,16 @@ async function sendAnswer(id, text, status) {
     headers: {"Content-Type": "application/json"}, body: JSON.stringify({text})});
   const result = await response.json();
   if (!response.ok) throw new Error(result.detail || "Try again.");
-  status.textContent = result.proposal_id ? "Decision recorded. Approval requested."
+  status.textContent = result.approval_requested ? "Decision recorded. Spending approval requested."
+    : result.proposal_id ? "Decision recorded. Cancellation request queued."
     : "Sent. Dockside reads it in its next pass and continues.";
 }
 
 async function refreshCalls() {
   try {
     const response = await fetch("/api/calls", {cache: "no-store"});
-    if (response.ok) calls = new Map((await response.json()).map(call => [call.message_id, call]));
+    if (response.ok) calls = new Map((await response.json()).filter(call => call.result && !call.result.simulated)
+      .map(call => [call.message_id, call]));
   } catch {
     // Without the call service the script is still shown.
   }
@@ -54,7 +82,7 @@ function callFold(call) {
   const live = call.talk_url
     ? `<p><a href="${html(call.talk_url)}" target="_blank" rel="noreferrer">Try it live</a></p>` : "";
   const transcript = call.result?.transcript
-    ? `<p><b>${call.result.simulated ? "Simulated transcript" : "Transcript"}</b></p>
+    ? `<p><b>Transcript</b></p>
        <p style="white-space: pre-wrap; overflow-wrap: anywhere">${html(call.result.transcript)}</p>` : "";
   return `<details class="call-script"><summary>${transcript ? "Transcript and call script" : "Call script"}</summary>
     ${transcript}<p><b>${html(call.subject)}</b></p><p>${html(call.script)}</p>${live}</details>`;
@@ -69,19 +97,13 @@ const roleText = text => String(text ?? "").replace(/\bowner_\w+\b/g, role =>
   state?.roleOwners?.[role] ?? ({owner_logistics: "the logistics planner", owner_reconcile: "the buyer"})[role] ?? "the responsible owner");
 
 function callStatus(call) {
-  if (call.result) {
-    const label = call.result.simulated ? "Call rehearsal for" : "Dockside called";
-    const summary = (call.result.summary || "See the transcript.").replace(/^Simulated call:\s*/, "");
-    const sentence = summary.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? summary;
-    return roleText(`${label} ${call.to_name}: ${sentence}`);
-  }
-  if (call.status === "failed") return `Dockside’s call to ${call.to_name} failed.`;
-  if (call.status === "unavailable") return `Call to ${call.to_name} is unavailable.`;
-  return `Dockside is calling ${call.to_name} now.`;
+  const summary = call.result.summary || "See the transcript.";
+  const sentence = summary.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? summary;
+  return roleText(`Dockside called ${call.to_name}: ${sentence}`);
 }
 
 function renderCalls() {
-  const rows = [...calls.values()].filter(call => call.status !== "unavailable");
+  const rows = [...calls.values()];
   const key = JSON.stringify(rows);
   if (callsKey === key) return;
   callsKey = key;
@@ -136,8 +158,7 @@ function conflictCard(part, item, snapshot) {
   const sentAt = orderRow?.events?.find(event => event.kind === "sent")?.at;
   const answered = task && task.status && task.status !== "open"
     ? `<p class="task-state"><span class="state-chip" data-tone="waiting">Answered</span> ${html(task.answered_by ?? task.person)}${task.answered_by && task.answered_by !== task.person ? ` for ${html(task.person)}` : ""} at ${html(at(task.answered_at))}: “${html(task.answer)}”. Waiting for the supplier's written confirmation before anything is released.</p>` : "";
-  return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-    <p class="verdict"><b>Order sent${sentAt ? ` ${html(sentAt)}` : ""} · supplier disputes dispatch · amendment held${departed ? "" : ` · ${html(at(departure.deadline))} departure deadline passed`}.</b>
+  return `<p class="verdict"><b>Order sent${sentAt ? ` ${html(sentAt)}` : ""} · supplier disputes dispatch · amendment held${departed ? "" : ` · ${html(at(departure.deadline))} departure deadline passed`}.</b>
       ${departed ? "" : "No confirmed Sunday recovery."}</p>
     <span class="decision-ask"><b>${html(person)}:</b> ${departed ? `reconcile the order and its dispatch instruction with ${html(conflict.who)}, then record the outcome.`
       : `reconcile the existing order with ${html(conflict.who)} in writing. Sunday delivery reopens only with proof that the books left ${html(option.origin ?? "the supplier")} by ${html(at(departure.deadline))}.`}${departed ? (option.copiesAdded ? ` The rescue (+${number(option.copiesAdded)} copies) is at risk.` : ` No copies depend on it right now: ${html(nameOf(snapshot.components.find(c => c.id === snapshot.focusComponentId) ?? part))} limits dispatch.`) : ""}</span>${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}
@@ -153,23 +174,22 @@ function conflictCard(part, item, snapshot) {
       <p class="clock-row">${option.modeledUnloadAt ? `<span>Modeled arrival <b>${html(at(option.modeledUnloadAt))}</b> if loading had started at ${html(at(anchor))}${late ? ` · <b>${late} min</b> after the cutoff` : ""}</span>` : ""}
         <span>Receiving cutoff <b>${html(at(snapshot.cutoff))}</b></span>
         ${departure.deadline ? `<span>Leave${option.origin ? ` ${html(option.origin)}` : ""} by <b>${html(at(departure.deadline))}</b>${departure.state === "passed" ? ` (passed, ${departure.reason ? html(departure.reason) : "no proof of departure"})` : departure.state === "verified" ? ` (${html(departure.proof_text ?? `left by ${at(departure.departed_at)}`)})` : ""}</span>` : ""}</p>
-      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details></li>`;
+      <p class="side-note">Dockside's estimate: ${html(option.modeledUnloadBasis ?? "")}. Until all three hold, the release gate sends no amendment and the forecast counts none of these copies; usable stock rises only after receipt and inspection.</p></details>`;
 }
 
 /* The open question, its options with a recommendation, and the answer controls for the person it is assigned to. */
 function postDeadlineCard(part, item) {
   const step = item.next_step;
   const task = step.task;
-  return `<li class="decision-card"><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-    <p class="verdict"><b>No confirmed Sunday recovery.</b> ${html(task.text)}</p>
+  return `<p class="verdict"><b>No confirmed Sunday recovery.</b> ${html(task.text)}</p>
     ${task.status === "open" ? `<p><b>${html(task.person)}</b> decides. ${html(task.recommendation)}</p>
       ${questionBlock(part, {task, person: task.person, message_id: task.id, options: task.options})}
-      <p class="side-note">Either choice creates a separate approval request.</p>` : `<p>${html(step.text)}</p>`}
+      <p class="side-note">Monday delivery requires spending approval. A cancellation request authorizes no fee.</p>` : `<p>${html(step.text)}</p>`}
     ${step.reply_id ? `<a href="/api/replies/${encodeURIComponent(step.reply_id)}/view" target="_blank" rel="noreferrer">Supplier email</a>` : ""}
-    </li>`;
+    `;
 }
 
-function questionParts(part, step) {
+function questionBlock(part, step) {
   const allowed = step.answerable_by ?? step.task?.answerable_by ?? [step.person];
   const mine = viewer.person && (allowed.includes(viewer.person) || viewer.source === "local demo");
   if (step.task?.kind === "post_deadline") {
@@ -177,9 +197,9 @@ function questionParts(part, step) {
       ${mine ? `<button type="button" class="secondary-button" data-quick-answer="${html(step.message_id)}"
         data-text="${html(option.answer)}">${html(option.label)}</button>` : `<b>${html(option.label)}</b>`}
       <div>${html(option.consequence)}</div></li>`).join("");
-    return {html: `<div class="question" data-question="${html(step.message_id)}">
+    return `<div class="question" data-question="${html(step.message_id)}">
       <form><ul>${choices}</ul><span class="side-note" role="status"></span></form>
-      ${mine ? "" : '<p class="side-note">Answer after company sign-in or with /answer in Discord.</p>'}</div>`, advice: ""};
+      ${mine ? "" : '<p class="side-note">Answer after company sign-in or with /answer in Discord.</p>'}</div>`;
   }
   const day = value => value ? new Date(value).toLocaleDateString("en-GB", {day: "numeric", month: "short", timeZone: "UTC"}) : "";
   // Recommend the order line that matches this delivery's quantity; with none, a new emergency order.
@@ -196,21 +216,10 @@ function questionParts(part, step) {
       <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
       <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
     : `<p class="side-note">${html(allowed[0])}${allowed.length > 1 ? ` (or ${html(allowed.slice(1).join(", "))})` : ""} answers here after company sign-in${viewer.person ? ` (you are ${html(viewer.person)})` : ""}, or with /answer in Discord. Dockside reminds and escalates until someone answers.</p>`;
-  const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
+  return step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
       ${choices && !step.task ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency reference for the same order.</p>
       <p class="advice">${html(advice)}</p>` : ""}
       <details><summary>${step.task ? "What the supplier wrote, and what to record" : "Full question"}${step.task ? "" : step.since ? `, asked ${html(at(step.since))}` : ""}${step.answer_by ? ` (answer requested by ${html(at(step.answer_by))})` : ""}</summary><p>${html(step.question)}</p></details>${form}</div>` : "";
-  return {html: answer, advice};
-}
-
-function questionBlock(part, step) {
-  return questionParts(part, step).html;
-}
-
-/* One line for the binding part: the open check (a simulated call is evidence of nothing), and when Dockside looks again. */
-function blockerText(step) {
-  if (step.rehearsal) return "Departure and arrival still need confirmation from the carrier. Dockside has a call rehearsal.";
-  return step.text;
 }
 
 /* Text staff read: no internal ids, roles as roles, a capital letter after "Name:". */
@@ -220,7 +229,7 @@ function staffText(text) {
 }
 
 /* Lead with what the person must do now, in one sentence. */
-function instruction(step, advice) {
+function instruction(step) {
   if (!step.person) return step.text;
   const ask = (step.detail ?? step.text.split(": ").slice(1).join(": ")).replace(/\s*Asked [A-Z][a-z]{2} \d\d:\d\d\.?$/, "");
   return `${step.person}: ${ask.charAt(0).toLowerCase() + ask.slice(1)}`;
@@ -228,7 +237,13 @@ function instruction(step, advice) {
 
 function renderNextSteps(snapshot) {
   const all = snapshot.now_next ?? [];
-  const yours = all.filter(item => item.next_step?.state === "Needs you");
+  const waiting = (snapshot.decisions ?? []).filter(decision => decision.cost > 0 && !decision.terminal &&
+    ["proposed", "escalated"].includes(decision.status));
+  const scheduled = (snapshot.decisions ?? []).filter(decision => decision.cost > 0 && !decision.terminal &&
+    decision.status === "scheduled");
+  const listed = new Set([...waiting, ...scheduled].map(decision => decision.id));
+  const hasDecision = item => listed.has(item.next_step?.action_id) && !item.next_step?.task;
+  const yours = all.filter(item => item.next_step?.state === "Needs you" && !hasDecision(item));
   // Questions to Soony staff: a part's next step, or an open question row on its current delivery (newest per person).
   const team = all.filter(item => item.next_step?.person && item.next_step?.state !== "Needs you");
   for (const part of snapshot.components ?? []) {
@@ -247,58 +262,52 @@ function renderNextSteps(snapshot) {
       else team.push({component_id: part.id, next_step: {...row, state: "Waiting for reply", text: `Waiting for ${row.person}: ${detail}`}});
     }
   }
-  const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item));
-  // A decision already shown as a conflict card (its order is disputed) is not listed a second time.
-  const carded = new Set((snapshot.components ?? []).map(part => part.option?.deliveryState?.conflict && part.option.deliveryState.action_id).filter(Boolean));
-  const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled" && !carded.has(decision.id));
-  const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
-  const key = JSON.stringify([all, [...calls.values()].map(call => [call.message_id, call.status, call.talk_url, call.result?.summary]), waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
-  if (key === nextStepsKey) return;
-  nextStepsKey = key;
+  const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item) && !hasDecision(item));
   const count = waiting.length + yours.length;
-  $("next-title").textContent = count ? `Action needed: ${count === 1 ? "1 thing" : `${number(count)} things`}` :
-    team.length ? `Waiting on your team: ${team.length === 1 ? "1 decision" : `${number(team.length)} decisions`}` : "No spending approvals pending";
+  $("next-title").textContent = count ? "Action needed" :
+    team.length ? "Waiting on your team" : "No spending approvals pending";
   $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
   const needs = $("needs-you");
-  const drafts = new Map([...needs.querySelectorAll("form[data-answer]")].map(form => [form.dataset.answer, form.querySelector("textarea").value]));
-  const opened = new Set([...needs.querySelectorAll("[data-question] details[open]")].map(node => node.closest("[data-question]").dataset.question));
+  const focusedDetail = document.activeElement?.dataset.detail;
+  stepDetails = new Map();
   // The part that limits dispatch comes first: what Dockside is checking, by when, and a link to its evidence.
   const binding = snapshot.components.find(component => component.id === snapshot.focusComponentId);
   const bindingStep = binding?.next_step;
-  const blocker = binding && bindingStep && !yours.some(item => item.component_id === binding.id) ? [`<li class="blocker-line">
-      <span class="state-chip" data-tone="alert">Limits dispatch</span>
-      <button class="next-part" type="button" data-next-part="${html(binding.id)}">${html(nameOf(binding))}</button>
-      <span>${html(blockerText(bindingStep))}</span></li>`] : [];
-  needs.innerHTML = [...blocker, ...yours.map(item => {
+  const blocker = binding && bindingStep && !hasDecision({next_step: bindingStep})
+    && ![...yours, ...team].some(item => item.component_id === binding.id)
+    ? [stepRow("dispatch-limit", `Dispatch limit · ${nameOf(binding)}`,
+      `<p>${html(bindingStep.text)}</p>${callControls(bindingStep)}`, binding.id)] : [];
+  const rows = [...waiting.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}</li>`),
+    ...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
-      if (item.next_step.task?.kind === "post_deadline") return postDeadlineCard(part, item);
-      const conflict = part.option?.deliveryState?.conflict;
-      if (conflict) return conflictCard(part, item, snapshot);
-      return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(roleText(item.next_step.text))}</span>${callControls(item.next_step)}</li>`;
-    }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
-      <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
+      const step = item.next_step;
+      const content = step.task?.kind === "post_deadline" ? postDeadlineCard(part, item)
+        : part.option?.deliveryState?.conflict ? conflictCard(part, item, snapshot)
+        : `<p>${html(roleText(step.text))}</p>${callControls(step)}`;
+      return stepRow(part.id, stepHeadline(part, step), content);
+    }), ...blocker,
     ...(team.length && (count || blocker.length) ? [`<li class="group-label">Waiting on your team</li>`] : []),
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
-      if (item.next_step.task?.kind === "post_deadline") return postDeadlineCard(part, item);
       const option = part.option;
       const clock = item === team.find(entry => entry.component_id === item.component_id) ? deliveryClock(option) : "";
       const step = item.next_step;
+      const title = stepHeadline(part, step);
+      if (step.task?.kind === "post_deadline") return stepRow(part.id, title, postDeadlineCard(part, item));
       const overdue = step.answer_by && Date.now() > Date.parse(step.answer_by);
       // The deadline that matters now: before the goods must leave; the time asked for in the message is history.
       const blockBy = option?.departBy && Date.now() < Date.parse(option.departBy) ? option.departBy : null;
       const due = blockBy ? ` <span class="clock-note">Needed before the goods leave${option.origin ? ` ${html(option.origin)}` : ""}: by ${html(at(blockBy))}.</span>`
         : step.answer_by && !overdue ? ` <span class="clock-note">Answer by ${html(at(step.answer_by))}.</span>` : "";
-      const {html: answer, advice} = questionParts(part, step);
-      return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
-        <span>${html(staffText(instruction(step, advice)))}</span>${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}${answer}</li>`;
+      return stepRow(part.id, title, `<p>${html(staffText(instruction(step)))}${due}${item.alsoAsked?.length ? ` <span class="side-note">Escalated to ${html(item.alsoAsked.map(row => row.person).join(", "))} too.</span>` : ""}${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}</p>${questionBlock(part, step)}`);
     }),
-    ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
-      <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
+    ...scheduled.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)} <span class="side-note">Scheduled</span></li>`)].join("");
+  const key = JSON.stringify([rows, upcoming, [...calls.values()].map(call => [call.message_id, call.status, call.talk_url, call.result?.summary])]);
+  if (key === nextStepsKey) return;
+  nextStepsKey = key;
+  needs.innerHTML = rows;
+  if (focusedDetail) needs.querySelector(`[data-detail="${CSS.escape(focusedDetail)}"]`)?.focus({preventScroll: true});
   needs.hidden = !count && !scheduled.length && !team.length && !blocker.length;
-  for (const node of needs.querySelectorAll("[data-question] details")) if (opened.has(node.closest("[data-question]").dataset.question)) node.open = true;
-  for (const form of needs.querySelectorAll("form[data-answer]")) form.querySelector("textarea").value = drafts.get(form.dataset.answer) ?? "";
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
     const part = snapshot.components.find(component => component.id === item.component_id);
@@ -345,10 +354,11 @@ function decisionItem(decision) {
   const actionLine = decision.terminal || (decision.held_reason ?
     [`On hold — ${decision.held_reason}`, decision.hold_owner && `${decision.hold_owner} · ${decision.hold_clears}`].filter(Boolean).join(". ") :
     scheduled ? `Goes ahead ${at(due)} unless stopped.` :
-    `Waiting for ${decision.approver_name || "an approver"}.${signed.length ? ` Signed so far: ${signed.join(", ")}.` : ""}${due ? ` Due ${at(due)}.` : ""}`);
+    decision.cost > 0 ? `Waiting for ${decision.approver_name || "an approver"}.${signed.length ? ` Signed so far: ${signed.join(", ")}.` : ""}${due ? ` Due ${at(due)}.` : ""}` :
+    "Queued by Dockside.");
   const reviewed = decision.instruction ? "" : (decision.messages ?? []).map(message =>
     `<li><strong>${html(message.subject)}</strong> to ${html(message.to_name)}<p>${html(message.body_en || message.body)}</p></li>`).join("");
-  return `<article class="decision" data-action="${html(decision.id)}" data-commitment-digest="${html(decision.commitment_digest || "")}"><h3>${html(decision.title)}</h3>
+  return `<article class="decision" data-action="${html(decision.id)}" data-commitment-digest="${html(decision.commitment_digest || "")}">
     <p>${html(decision.rationale)}</p><p class="side-note">${html(actionLine)}${decision.cost > 0 ? ` Estimated cost ${money(decision.cost)}.` : ""}</p>
     ${decision.instruction ? `<details class="detail-block" open><summary>Shipment instruction</summary><pre style="white-space: pre-wrap">${html(decision.instruction)}</pre></details>` : ""}
     ${decision.details || reviewed ? `<details class="detail-block"><summary>Review action</summary>
@@ -360,12 +370,29 @@ function decisionItem(decision) {
 function renderOperations(snapshot) {
   renderCalls();
   const carded = new Set((snapshot.components ?? []).map(part => part.option?.deliveryState?.conflict && part.option.deliveryState.action_id).filter(Boolean));
-  const decisions = (snapshot.decisions ?? []).filter(decision => !carded.has(decision.id));
-  $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "open action" : "open actions"}` : "Nothing waiting for your approval.";
-  const next = JSON.stringify(decisions);
-  if (next !== queueKey && pendingDecisions.size === 0) {
+  const decisions = (snapshot.decisions ?? []).filter(decision => !carded.has(decision.id) ||
+    (decision.cost > 0 && ["proposed", "scheduled", "escalated"].includes(decision.status)));
+  actionDetails = new Map(decisions.map(decision => [decision.id, decision]));
+  $("attention").textContent = decisions.length ? `${number(decisions.length)} ${decisions.length === 1 ? "action" : "actions"}` : "No decisions or holds";
+  const rows = decisions.map(decision => `<li>${detailButton(decision.id, decision.title, decision.cost)}${decision.terminal || decision.held_reason
+    ? ` <span class="side-note">${html(decision.terminal ? "Closed" : "On hold")}</span>` : ""}</li>`).join("");
+  const next = rows;
+  if (next !== queueKey) {
     queueKey = next;
-    $("decision-list").innerHTML = decisions.map(decisionItem).join("");
+    const list = $("decision-list");
+    const focusedDetail = document.activeElement?.dataset.detail;
+    list.innerHTML = rows;
+    if (focusedDetail) list.querySelector(`[data-detail="${CSS.escape(focusedDetail)}"]`)?.focus({preventScroll: true});
+  }
+  if (openDetail && !openDetail.id.startsWith("step:") && !pendingDecisions.has(openDetail.id)) {
+    const decision = actionDetails.get(openDetail.id);
+    const content = decision ? decisionItem(decision) : "<p>This decision has been closed.</p>";
+    if (content !== openDetail.content) {
+      const wasFocused = $("action-dialog-content").contains(document.activeElement);
+      $("action-dialog-content").innerHTML = content;
+      if (wasFocused) $("action-dialog").querySelector("button").focus();
+      openDetail.content = content;
+    }
   }
   const activity = JSON.stringify(snapshot.activity);
   if (activity !== activityKey) {
@@ -378,7 +405,9 @@ function renderOperations(snapshot) {
 }
 
 function initOperations(reload) {
-  const decisionResult = $("operation-result");
+  const dialog = $("action-dialog");
+  const dialogContent = $("action-dialog-content");
+  const decisionResult = $("decision-result");
   $("refresh-evidence").addEventListener("click", async () => {
     const status = $("refresh-status");
     refreshRequested = true;
@@ -396,20 +425,41 @@ function initOperations(reload) {
       renderRefreshButton();
     }
   });
-  $("needs-you").addEventListener("click", event => {
-    const link = event.target.closest("[data-jump]");
-    const card = link && $("decision-list").querySelector(`[data-action="${CSS.escape(link.dataset.jump)}"]`);
-    if (!card) return;
-    event.preventDefault();
-    card.scrollIntoView({block: "center"});
-    card.querySelector("button")?.focus({preventScroll: true});
+  document.addEventListener("click", event => {
+    const trigger = event.target.closest(".detail-trigger[data-detail]");
+    if (!trigger || dialog.open) return;
+    const id = trigger.dataset.detail;
+    const decision = actionDetails.get(id);
+    const detail = decision ? {title: decision.title, content: decisionItem(decision)} : stepDetails.get(id);
+    if (!detail) return;
+    openDetail = {id, content: detail.content, trigger, list: trigger.closest("ul")};
+    $("action-dialog-title").textContent = detail.title;
+    dialogContent.innerHTML = detail.content;
+    decisionResult.textContent = "";
+    dialog.showModal();
   });
-  $("decision-list").addEventListener("click", async event => {
+  dialog.addEventListener("close", () => {
+    if (!openDetail || dialog.open) return;
+    const {trigger, id, list, shipment} = openDetail;
+    const button = trigger.isConnected ? trigger : list.querySelector(`[data-detail="${CSS.escape(id)}"]`);
+    openDetail = null;
+    dialogContent.replaceChildren();
+    if (shipment) selectPart(shipment, true);
+    else (button ?? list.querySelector("[data-detail]") ?? $("refresh-evidence")).focus({preventScroll: true});
+  });
+  dialog.addEventListener("click", async event => {
+    const shipment = event.target.closest("[data-show-shipment]");
+    if (shipment) {
+      openDetail.shipment = shipment.dataset.showShipment;
+      dialog.close();
+      return;
+    }
     const button = event.target.closest("[data-decision]");
     if (!button) return;
     const card = button.closest("[data-action]");
     const id = card.dataset.action;
     if (pendingDecisions.has(id)) return;
+    const opened = openDetail;
     const decision = button.dataset.decision;
     let by = "web";
     try { by = localStorage.getItem("dockside.me") || by; } catch {}
@@ -423,11 +473,14 @@ function initOperations(reload) {
       if (!response.ok) throw new Error(result.detail || "Try again after refreshing the page.");
       const queued = result.messages?.some(message => ["draft", "outbox"].includes(message.status));
       const unknown = result.messages?.some(message => ["sending", "delivery_unknown"].includes(message.status));
-      decisionResult.textContent = decision === "reject" ? "Decision recorded." : unknown ? "Approved. Delivery needs confirmation." :
-        queued ? "Approved. A message is queued." : "Approved.";
-      card.remove();
+      if (opened === openDetail) {
+        decisionResult.textContent = decision === "reject" ? "Decision recorded." :
+          ["proposed", "scheduled", "escalated"].includes(result.status) ? "Signature recorded. Waiting for the remaining approvers." :
+          unknown ? "Approved. Delivery needs confirmation." : queued ? "Approved. A message is queued." : "Approved.";
+      }
+      card.querySelector(".decision-buttons")?.remove();
     } catch (error) {
-      decisionResult.textContent = `Couldn’t record this decision. ${error.message}`;
+      if (opened === openDetail) decisionResult.textContent = `Couldn’t record this decision. ${error.message}`;
       card.querySelectorAll("button").forEach(control => control.disabled = false);
     } finally {
       pendingDecisions.delete(id);

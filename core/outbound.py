@@ -57,7 +57,8 @@ def _instruction(m: dict) -> tuple[dict, tuple[str, str]] | None:
         raise ReleaseHeld("delivery recipient or channel disagrees with the commitment")
     if reason := release._body_blocker(terms, m):
         raise ReleaseHeld(reason)
-    return terms, release.render_instruction(terms, bool(action["payload"].get("repeat_commitment")))
+    return terms, release.render_instruction(terms, bool(action["payload"].get("repeat_commitment")),
+                                             no_additional_cost=action["cost_eur"] == 0)
 
 
 def send(m: dict, in_reply_to: str | None = None) -> str:

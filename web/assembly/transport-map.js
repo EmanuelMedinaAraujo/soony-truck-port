@@ -63,15 +63,14 @@ function mapLocation(position, stops, mode) {
 
 function mapObservation(position) {
   const name = position.callsign ?? position.name;
-  const source = position.simulated && name ? position.source.toLowerCase() :
-    position.simulated ? "Simulated carrier report" : position.source;
   const time = mapTime(position.timestamp);
-  return `${name ? `${html(name)} from ` : ""}${html(source)}${time ? `, ${time}` : ""}`;
+  return `${name ? `${html(name)} from ` : ""}${html(position.source)}${time ? `, ${time}` : ""}`;
 }
 
 function mapFlightCaption(flight, primary) {
   if (!flight) return "";
   const fallback = primary ? ", showing schedule estimate" : "";
+  if (flight.simulated) return `<p>Live flight data unavailable${fallback}.</p>`;
   if (flight.status === "pending" || flight.position_status === "pending") {
     return "<p>Checking live flight data.</p>";
   }
@@ -80,7 +79,7 @@ function mapFlightCaption(flight, primary) {
       `${html(candidate.callsign)}, departed ${mapTime(candidate.departed_at)}`).join(". ");
     const unavailable = flight.position_status === "unavailable" ?
       `<p>Live flight positions unavailable${fallback}.</p>` : "";
-    return `<p>${flight.candidate_count} possible flights, asking the carrier for the flight number${flight.simulated ? " (simulated)" : ""}.</p>
+    return `<p>${flight.candidate_count} possible flights, asking the carrier for the flight number.</p>
       ${list ? `<p>${list}.</p>` : ""}${unavailable}`;
   }
   if (flight.status === "matched" && flight.candidates[0].position) {
@@ -167,10 +166,10 @@ function mapFigure(tracking, land, id, title = "") {
   const carrierUnconfirmed = tracking.hold || tracking.status === "booked";
   const useEstimate = details.current_position?.source === "Carrier feed" &&
     (carrierUnconfirmed || (tracking.stale && tracking.status !== "arrived_port"));
-  const primary = useEstimate ? expected ?? reported : details.current_position;
+  const primary = flight?.simulated ? expected : useEstimate ? expected ?? reported : details.current_position;
   const reportedDistance = primary && reported ? mapDistance(primary, reported) : 0;
   const compareReport = tracking.mode !== "air" && !carrierUnconfirmed && reportedDistance > 25;
-  const candidates = flight?.status === "ambiguous" ? flight.candidates
+  const candidates = !flight?.simulated && flight?.status === "ambiguous" ? flight.candidates
     .map(candidate => candidate.position).filter(position => position && (!primary || mapDistance(primary, position) > 25)) : [];
   const xy = ({lon, lat}) => [lon, lat];
   const alternatives = [...(compareReport ? [reported] : []), ...candidates];
@@ -209,7 +208,7 @@ function mapFigure(tracking, land, id, title = "") {
   // A container at the terminal has arrived at the port, not at the warehouse: no warehouse ETA until a truck is confirmed.
   const atTerminal = tracking.status === "arrived_port";
   const arrival = atTerminal ? `, at the ${site} terminal · warehouse arrival unconfirmed` : due ? `, Dockside estimate for ${site}: ${due}` : "";
-  const positionLabel = primary?.simulated ? "simulated" : estimated ? "estimate" : "";
+  const positionLabel = estimated ? "estimate" : "";
   const heading = `${label}${arrival}${location ? `, ${location}` : ""}${positionLabel ? ` (${positionLabel})` : ""}`;
   const progress = estimated ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];
 

@@ -504,7 +504,7 @@ def test_signed_terms_are_the_same_in_approval_and_supplier_email_and_repeat(cli
 def test_repeat_cannot_reuse_an_unsigned_instruction(log, deliveries):
     repeat = actions.propose("followup", "Repeat", "", "ask", 0, 0, 0, None, None,
                              parent=order(), repeat_commitment=True, messages=[message(body="Dispatch 8,000 art books.")])
-    assert "explicitly approved and sent" in outbound.dispatch(repeat["id"])["held_reason"]
+    assert "previously authorized and sent" in outbound.dispatch(repeat["id"])["held_reason"]
     assert deliveries == []
 
 
@@ -591,6 +591,37 @@ def test_freight_instruction_waits_for_approval_even_with_high_value_ratio(log, 
     assert approve(booking)["status"] == "sent"
     assert deliveries == [carrier]
     assert "Book freight according to these terms." in deliveries.messages[0].get_content()
+
+
+def test_zero_cost_freight_releases_without_approval_after_evidence_check(log, deliveries):
+    booking = actions.propose(FINDING, "Book art book pickup", "", "book_truck", 0, 0, 0, None, None,
+                              payload={"commitment": {"part": PART, "quantity": 8000, "unit_price": 0,
+                                                      "currency": "EUR", "valid_until": "2026-11-22"}},
+                              messages=[message(body="Please book freight for 8,000 art books.")])
+    assert booking["status"] == "auto"
+    assert not release.decision_state(booking)["can_approve"]
+    actions.set_status(booking["id"], "proposed", "legacy proposal")
+    with pytest.raises(ValueError, match="does not require a spending approval"):
+        approve(booking)
+    assert [a["id"] for a in actions.release_free()] == [booking["id"]]
+    release.record_check("files", valid=False)
+    assert outbound.dispatch(booking["id"])["held_reason"] == "evidence stale"
+    assert deliveries == []
+    release.record_check("files")
+    release.record_check("mailbox")
+    sent = outbound.dispatch(booking["id"])
+    assert sent["messages"][0]["status"] == "sent"
+    assert not sent["signatures"]
+    assert "only at no additional cost" in deliveries.messages[0].get_content()
+
+
+def test_freight_with_a_price_cannot_use_zero_cost_release(log, deliveries):
+    booking = actions.propose(FINDING, "Book art book pickup", "", "book_truck", 0, 0, 0, None, None,
+                              payload={"commitment": {"part": PART, "quantity": 8000, "unit_price": 0.05,
+                                                      "currency": "EUR", "valid_until": "2026-11-22"}},
+                              messages=[message(body="Please book freight for 8,000 art books.")])
+    assert "cost disagrees" in outbound.dispatch(booking["id"])["held_reason"]
+    assert deliveries == []
 
 
 def test_email_link_approves_the_exact_terms_in_its_message(client, deliveries, monkeypatch):

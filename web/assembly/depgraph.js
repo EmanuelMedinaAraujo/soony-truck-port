@@ -221,7 +221,8 @@ window.PartDependencyGraph = (() => {
       const card = svgElement("g", {class: "depgraph-node", "data-node": node.id, "data-kind": node.kind,
         "data-status": node.status, "data-selected": node.selected ? "true" : "false", "data-open": isOpen ? "true" : "false",
         transform: `translate(${x},${y})`, tabindex: "0", role: "button", "aria-expanded": String(isOpen),
-        "aria-label": `${node.label}. ${meta}. ${node.kind === "part" ? "" : status}`,
+        "aria-label": [node.label, meta, node.kind !== "part" && status, node.mapAvailable && (node.selected ? "Hide map" : "Show map")]
+          .filter(Boolean).join(". "),
         "aria-description": [isOpen ? detailText(node).join(". ") : "", relations.get(node.id)?.join(". ")].filter(Boolean).join(". ")});
       card.append(svgElement("rect", {class: "depgraph-card", width: cardWidth, height: nodeHeight, rx: 9}));
       context.font = nameFont;
@@ -243,7 +244,11 @@ window.PartDependencyGraph = (() => {
       }
       card.addEventListener("click", () => activate(node));
       card.addEventListener("keydown", event => {
-        if (event.key === "Escape" && isOpen) { event.preventDefault(); activate(node, "close"); }
+        if (event.key === "Escape" && (isOpen || node.selected)) {
+          event.preventDefault();
+          event.stopPropagation();
+          activate(node, "close");
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         activate(node);
@@ -253,7 +258,9 @@ window.PartDependencyGraph = (() => {
     }
   }
 
-  async function mount(inspector, componentId, nameOf, selectPart, selectedShipment = null, selectShipment = null) {
+  async function mount(inspector, componentId, nameOf, selectPart, {
+    trackedShipments = new Set(), selectedShipment, selectShipment, focusShipment,
+  } = {}) {
     observers.get(inspector)?.disconnect();
     const section = document.createElement("section");
     section.className = "depgraph";
@@ -278,7 +285,8 @@ window.PartDependencyGraph = (() => {
       if (!section.isConnected) return;
       for (const node of graph.nodes) {
         if (["assembly", "part", "subpart"].includes(node.kind)) node.label = nameOf(node.id) ?? node.label;
-        if (node.id === selectedShipment) node.selected = true;
+        node.mapAvailable = node.kind === "shipment" && trackedShipments.has(node.id);
+        node.selected = node.mapAvailable && node.id === selectedShipment;
       }
       if (!graph.short && graph.verdict) verdict.textContent = graph.verdict;
       verdict.hidden = !verdict.textContent;
@@ -287,15 +295,23 @@ window.PartDependencyGraph = (() => {
       expandedByPart.set(componentId, expanded);
       const svg = svgElement("svg", {role: "group", "aria-labelledby": heading.id});
       let lastWidth = 0;
-      const redraw = () => render(svg, lastWidth, graph, section, activate, expanded);
+      const redraw = () => {
+        render(svg, lastWidth, graph, section, activate, expanded);
+        if (focusShipment) {
+          if (document.activeElement === document.body) {
+            svg.querySelector(`[data-node="${CSS.escape(focusShipment)}"]`)?.focus({preventScroll: true});
+          }
+          focusShipment = null;
+        }
+      };
       function activate(node, intent) {
         if (["assembly", "subpart"].includes(node.kind) && nameOf(node.id) && !intent) {
           selectPart(node.id);
           return;
         }
-        const opening = intent !== "close" && !expanded.has(node.id);
+        const opening = intent !== "close" && (node.mapAvailable ? !node.selected : !expanded.has(node.id));
         if (opening) expanded.add(node.id); else expanded.delete(node.id);
-        if (node.kind === "shipment" && opening && selectShipment && selectShipment(node.id)) return;  // re-renders the inspector
+        if (node.kind === "shipment" && selectShipment?.(node.id, opening)) return;
         redraw();
       }
       viewport.append(svg);

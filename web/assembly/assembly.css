@@ -81,7 +81,6 @@ img { display: block; max-width: 100%; }
 .next-strip[data-attention="true"] h2 { color: var(--short); }
 .next-strip .needs-you { display: block; margin: 6px 0 10px; }
 .next-strip .needs-you li { border: 0; padding: 3px 0; }
-.next-strip .needs-you a { font-weight: 700; margin-right: 6px; }
 .handling { margin-top: 4px; }
 #handling-note { cursor: pointer; width: fit-content; color: var(--muted); font-size: .84rem; }
 #handling-note:hover { color: var(--active); }
@@ -253,8 +252,19 @@ img { display: block; max-width: 100%; }
 .operation-details ol { padding-left: 20px; margin-top: 6px; }
 .operation-details li { padding: 4px 0; overflow-wrap: anywhere; }
 .operation-details time { color: var(--muted); font-size: .85rem; }
-.decision { margin-top: 11px; padding: 13px 16px; background: var(--sheet); border: 1px solid var(--line); }
-.decision h3 { font-size: 1.3rem; margin-bottom: 4px; }
+.decision-list { list-style: none; margin: 6px 0; }
+.decision-list li { padding: 3px 0; }
+.detail-trigger { text-align: left; color: var(--active); font-weight: 700; border: 0; padding: 2px 0; background: transparent; }
+.detail-trigger:hover { text-decoration: underline; text-underline-offset: 3px; }
+.action-price { margin-left: 6px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.action-dialog { width: min(680px, calc(100% - 32px)); max-height: calc(100% - 32px); margin: auto; padding: 18px;
+  background: var(--sheet); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.action-dialog::backdrop { background: rgb(10 18 36 / .62); }
+.action-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+.action-dialog h2 { font-size: 1.4rem; }
+.action-dialog .decision > p + p, .action-dialog .shipment-link { margin-top: 8px; }
+.action-dialog ul { padding-left: 20px; }
+.action-dialog .detail-block pre { margin-bottom: 0; }
 .decision-buttons, .ask-form { display: flex; gap: 7px; margin-top: 9px; }
 .action-button, .secondary-button { border: 1px solid var(--active); border-radius: 4px; padding: 6px 10px; }
 .action-button { background: var(--active); color: var(--sheet); }
@@ -330,7 +340,6 @@ img { display: block; max-width: 100%; }
 
 /* The part a line is about: underlined so it reads as the subject and as a link to its trace. */
 .next-part { text-decoration: underline; text-decoration-color: var(--active); text-decoration-thickness: 2px; text-underline-offset: 4px; }
-.next-strip .needs-you .next-part { margin-right: 6px; }
 
 /* Progress of the selected delivery on one vertical line. */
 .progress-caption { color: var(--muted); font-size: .86rem; margin: 2px 0 8px; }
@@ -401,7 +410,7 @@ img { display: block; max-width: 100%; }
 .progress .events li::before { display: none; }
 
 /* Decision card when a supplier contradicts an earlier commitment. */
-.decision-card .decision-ask { font-size: 1rem; }
+.action-dialog .decision-ask { font-size: 1rem; }
 .conflict-line { margin-top: 6px; max-width: 80ch; }
 .conflict-line a { margin-left: 4px; font-size: .86rem; }
 .clock-row { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font-size: .9rem; color: var(--muted); }
@@ -410,8 +419,6 @@ img { display: block; max-width: 100%; }
 .clears li { padding: 2px 0; border: 0; }
 .progress li[data-state="superseded"] b, .progress li[data-state="superseded"] p { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent); }
 .task-state { margin-top: 6px; max-width: 80ch; }
-.blocker-line { margin-bottom: 8px; }
-.blocker-line .next-part { margin-right: 6px; }
 .verdict { margin: 2px 0 6px; color: var(--short); }
 .verdict b { font-weight: 700; }
 .verdict { font-size: .95rem; }

@@ -85,8 +85,8 @@ TOOLS = [
     tool("get_replies", "Unprocessed supplier, voice and staff replies, with the action and staff task they answer.", {}),
     tool("note_reply", "Mark a supplier reply as handled and record in one plain English sentence what it means for the action.",
          {"reply_id": {"type": "string"}, "summary_en": {"type": "string"}}),
-    tool("propose_action", "Record an action and all messages to send. Reversible inquiries can go out automatically. Purchase, dispatch and "
-         "freight instructions require explicitly signed typed terms, even at zero cost. A repeat requires its original sent action ID.",
+    tool("propose_action", "Record an action and all messages to send. Paid commitments need approval. Purchase, dispatch and freight "
+         "instructions need evidenced typed terms even at zero cost. A repeat requires its original sent action ID.",
          {"finding_id": {"type": "string"},
           "what": {"type": "string", "description": "Imperative, plain words, <= 70 chars, no part codes or IDs, understandable without context: say the concrete thing to do and its object. E.g. 'Order 8,000 replacement art books', 'Give Karton Nowak the purchase order number for the art books'. Never vague verbs like 'name', 'handle', 'sort out'."},
           "why": {"type": "string", "description": "One plain sentence, <= 160 chars, no codes: what it protects or fixes. E.g. 'The replacement parts let 400 more kits ship on time.'"},
@@ -109,7 +109,8 @@ TOOLS = [
                                         "revises_action_id": NULLSTR, "vehicle_limit_t": NULLNUM,
                                         "conditions": {"type": "array", "items": {"type": "string", "enum":
                                                        ["transport_confirmed", "dock_slot_confirmed"]}}}},
-          "cost_eur": {"type": "number"}, "eur_protected": {"type": "number"}, "ce_copies": {"type": "integer"},
+          "cost_eur": {"type": "number", "description": "Amount this decision commits in EUR. Use zero only when there is evidence that it requires no spending. Ask for a quote if the cost is unknown."},
+          "eur_protected": {"type": "number"}, "ce_copies": {"type": "integer"},
           "category": {"type": ["string", "null"], "description": "Use the part category from the component record, if known."},
           "owner": {"type": "string", "description": "person who executes"}, "due_in_minutes": {"type": "integer"},
           "messages": {"type": "array", "items": {"type": "object", "additionalProperties": False,
@@ -152,7 +153,7 @@ How you work:
 - Supplier contacts are in suppliers.contact_email. Write to suppliers in their preferred language (suppliers.language) and include body_en.
 - Before e-mailing a supplier, call get_chaser_cases to check the supplier and PO. If an active case covers the same supplier and PO, skip the
   duplicate email and cite the case ID in the action details. Include known PO numbers in po_numbers on each supplier message.
-- You work autonomously on reversible inquiries. Every purchase, dispatch and freight instruction waits for approval of the exact typed terms.
+- Run inquiries and verified no-cost work automatically. Paid purchase, dispatch and freight instructions need approval of the exact typed terms.
   For a confirmation inquiry give the existing delivery_id and confirmation_kind. Ask a question without instructing dispatch or booking.
   When the next step is just a call, draft a phone_script to the actual contact without asking a colleague to place it."""
 
@@ -356,7 +357,7 @@ class Tools:
                 db.execute("BEGIN IMMEDIATE")
             if amendment:
                 if db.execute("""SELECT 1 FROM actions
-                                 WHERE status IN ('proposed','approved','scheduled','escalated','sent','done')
+                                 WHERE status IN ('auto','proposed','approved','scheduled','escalated','sent','done')
                                    AND json_extract(payload, '$.commitment.revises_action_id') = ?""", (amendment,)).fetchone():
                     return {"error": "An amendment for this original order already exists."}
             reminders = {}
@@ -513,7 +514,7 @@ def _propose_recorded_cancellation(reply_id: str) -> str | None:
         terms = release.cancellation_terms(order, task)
         sent = release.sent_order_message(order)
         subject, body = release.render_instruction(terms)
-        action = actions.propose(finding, "Approve cancellation of the disputed order",
+        action = actions.propose(finding, "Request cancellation of the disputed order",
                                  f"{task['person']} recorded this outcome on {task['id']}.",
                                  "cancel_order", 0, 0, 0, order["category"], task["person"],
                                  payload={"commitment": terms}, messages=[
@@ -531,9 +532,9 @@ def handle_replies(on_step=None, model: str | None = None) -> str:
     summaries = []
     for reply in replies:
         if reply["body"] == questions.CANCEL_ORDER and (aid := _propose_recorded_cancellation(reply["id"])):
-            summary = f"Cancellation proposed for approval as {aid}."
+            summary = f"No-fee cancellation request queued as {aid}."
             if on_step:
-                on_step("propose_action", {"reply_id": reply["id"]}, {"created": aid})
+                on_step("propose_action", {"reply_id": reply["id"]}, {"done_automatically": aid})
             inbox.mark_handled(reply["id"], summary)
             summaries.append(summary)
     if pending := inbox.unhandled():

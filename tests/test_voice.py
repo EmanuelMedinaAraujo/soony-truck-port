@@ -155,8 +155,7 @@ def test_mock_reply_summary_attributes_reported_claims(call, completed, monkeypa
 
     with actions.read() as db:
         activity = dispatch.readable_activity(db)
-    assert "1 simulated call (local mock)" in activity["summary"]
-    assert activity["items"][0]["text"] == f"{call['to_name']} — {expected}"
+    assert activity == {"summary": "Nothing in the last 24 hours", "items": []}
 
 
 def test_automatic_simulation_delivers_one_unverified_reply(call, provider, completed, monkeypatch):
@@ -192,10 +191,7 @@ def test_automatic_simulation_delivers_one_unverified_reply(call, provider, comp
         related = dispatch.linked_actions(c)["fixture"]
         assert dispatch.latest_summary(related) is None
         step = dispatch.action_next_step(related)
-    assert step["state"] == "Waiting for reply"
-    assert step["text"].startswith("Call rehearsal for ")
-    assert step["rehearsal"]
-    assert step["call_id"] == mid
+    assert step is None
     last_count = len(requests)
     assert voice.prepare_open() == []
     assert voice.collect() == []

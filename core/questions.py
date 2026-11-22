@@ -15,6 +15,7 @@ MESSAGE_QUESTIONS = """SELECT m.id, m.to_name, m.subject, m.body, m.sent_at, a.t
                          AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.msg_id=m.id)"""
 
 ORDER_STANDS = "The order stands; I confirmed the dispatch instruction with the supplier in writing."
+# Stored answers use this text as a stable value.
 CANCEL_ORDER = "I decided to cancel the order. Prepare the cancellation for approval."
 POST_DEADLINE_SCHEMA = """CREATE TABLE IF NOT EXISTS post_deadline_tasks(
     task_id TEXT PRIMARY KEY REFERENCES staff_tasks(id), proposal_id TEXT)"""
@@ -353,7 +354,7 @@ def _queue_post_deadline(c, target, reply, choice):
     message = {"channel": "email", "to_name": sent["to_name"], "to_address": sent["to_address"],
                "language": sent["language"], "subject": "", "body": ""}
     if choice == "cancel":
-        cost, kind, title = 0, "cancel_order", "Approve cancellation of the art-book order"
+        cost, kind, title = 0, "cancel_order", "Request cancellation of the art-book order"
         terms = release.cancellation_terms(order, task)
     else:
         cost, kind, title = order["cost_eur"], "order", "Approve Monday delivery for the art-book order"
@@ -371,7 +372,7 @@ def _queue_post_deadline(c, target, reply, choice):
     c.execute("UPDATE post_deadline_tasks SET proposal_id=? WHERE task_id=?", (proposal["id"], task["id"]))
     c.execute("UPDATE replies SET handled=1,summary_en=? WHERE id=?",
               (f"Decision recorded. {title}.", reply["id"]))
-    return proposal["id"]
+    return proposal
 
 
 def answer(question: dict, who: str, text: str, *, channel: str = "dashboard", demo_operator: bool = False) -> dict:
@@ -393,7 +394,8 @@ def answer(question: dict, who: str, text: str, *, channel: str = "dashboard", d
                 if text not in {option["answer"] for option in target["options"]}:
                     raise ValueError("Choose Monday delivery or cancellation for this order.")
                 reply = inbox.add_task_answer(c, target, who, text, channel)
-                reply["proposal_id"] = _queue_post_deadline(c, target, reply, text)
+                proposal = _queue_post_deadline(c, target, reply, text)
+                reply.update(proposal_id=proposal["id"], approval_requested=proposal["cost_eur"] > 0)
                 return reply
             return inbox.add_task_answer(c, target, who, text, channel)
         return inbox.add_staff_answer(c, target, who, text, channel)

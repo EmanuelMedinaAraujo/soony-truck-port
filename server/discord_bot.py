@@ -57,7 +57,8 @@ def decision_embed(a: dict) -> discord.Embed:
     state = release.decision_state(a)
     terms = release.terms_for(a)
     if terms and not release.proposal_blocker(a):
-        _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")))
+        _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")),
+                                                    no_additional_cost=a["cost_eur"] == 0)
         for start in range(0, len(instruction), 900):
             e.add_field(name="Shipment instruction" if start == 0 else "Shipment instruction (continued)",
                         value=instruction[start:start + 900], inline=False)
@@ -107,7 +108,7 @@ class Bot(discord.Client):
         async def status(inter: discord.Interaction):
             r = await asyncio.to_thread(rules.evaluate)
             head = next(f for f in r["findings"] if f["id"] == "ce-at-risk")
-            pending = [a for a in actions.list_actions(("proposed", "escalated"))]
+            pending = [a for a in actions.list_actions(("proposed", "escalated")) if (a["cost_eur"] or 0) > 0]
             lines = [f"**{eur(head['eur_at_risk'])}** in Collector's refunds at risk ({head['ce_copies']:,} copies)."]
             lines += [f"• {a['title']} — needs {a['approver_name']}" for a in pending[:8]] or ["No decisions waiting."]
             await inter.response.send_message("\n".join(lines)[:1990])
@@ -138,8 +139,8 @@ class Bot(discord.Client):
             except (KeyError, PermissionError):
                 await inter.response.send_message("That question is no longer open. Select a current question.", ephemeral=True)
                 return
-            confirmation = ("Decision recorded. Dockside queued a separate approval."
-                            if reply.get("proposal_id") else f"Thanks {who}. Dockside recorded your answer.")
+            confirmation = ("Decision recorded. Dockside queued a spending approval." if reply.get("approval_requested")
+                            else f"Thanks {who}. Dockside recorded your answer.")
             await inter.response.send_message(confirmation, ephemeral=True)
 
         @answer.autocomplete("question")
@@ -163,7 +164,7 @@ class Bot(discord.Client):
 
         @self.tree.command(name="decisions", description="Show pending approvals for this staff channel or the whole team")
         async def decisions(inter: discord.Interaction):
-            pending = actions.list_actions(("proposed", "escalated", "scheduled"))
+            pending = [a for a in actions.list_actions(("proposed", "escalated", "scheduled")) if (a["cost_eur"] or 0) > 0]
             if person := self.channel_person(inter.channel_id):
                 pending = [a for a in pending if person in actions.signers(a)]
             if not pending:
@@ -300,6 +301,8 @@ def start(listeners: list, decide_fn) -> Bot | None:
             asyncio.run_coroutine_threadsafe(bot.post_decision(ev["action"]), loop)
         elif ev["kind"] == "action_auto":
             a = ev["action"]
+            if a["messages"] and all(m["channel"] == "phone_script" for m in a["messages"]):
+                return
             if a["kind"] == "chase_escalation":
                 if m := next((m for m in a["messages"] if m["channel"] == "discord" and m["status"] == "draft"), None):
                     asyncio.run_coroutine_threadsafe(post_chase_escalation(m), loop)

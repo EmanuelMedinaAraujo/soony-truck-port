@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -207,6 +208,9 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
             parent: dict | None = None, repeat_commitment: bool = False) -> dict:
     from core import release
 
+    if not math.isfinite(cost_eur) or cost_eur < 0:
+        raise ValueError("Action cost must be a non-negative amount")
+
     payload = dict(payload or {})
     for key in ("signatures", "commitment_digest", "repeat_commitment", "held_reason", "confirmation_evidence"):
         payload.pop(key, None)
@@ -237,7 +241,7 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
     if terms and isinstance(terms["total_price"], (float, int)) and terms["total_price"] > 0:
         routing_cost = terms["total_price"] if terms["currency"] == "EUR" else float("inf")
     ap = approver_for(routing_cost, category)
-    if (cost_eur > 0 or typed) and (special or " + " in ap.get("role", "")):
+    if cost_eur > 0 and (special or " + " in ap.get("role", "")):
         people, names = cfg("people"), []
         for role in dict.fromkeys([*(special or []), *ap["role"].split(" + ")]):
             name = people.get(f"{role}:{category}") or people.get(role)
@@ -250,10 +254,10 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
     due = t + dt.timedelta(minutes=due_in_minutes)
     check = t + dt.timedelta(minutes=min(due_in_minutes, 30))
     entry = f"proposed; needs {ap.get('role')} ({ap.get('name')})" + (f" — {ap['note']}" if ap.get("note") else "")
-    if policy_automatic(kind, cost_eur) and (not typed or repeat_commitment):
+    if policy_automatic(kind, cost_eur):
         status = "auto"
         ap = {"role": "Dockside", "name": "Dockside"}
-        entry = "released by Dockside (free and reversible, no signature needed)"
+        entry = "Queued by Dockside without a spending decision"
     elif not typed and policy_schedules({"kind": kind, "cost_eur": cost_eur, "eur_protected": eur_protected, "approver_name": ap.get("name")}):
         status = "scheduled"
         due = check = t + dt.timedelta(minutes=cfg("autonomy")["act_unless_stopped"]["window_minutes"])
@@ -342,24 +346,25 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, source: str | No
         from core import release
         action = _get(c, aid)
         gated = release.applies(action)
-        if r["cost_eur"] > 0 or gated:
-            required = set(signers(r))
-            if source not in {"dashboard", "Discord", "email", "local demo"} or by not in required:
-                raise UnverifiedApprover(f"{aid} requires a verified decision from {r['approver_name'] or r['approver_role']}.")
-            if decision == "approve":
-                digest = release.approval_digest(action)
-                if gated and (reason := release.proposal_blocker(action)):
-                    raise ValueError(reason)
-                if gated and digest != commitment_digest:
-                    raise ValueError("Review the current shipment instruction before signing")
-                signatures = payload.setdefault("signatures", {})
-                if by in signatures:
-                    raise ValueError(f"{by} already signed")
-                signatures[by] = {"source": source, "signed_at": stamp,
-                                  **({"commitment_digest": digest} if digest else {})}
-                if required - signatures.keys():
-                    status, event = r["status"], "approval_signed"
-                    entry = f"Signed by {actor}; awaiting {', '.join(sorted(required - signatures.keys()))}"
+        if (r["cost_eur"] or 0) <= 0:
+            raise ValueError("This action does not require a spending approval")
+        required = set(signers(r))
+        if source not in {"dashboard", "Discord", "email", "local demo"} or by not in required:
+            raise UnverifiedApprover(f"{aid} requires a verified decision from {r['approver_name'] or r['approver_role']}.")
+        if decision == "approve":
+            digest = release.approval_digest(action)
+            if gated and (reason := release.proposal_blocker(action)):
+                raise ValueError(reason)
+            if gated and digest != commitment_digest:
+                raise ValueError("Review the current shipment instruction before signing")
+            signatures = payload.setdefault("signatures", {})
+            if by in signatures:
+                raise ValueError(f"{by} already signed")
+            signatures[by] = {"source": source, "signed_at": stamp,
+                              **({"commitment_digest": digest} if digest else {})}
+            if required - signatures.keys():
+                status, event = r["status"], "approval_signed"
+                entry = f"Signed by {actor}; awaiting {', '.join(sorted(required - signatures.keys()))}"
         if note:
             entry += f": {note}"
         c.execute("UPDATE actions SET status=?, updated_at=?, history=?, payload=? WHERE id=?",
@@ -405,11 +410,8 @@ def release_free() -> list[dict]:
             SELECT id,status FROM actions WHERE cost_eur=0 AND status IN ('proposed','scheduled','escalated')
         """)]
     released = []
-    from core import release
     for aid, status in queued:
-        if release.applies(get(aid)):
-            continue
-        if action := set_status(aid, "auto", "Released by Dockside without a spending decision.",
+        if action := set_status(aid, "auto", "Queued by Dockside without a spending decision.",
                                 expected=status, approver_role="Dockside", approver_name="Dockside"):
             released.append(action)
     return released

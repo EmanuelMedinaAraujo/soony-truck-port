@@ -175,6 +175,8 @@ class NextStepTest(unittest.TestCase):
         self.log.execute("UPDATE messages SET status='delivery_unknown' WHERE id='vans'")
         self.assertEqual(self.current()["state"], "Stuck")
         self.log.execute("UPDATE actions SET status='proposed', kind='dock_slot' WHERE id='followup'")
+        self.assertEqual(self.current()["state"], "Asking")
+        self.log.execute("UPDATE actions SET cost_eur=120 WHERE id='followup'")
         self.assertEqual(self.current()["state"], "Needs you")
         self.assertEqual(self.current()["text"], "Approve the unload slot.")
 

@@ -23,6 +23,7 @@ let state;
 let selection = null;
 let openedFromNextSteps = false;
 let routeSelection = null;
+let mapShipment = null;
 let assumeConfirmation = true;
 let overviewKey = "";
 let inspectorKey = "";
@@ -220,9 +221,9 @@ function renderRouteDetails(route, showConfirmation) {
 }
 
 function renderTransportMap() {
-  const route = activeRoute();
+  const route = mappedRoute();
   const target = $("transport-map");
-  if (target && route?.tracking && mapLand !== undefined) {
+  if (target && route && mapLand !== undefined) {
     target.innerHTML = mapFigure(route.tracking, mapLand, route.id, route.name);
   }
 }
@@ -260,6 +261,10 @@ function activeRoute() {
     routes.find(route => route.id === part.default_route_id) ?? routes[0];
 }
 
+function mappedRoute(route = activeRoute()) {
+  return route?.tracking && route.id === mapShipment ? route : null;
+}
+
 function routePicker(routes, active) {
   if (routes.length < 2) return "";
   return `<label class="route-picker" for="route-picker">Shipment or source<select id="route-picker">${routes.map(route => {
@@ -284,15 +289,16 @@ function renderChaserCases(part) {
         <ul>${item.questions.map(question => `<li>${html(question)}</li>`).join("")}</ul></details>` : ""}</span></li>`).join("")}</ul></section>`;
 }
 
-function renderInspector(force = false) {
+function renderInspector(force = false, focusShipment = null) {
   const inspector = $("inspector");
   const part = activePart();
   inspector.hidden = !part;
   if (!part) return;
   const route = activeRoute();
+  const map = mappedRoute(route);
   const routes = routesFor(part);
   const chaser = renderChaserCases(part);
-  const key = JSON.stringify([part, routes, route?.id, assumeConfirmation, chaser]);
+  const key = JSON.stringify([part, routes, route?.id, map?.id, assumeConfirmation, chaser]);
   if (!force && key === inspectorKey) return;
   const line = nextStepLine(routeSelection ? route?.next_step ?? part.next_step : part.next_step);
   const currentStage = route?.current_stage ?? part.current_stage;
@@ -327,7 +333,7 @@ function renderInspector(force = false) {
       ${renderRouteDetails(route, showConfirmation)}</div>
     </div>
     ${chaser}
-    ${route?.tracking ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(route.tracking, mapLand, route.id, route.name) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
+    ${map ? `<div id="transport-map" class="transport-view" aria-label="Transport map">${mapLand !== undefined ? mapFigure(map.tracking, mapLand, map.id, map.name) : '<p class="side-note">Loading the shipment map.</p>'}</div>` : ""}
     ${parent ? sourceList([part.includedIn.evidence], "Supplier fitting record") : ""}
     <div class="info-grid"><div>
     ${part.adjustments.length ? `<details class="detail-block" data-detail="inventory checks"><summary>Inventory checks</summary><ul>${part.adjustments.map(adjustment =>
@@ -339,15 +345,22 @@ function renderInspector(force = false) {
   window.PartDependencyGraph.mount(inspector, part.id, id => {
     const component = state.components.find(item => item.id === id);
     return component && nameOf(component);
-  }, selectPart, route?.id, shipmentId => {
-    if (!routes.some(item => item.id === shipmentId)) return false;
-    routeSelection = shipmentId;
-    renderInspector(true);
-    document.querySelector("#transport-map")?.scrollIntoView({block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
-    return true;
+  }, selectPart, {
+    trackedShipments: new Set(routes.filter(item => item.tracking).map(item => item.id)),
+    selectedShipment: map?.id,
+    focusShipment,
+    selectShipment(shipmentId, opening) {
+      const shipment = routes.find(item => item.id === shipmentId);
+      if (!shipment || (!opening && mapShipment !== shipmentId)) return false;
+      if (opening) routeSelection = shipmentId;
+      mapShipment = opening && shipment.tracking ? shipmentId : null;
+      renderInspector(true, shipmentId);
+      $("transport-map")?.scrollIntoView({block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+      return true;
+    },
   });
   if (headingFocused) $("part-heading").focus({preventScroll: true});
-  if (route?.tracking) loadMap();
+  if (map) loadMap();
 }
 
 function partControl(id) {
@@ -362,6 +375,7 @@ function selectPart(id, fromNextSteps = false) {
   openedFromNextSteps = fromNextSteps;
   selection = id;
   routeSelection = null;
+  mapShipment = null;
   const control = selection && partControl(selection);
   for (const node of document.querySelectorAll("[data-part]")) node.setAttribute("aria-expanded", String(node === control));
   drawLinks();
@@ -405,7 +419,7 @@ async function refresh() {
     $("sync").textContent = state.checkedAt ? `Checked ${time.format(new Date(state.checkedAt))}` : "Loading portal data";
     updateOverview();
     renderInspector();
-    if (activeRoute()?.tracking) loadMap();
+    if (mappedRoute()) loadMap();
     renderOperations(state);
     renderNextSteps(state);
     window.PartDependencyGraph.prefetch(state.components.map(component => component.id));
@@ -436,7 +450,10 @@ $("inspector").addEventListener("click", event => {
 });
 $("inspector").addEventListener("change", event => {
   if (event.target.id === "assume-confirmed") assumeConfirmation = event.target.checked;
-  else if (event.target.id === "route-picker") routeSelection = event.target.value;
+  else if (event.target.id === "route-picker") {
+    routeSelection = event.target.value;
+    mapShipment = null;
+  }
   else return;
   const control = event.target.id;
   renderInspector(true);

@@ -69,8 +69,7 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
   <section class="inspector" id="inspector" aria-labelledby="part-heading" hidden></section>
   <section class="operations" id="operations" aria-labelledby="operations-title">
     <header><h2 id="operations-title">Actions</h2><p id="attention">Checking for decisions</p></header>
-    <div id="decision-list"></div>
-    <p id="operation-result" class="operation-result" role="status"></p>
+    <ul id="decision-list" class="decision-list"></ul>
     <details class="operation-details"><summary id="activity-summary">Recent activity</summary><ol id="activity-list"></ol></details>
     <details class="operation-details"><summary>Ask Dockside</summary>
       <form id="ask-form" class="ask-form"><label class="sr-only" for="question">Your question</label>
@@ -79,5 +78,13 @@ icons, lead times and the assumed confirmation appear only inside a part trace.
     </details>
   </section>
 </main>
+<dialog id="action-dialog" class="action-dialog" aria-labelledby="action-dialog-title">
+  <header>
+    <h2 id="action-dialog-title"></h2>
+    <form method="dialog"><button class="secondary-button" autofocus>Close</button></form>
+  </header>
+  <div id="action-dialog-content"></div>
+  <p id="decision-result" class="operation-result" role="status"></p>
+</dialog>
 </body>
 </html>

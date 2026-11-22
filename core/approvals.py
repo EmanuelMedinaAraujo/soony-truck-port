@@ -75,7 +75,7 @@ def _queue(aid: str) -> list[tuple[dict, str]]:
         c.execute(SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         a = actions._get(c, aid)
-        if not a or not (a["cost_eur"] > 0 or release.applies(a)) or not release.decision_state(a)["can_approve"]:
+        if not a or not release.decision_state(a)["can_approve"]:
             return []
         result = []
         now = rules.now()
@@ -129,7 +129,7 @@ def email(aid: str) -> None:
 def email_open() -> None:
     with actions.tx() as c:
         ids = [row[0] for row in c.execute("""SELECT id FROM actions
-                                              WHERE status IN ('scheduled','proposed','escalated')""")]
+                                              WHERE cost_eur > 0 AND status IN ('scheduled','proposed','escalated')""")]
     for aid in ids:
         email(aid)
 
@@ -150,7 +150,7 @@ def lookup(token: str) -> tuple[dict, str]:
     address = _recipients(action).get(row["approver_name"])
     if not address or row["message_status"] != "sent" or address.casefold() != row["to_address"].casefold():
         raise KeyError("Unknown approval link")
-    if row["status"] not in WAITING or row["approver_name"] in action["signatures"]:
+    if (row["cost_eur"] or 0) <= 0 or row["status"] not in WAITING or row["approver_name"] in action["signatures"]:
         return dict(row), "used"
     if rules.now() >= rules.ts(row["expires_at"]) or release.decision_state(action)["terminal"]:
         return dict(row), "expired"

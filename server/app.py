@@ -200,7 +200,8 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
         for check in (voice.prepare_open, voice.collect):
             try:
                 for r in check() or ():
-                    notify("reply", {"reply": r})
+                    if not r["simulated"]:
+                        notify("reply", {"reply": r})
             except Exception as e:
                 actions.log_event("voice_error", None, f"{check.__name__}: {type(e).__name__}")
         from core import questions
@@ -344,9 +345,11 @@ def dispatch_view():
             decision["confirmation_evidence"] = release.preview_confirmations(a)
         instruction = None
         if terms and not release.proposal_blocker(a):
-            _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")))
+            _, instruction = release.render_instruction(terms, bool(a["payload"].get("repeat_commitment")),
+                                                        no_additional_cost=a["cost_eur"] == 0)
         decisions[aid].update(status=a["status"], cost=a["cost_eur"], details=a["payload"].get("details"),
-                              messages=[{key: m[key] for key in ("to_name", "subject", "body", "body_en")} for m in a["messages"]],
+                              messages=[{key: m[key] for key in ("to_name", "subject", "body", "body_en")}
+                                        for m in a["messages"] if m["channel"] != "approval_email"],
                               commitment_id=a["commitment_id"], commitment_digest=release.approval_digest(a),
                               instruction=instruction, signatures=a["signatures"], **decision)
     snapshot["decisions"] = list(decisions.values())
@@ -479,7 +482,7 @@ def answer_question(message_id: str, answer: Answer, request: Request):
         raise HTTPException(409, str(exc))
     notify("staff_answer", {"reply": reply})
     return {"ok": True, "reply_id": reply["id"], "task_id": question["id"] if question["kind"] == "task" else None,
-            "proposal_id": reply.get("proposal_id")}
+            "proposal_id": reply.get("proposal_id"), "approval_requested": reply.get("approval_requested", False)}
 
 
 @app.get("/api/me")
