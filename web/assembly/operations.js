@@ -145,8 +145,10 @@ async function refreshBusy() {
 function decisionItem(decision) {
   const scheduled = decision.status === "scheduled";
   const due = scheduled ? decision.next_check_at : decision.due_at;
-  const actionLine = scheduled ? `Goes ahead ${at(due)} unless stopped.` :
-    `Waiting for ${decision.approver_name || "an approver"}.${due ? ` Due ${at(due)}.` : ""}`;
+  const signed = Object.keys(decision.signatures ?? {});
+  const actionLine = decision.held_reason ? `On hold: ${decision.held_reason}. Dockside releases it once this clears.` :
+    scheduled ? `Goes ahead ${at(due)} unless stopped.` :
+    `Waiting for ${decision.approver_name || "an approver"}.${signed.length ? ` Signed so far: ${signed.join(", ")}.` : ""}${due ? ` Due ${at(due)}.` : ""}`;
   const reviewed = decision.messages?.map(message =>
     `<li><strong>${html(message.subject)}</strong> to ${html(message.to_name)}<p>${html(message.body_en || message.body)}</p></li>`).join("") ?? "";
   return `<article class="decision" data-action="${html(decision.id)}"><h3>${html(decision.title)}</h3>

@@ -71,7 +71,7 @@ TOOLS = [
          "are scheduled with a stop window. Quality releases and commitments outside policy require approval. Use order for a purchase, including "
          "a formal order following a draft. Supplier e-mails require their language and an English translation.",
          {"finding_id": {"type": "string"},
-          "what": {"type": "string", "description": "Imperative, plain words, <= 70 chars, no part codes or IDs. E.g. 'Order 8,000 replacement parts'"},
+          "what": {"type": "string", "description": "Imperative, plain words, <= 70 chars, no part codes or IDs, understandable without context: say the concrete thing to do and its object. E.g. 'Order 8,000 replacement art books', 'Give Karton Nowak the purchase order number for the art books'. Never vague verbs like 'name', 'handle', 'sort out'."},
           "why": {"type": "string", "description": "One plain sentence, <= 160 chars, no codes: what it protects or fixes. E.g. 'The replacement parts let 400 more kits ship on time.'"},
           "details": {"type": "string", "description": "Evidence for the curious: numbers, file names, assumptions, source conflicts. Codes allowed here."},
           "kind": {"type": "string", "enum": ["book_truck", "dock_slot", "order", "expedite", "quality_release", "ask", "confirm_terms", "reserve", "data_fix", "escalate"]},
