@@ -91,6 +91,8 @@ class Bot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.decide_fn = decide_fn
         self.ready = threading.Event()
+        self.staff_channels: dict[str, int] = {}
+        self.staff_channel_lock = asyncio.Lock()
 
         @self.tree.command(name="ask", description="Ask Dockside about shipments, parts or what-ifs")
         async def ask(inter: discord.Interaction, question: str):
@@ -113,7 +115,7 @@ class Bot(discord.Client):
         @self.tree.command(name="answer", description="Answer a specific Dockside question")
         @app_commands.describe(question="Select the question you want to answer")
         async def answer(inter: discord.Interaction, question: str, text: str):
-            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            who = self.staff_person(inter)
             if not who:
                 await inter.response.send_message(f"This Discord account has no staff mapping. {answer_route()}", ephemeral=True)
                 return
@@ -142,7 +144,7 @@ class Bot(discord.Client):
 
         @answer.autocomplete("question")
         async def question_choices(inter: discord.Interaction, current: str):
-            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            who = self.staff_person(inter)
             questions = await asyncio.to_thread(open_questions, who) if who else {}
             query = current.casefold()
             return [app_commands.Choice(name=label, value=mid) for mid, label in questions.items()
@@ -151,7 +153,7 @@ class Bot(discord.Client):
         @answer.autocomplete("text")
         async def answer_choices(inter: discord.Interaction, current: str):
             from core import questions as staff_questions
-            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            who = self.staff_person(inter)
             question = getattr(inter.namespace, "question", None)
             target = await asyncio.to_thread(staff_questions.find, question) if who and question else None
             if not target or target.get("status") != "open" or not staff_questions.can_answer(target, who):
@@ -159,9 +161,11 @@ class Bot(discord.Client):
             return [app_commands.Choice(name=option["label"], value=option["answer"])
                     for option in target.get("options", []) if current.casefold() in option["label"].casefold()]
 
-        @self.tree.command(name="decisions", description="Show every decision waiting for approval, with buttons")
+        @self.tree.command(name="decisions", description="Show pending approvals for this staff channel or the whole team")
         async def decisions(inter: discord.Interaction):
             pending = actions.list_actions(("proposed", "escalated", "scheduled"))
+            if person := self.channel_person(inter.channel_id):
+                pending = [a for a in pending if person in actions.signers(a)]
             if not pending:
                 await inter.response.send_message("No decisions waiting. Dockside will post here when something needs you.")
                 return
@@ -176,15 +180,49 @@ class Bot(discord.Client):
         await self.tree.sync(guild=guild)
 
     async def on_ready(self):
+        if release.setting("discord_staff_channels", False):
+            try:
+                async with self.staff_channel_lock:
+                    await self.setup_staff_channels()
+            except discord.DiscordException:
+                traceback.print_exc()
         self.ready.set()
         print(f"[discord] logged in as {self.user}", flush=True)
+
+    async def setup_staff_channels(self):
+        main = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
+        guild = main.guild
+        channels = await guild.fetch_channels()
+        category = discord.utils.get((ch for ch in channels if isinstance(ch, discord.CategoryChannel)),
+                                     name="Dockside Staff")
+        if category is None:
+            category = await guild.create_category("Dockside Staff", overwrites=main.overwrites)
+        for person in dict.fromkeys(filter(None, rules.cfg("people").values())):
+            topic = f"Dockside staff inbox for {person}"
+            channel = discord.utils.get((ch for ch in channels if isinstance(ch, discord.TextChannel)),
+                                        category_id=category.id, topic=topic)
+            if channel is None:
+                name = re.sub(r"[^a-z0-9]+", "-", person.lower()).strip("-")
+                channel = await guild.create_text_channel(name, category=category, topic=topic)
+            self.staff_channels[person] = channel.id
+        print(f"[discord] routed {len(self.staff_channels)} staff channels", flush=True)
+
+    def channel_person(self, channel_id):
+        return next((person for person, cid in self.staff_channels.items() if cid == channel_id), None)
+
+    def staff_person(self, inter):
+        person = self.channel_person(getattr(inter, "channel_id", None))
+        if (person and release.setting("discord_staff_channels", False)
+                and inter.permissions.manage_guild):
+            return person
+        return release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
 
     async def on_interaction(self, inter: discord.Interaction):
         cid = (inter.data or {}).get("custom_id", "") if inter.type == discord.InteractionType.component else ""
         if not cid.startswith("dock:"):
             return
         _, verb, aid, *revision = cid.split(":", 3)
-        who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+        who = self.staff_person(inter)
         if not who:
             await inter.response.send_message("This Discord account is not assigned to a Dockside staff member.", ephemeral=True)
             return
@@ -202,18 +240,19 @@ class Bot(discord.Client):
             await inter.followup.send(f"Could not record that: {e}. Refresh the decision in the control room.", ephemeral=True)
 
     async def post_decision(self, a: dict):
-        ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)
+        recipients = actions.signers(a)
+        destinations = {self.staff_channels.get(person, CHANNEL_ID) for person in recipients} or {CHANNEL_ID}
         if a["status"] == "scheduled":
-            await ch.send(content=f"Dockside will do this at {a['next_check_at'][11:16]} unless **{a['approver_name']}** stops it",
-                          embed=decision_embed(a), view=DecisionView(a))
-            return
-        prefix = "Escalated to you: " if a["status"] == "escalated" else ""
-        state = release.decision_state(a)
-        content = f"{prefix}Signature needed from **{a['approver_name']}**" if state["can_approve"] else None
-        await ch.send(content=content, embed=decision_embed(a), view=DecisionView(a))
+            content = f"Dockside will do this at {a['next_check_at'][11:16]} unless **{a['approver_name']}** stops it"
+        else:
+            prefix = "Escalated to you: " if a["status"] == "escalated" else ""
+            content = f"{prefix}Signature needed from **{a['approver_name']}**" if release.decision_state(a)["can_approve"] else None
+        for cid in destinations:
+            ch = self.get_channel(cid) or await self.fetch_channel(cid)
+            await ch.send(content=content, embed=decision_embed(a), view=DecisionView(a))
 
-    async def post_text(self, text: str, main: bool = False):
-        cid = CHANNEL_ID if main else UPDATES_ID
+    async def post_text(self, text: str, main: bool = False, person: str | None = None):
+        cid = self.staff_channels.get(person) or (CHANNEL_ID if main else UPDATES_ID)
         ch = self.get_channel(cid) or await self.fetch_channel(cid)
         await ch.send(text[:1990])
 
@@ -244,7 +283,7 @@ def start(listeners: list, decide_fn) -> Bot | None:
                 pending = c.execute("SELECT status FROM messages WHERE id=?", (m["id"],)).fetchone()
             if pending and pending["status"] == "draft":
                 text = f"**{m['subject']}**\nFor **{m['to_name']}**\n{m['body']}"
-                await bot.post_text(discord.utils.escape_mentions(text), main=True)
+                await bot.post_text(discord.utils.escape_mentions(text), main=True, person=m["to_name"])
                 with actions.tx() as c:
                     c.execute("UPDATE messages SET status='delivered',sent_at=? WHERE id=?",
                               (rules.now().isoformat(timespec="seconds"), m["id"]))
@@ -270,6 +309,10 @@ def start(listeners: list, decide_fn) -> Bot | None:
                          if m["channel"] == "discord" and m["subject"].startswith("Reminder of task task:")]
             text = "\n".join(reminders) if reminders else f"Done by Dockside: **{a['title']}** ({to}). {a['rationale']}"
             asyncio.run_coroutine_threadsafe(bot.post_text(text[:1990]), loop)
+            for message in a["messages"]:
+                if message["channel"] == "discord" and message["to_name"] in bot.staff_channels:
+                    asyncio.run_coroutine_threadsafe(
+                        bot.post_text(discord.utils.escape_mentions(message["body"]), person=message["to_name"]), loop)
         elif ev["kind"] == "action_executed":
             a = ev["action"]
             asyncio.run_coroutine_threadsafe(bot.post_text(f"Executed: **{a['title']}**. Nobody stopped it, so Dockside sent it."), loop)

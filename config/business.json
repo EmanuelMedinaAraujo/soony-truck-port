@@ -155,6 +155,10 @@
     "value": {},
     "source": "Discord user IDs for the org chart roster are unknown. Add each verified ID when available."
   },
+  "discord_staff_channels": {
+    "value": true,
+    "source": "Hackathon demo. Discord server managers can act as the staff member assigned to the current channel."
+  },
   "staff_email": {
     "value": {},
     "source": "Optional roster of individually controlled mailboxes by staff name. In the demo, use the staff Gmail plus routes."

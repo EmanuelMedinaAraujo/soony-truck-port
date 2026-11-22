@@ -66,3 +66,23 @@ def test_unmapped_discord_answer_lists_only_configured_route(monkeypatch):
     text = asyncio.run(answer_question())
     assert "Actions in the Dockside dashboard at https://dockside.example" in text
     assert "email" not in text.lower()
+
+
+def test_demo_staff_identity_requires_server_management_permission(monkeypatch):
+    monkeypatch.setitem(rules.CONFIG, "discord_staff_channels", {"value": True})
+    monkeypatch.setitem(rules.CONFIG, "staff_discord_accounts", {"value": {"8": "Raj Patel"}})
+
+    async def identities():
+        bot = discord_bot.Bot(None)
+        bot.staff_channels.update({"Katrin Jansen": 11, "Paul Winter": 12})
+        inter = SimpleNamespace(user=SimpleNamespace(id=7), channel_id=11,
+                                permissions=SimpleNamespace(manage_guild=True))
+        assert bot.staff_person(inter) == "Katrin Jansen"
+        inter.channel_id = 12
+        assert bot.staff_person(inter) == "Paul Winter"
+        inter.permissions.manage_guild = False
+        assert bot.staff_person(inter) is None
+        inter.user.id = 8
+        assert bot.staff_person(inter) == "Raj Patel"
+
+    asyncio.run(identities())
