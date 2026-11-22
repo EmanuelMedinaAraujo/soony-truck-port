@@ -2,6 +2,8 @@ import datetime as dt
 import sqlite3
 import unittest
 
+import pytest
+
 from core import actions
 from core.dispatch import action_next_step, embedded_components, forecast, linked_actions, shipment_progress, shipment_tracking
 from core.inbox import REPLY_SCHEMA
@@ -29,7 +31,7 @@ class DispatchForecastTest(unittest.TestCase):
         }
         coverage = {
             "wheel": {"usable_now": 250, "suspect_master_data": False},
-            "insert": {"usable_now": 0, "suspect_master_data": True},
+            "insert": {"usable_now": 0, "included_in": {"componentId": "wheel"}},
         }
         bom = {"wheel": {"starter-kit": 2, "gift-kit": 4}, "insert": {"gift-kit": 1}}
         forecasted, allocations = forecast(picture, coverage, bom, "gift-kit")
@@ -48,6 +50,40 @@ class DispatchForecastTest(unittest.TestCase):
         self.assertEqual(forecasted["kit"]["projected"], 110)
         self.assertTrue(forecasted["kit"]["capacityLimited"])
 
+
+@pytest.mark.parametrize(("stock", "early", "late", "projected"), [
+    (0, [0, 0], [0, 0], [0, 0]),
+    (25, [11, 0], [21, 0], [25, 0]),
+    (200, [11, 22], [21, 42], [50, 100]),
+])
+def test_dispatch_replays_fixed_stock_at_two_clocks(tmp_path, stock, early, late, projected):
+    from core import dispatch, ingest, rules
+
+    path = tmp_path / "master.db"
+    with sqlite3.connect(path) as db:
+        db.executescript(ingest.SCHEMA)
+        db.executescript("""
+            INSERT INTO launch_status VALUES
+                ('standard', '2026-11-22T07:00:00+01:00', 100, 0, 100, 120, 'packing'),
+                ('collector', '2026-11-22T07:00:00+01:00', 50, 0, 50, 60, 'packing');
+            INSERT INTO bom(parent_id, child_id, qty_per) VALUES
+                ('standard', 'cards', 1), ('collector', 'cards', 1), ('collector', 'book', 1);
+            INSERT INTO stock(material_id, quantity) VALUES ('book', 100);
+        """)
+        db.execute("INSERT INTO stock(material_id, quantity) VALUES ('cards', ?)", (stock,))
+    policy = rules.CONFIG | {
+        "priority_product": {"value": "collector"},
+        "deadline": {"value": "2026-11-22T09:00:00+01:00"},
+        "shifts": {"value": [{"start": "2026-11-22T07:00:00+01:00", "end": "2026-11-22T09:00:00+01:00"}]},
+        "missed_copy_cost_eur": {"value": {"collector": 120, "standard": 0}},
+    }
+    for clock, packed in (("07:11", early), ("07:21", late)):
+        with rules.replay(policy, rules.ts(f"2026-11-22T{clock}:00+01:00")):
+            snap = dispatch.snapshot(None, db_path=path, include_activity=False)
+        assert [row["packed"] for row in snap["editions"]] == packed
+        assert [row["projected"] for row in snap["editions"]] == projected
+        cards = next(row for row in snap["components"] if row["id"] == "cards")
+        assert cards["usable"] == stock - sum(packed)
 
 class SupplyTraceTest(unittest.TestCase):
     def test_supplier_fitted_part_attaches_to_its_documented_parent(self):

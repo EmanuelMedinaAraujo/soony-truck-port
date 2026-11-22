@@ -9,26 +9,26 @@ import sqlite3
 from collections import defaultdict
 from contextlib import closing
 
-from core import actions, customer, rules, voice
+from core import actions, rules, voice
+from core.rules import embedded_components
 
 
 def forecast(picture: dict, coverage: dict, bom: dict, priority: str, extra: dict | None = None) -> tuple[dict, dict]:
     """Reserve shared stock in priority order, then cap dispatch by every required part and packing capacity."""
     extra = extra or {}
     allocations, parts_by_edition = {}, defaultdict(dict)
-    order = sorted(picture, key=lambda edition: edition != priority)
-    for component, row in coverage.items():
-        remaining = max(0, row["usable_now"]) + extra.get(component, 0)
+    reserved = rules.component_allocations(
+        {edition: row["todo_now"] for edition, row in picture.items()},
+        {component: max(0, row["usable_now"]) + extra.get(component, 0) for component, row in coverage.items()},
+        bom, priority,
+    )
+    for component, by_edition in reserved.items():
         allocations[component] = {}
-        for edition in order:
-            per_copy = bom[component].get(edition)
-            if per_copy is None:
-                continue
+        for edition, allocated in by_edition.items():
+            per_copy = bom[component][edition]
             required = math.ceil(picture[edition]["todo_now"] * per_copy)
-            allocated = min(required, remaining)
-            remaining -= allocated
             allocations[component][edition] = {"editionId": edition, "required": required, "allocated": allocated, "perCopy": per_copy}
-            if not row["suspect_master_data"]:
+            if not coverage[component].get("included_in"):
                 parts_by_edition[edition][component] = math.floor(allocated / per_copy)
 
     result = {}
@@ -383,18 +383,6 @@ def shipment_route(shipment: dict, suppliers: dict, related: list[dict], places:
             "current_stage": stage, "next_step": next_action}
 
 
-def embedded_components(conn: sqlite3.Connection, coverage: dict) -> dict:
-    """Keep supplier-fitted items under their documented parent in the bill of materials."""
-    findings = defaultdict(dict)
-    for component, note, supplier, folder in conn.execute("""SELECT sc.component_id,sc.note,s.name,s.folder
-        FROM supplier_components sc JOIN suppliers s USING(supplier_id) WHERE sc.note LIKE '%fitted%into%'"""):
-        match = re.search(r"fitted by supplier into\s+([\w-]+)", note, re.IGNORECASE)
-        if match and match[1] in coverage and component in coverage and coverage[component]["suspect_master_data"]:
-            findings[component][match[1]] = {"componentId": match[1], "supplier": supplier,
-                                            "evidence": evidence(customer.supplier_path(rules.cfg("sources"), folder, "supplier_components"), note.split("|", 1)[0].strip())}
-    return {component: next(iter(parents.values())) for component, parents in findings.items() if len(parents) == 1}
-
-
 def linked_actions(conn: sqlite3.Connection) -> dict:
     if conn.in_transaction:
         conn.commit()
@@ -549,7 +537,10 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
     reminders = questions.reminders() if related else {}
     asked, history = {}, []
     for action in sorted(related, key=lambda a: a.get("updated_at") or "", reverse=True):
-        if action["kind"] not in {"ask", "escalate"}:
+        if action["kind"] not in {"ask", "escalate", "chase_escalation"}:
+            continue
+        delivery_id = json.loads(action["payload"] or "{}").get("delivery_id")
+        if order and delivery_id and delivery_id not in {order["id"], delivery["delivery_id"]}:
             continue
         for message in action["messages"]:
             if message["channel"] != "discord" or message["status"] != "delivered":
@@ -557,11 +548,13 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
             person = questions.person(message["to_name"])
             when = _clock(rules.ts(message["sent_at"]))
             if task_id := reminders.get(message["id"]):
-                history.append(step(f"Reminder to {person}", "superseded",
-                                    f"Reminder of task {task_id}. Sent {when}.") | {
+                notice = "Escalation" if action["kind"] in {"escalate", "chase_escalation"} else "Reminder"
+                history.append(step(f"{notice} to {person}", "superseded",
+                                    f"{notice} sent {when}. See task {task_id}.") | {
                     "person": person, "question": message["body"], "since": message["sent_at"],
                     "superseded_message_id": message["id"], "reminder_of": task_id})
-            elif person not in asked and not message_answered(message, action["replies"]):
+            elif (action["status"] not in {"superseded", "rejected", "expired"}
+                  and person not in asked and not message_answered(message, action["replies"])):
                 pending = internal_followup(action, message)
                 asked[person] = step(f"Answer from {person}", "waiting",
                                      f"{pending['text']} Asked {when}.") | {
@@ -572,7 +565,7 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
         steps.append(step(f"Task for {owner}", "waiting" if opened else "answered",
                           "Reconcile the order and its dispatch instruction with the supplier, then record the outcome."
                           if opened else _awaiting_task_evidence(task)) | {
-            "task": task, "person": owner, "since": delivery["task_created_at"],
+            "task": task, "person": owner, "answerable_by": task["answerable_by"], "since": delivery["task_created_at"],
             "message_id": task["id"] if opened else None, "question": task["text"] if opened else None,
             "options": [
                 {"answer": questions.ORDER_STANDS, "label": "Record: order stands and dispatch instruction confirmed in writing"},
@@ -585,7 +578,8 @@ def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, 
 
 def _awaiting_task_evidence(task):
     at = _clock(rules.ts(task["answered_at"]))
-    return f"Answered by {task['person']} at {at} — waiting for supplier confirmation and logistics evidence."
+    who = task["answered_by"] or task["person"]
+    return f"Answered by {who} at {at} — waiting for supplier confirmation and logistics evidence."
 
 
 def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
@@ -746,12 +740,8 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
             decision["messages"] = [{key: msg[key] for key in ("to_name", "subject", "body", "body_en")} for msg in action["messages"]]
 
     with closing(sqlite3.connect(f"{(db_path or rules.DB_PATH).resolve().as_uri()}?mode=ro", uri=True)) as conn:
-        picture = rules.launch_picture(conn)
-        coverage = rules.component_coverage(conn, picture)
-        bom = defaultdict(dict)
-        for edition, component, units in conn.execute("SELECT parent_id,child_id,qty_per FROM bom WHERE qty_per > 0"):
-            if edition in picture:
-                bom[component][edition] = units
+        picture, coverage = rules.launch_state(conn)
+        bom = {cid: row["per_copy"] for cid, row in coverage.items()}
         editions, allocations = forecast(picture, coverage, bom, priority)
         refund_per_copy = rules.cfg("missed_copy_cost_eur")
         names = dict(conn.execute("SELECT product_id,name FROM products"))
@@ -773,7 +763,6 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
         port = rules.cfg("site_port")
         if site not in places and port in places:
             places[site] = {**places[port], "name": f"{rules.cfg('site_name')} area"}
-        embedded = embedded_components(conn, coverage)
         shipments = rules.inbound(conn, coverage)
         received = {"delivered", "arrived_dc"}
         shipments.sort(key=lambda s: (s["status"] in received, not s["planned_for_launch"], s["arrival_at_dc"] is None,
@@ -828,7 +817,7 @@ def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = T
             latest = latest_summary(gap_actions)
             components.append({"id": cid, "name": name, "status": status, "usable": inventory, "required": stock["need_total"],
                                "shared": len(rows) > 1, "allocations": rows, "purchaseOrders": orders[cid],
-                               "routes": routes, "option": option, "includedIn": embedded.get(cid),
+                               "routes": routes, "option": option, "includedIn": stock.get("included_in"),
                                "adjustments": [{"detail": adj["detail"], "evidence": adj.get("evidence", [])} for adj in stock["adjustments"]],
                                "latestActivity": latest["summary_en"] if latest else None, "default_route_id": primary_route["id"],
                                "current_stage": primary_route["current_stage"],

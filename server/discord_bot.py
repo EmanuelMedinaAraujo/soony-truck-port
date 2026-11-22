@@ -34,7 +34,7 @@ def open_questions(who):
     from core import questions
     out = {}
     for q in questions.current():
-        if q["person"] == who:
+        if questions.can_answer(q, who):
             out[q["id"]] = ((f"{q['part']} · " if q.get("part") else "") + q["text"])[:100]
     return out
 
@@ -120,15 +120,17 @@ class Bot(discord.Client):
             from core import questions as staff_questions
             target = await asyncio.to_thread(staff_questions.find, question)
             if (not target or target.get("superseded") or target.get("status", "open") != "open"
-                    or target["person"] != who):
-                await inter.response.send_message("Select an open question assigned to you; replaced questions can't be answered.", ephemeral=True)
+                    or not staff_questions.can_answer(target, who)):
+                detail = (f"See task {target['reminder_of']} to record an answer." if target and target.get("superseded")
+                          else "Select an open question you are authorized to answer.")
+                await inter.response.send_message(detail, ephemeral=True)
                 return
             if not (text := text.strip()):
                 await inter.response.send_message("Write an answer first.", ephemeral=True)
                 return
             try:
                 await asyncio.to_thread(staff_questions.answer, target, who, text[:4000], channel="Discord")
-            except (KeyError, ValueError):
+            except (KeyError, PermissionError, ValueError):
                 await inter.response.send_message("That question is no longer open. Select a current question.", ephemeral=True)
                 return
             await inter.response.send_message(f"Thanks {who}. Dockside recorded your answer to {question}.", ephemeral=True)

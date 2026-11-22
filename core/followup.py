@@ -114,10 +114,12 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
         revised = delivery.get("needs_revised_terms", False)
         task = step.get("task") or delivery.get("task")
         staff_questions = {}
-        for pending in [*route_steps, step]:
+        open_steps = [s for s in route_steps
+                      if s["state"] not in {"confirmed", "superseded"} and not s.get("reminder_of")]
+        for pending in [*open_steps, step]:
             qid = pending.get("message_id")
             if qid and pending.get("question") and pending.get("person") and pending.get("state") in {"waiting", "Waiting for reply", "Needs you"}:
-                if task and pending["person"] == task["person"] and qid != task["id"]:
+                if task and qid != task["id"]:
                     continue
                 staff_questions[qid] = {
                     "who": pending["person"], "what": pending["question"], "asked_at": pending.get("since"),
@@ -129,7 +131,7 @@ def stalled(snapshot: dict, now: dt.datetime | None = None) -> list[dict]:
                     "usable": part["usable"], "required": part["required"],
                     "finding_id_for_new_actions": root_finding(part),
                     "route": route["name"] if route else None, "route_id": route["id"] if route else None,
-                    "open_steps": [s["name"] + ": " + s["detail"] for s in route_steps if s["state"] != "confirmed"],
+                    "open_steps": [s["name"] + ": " + s["detail"] for s in open_steps],
                     "waiting_on": step.get("base_text", step["text"]), "state": step["state"], "since": step["since"],
                     "action_id": step["action_id"],
                     "act_by": deadline.isoformat(timespec="minutes") if deadline else None,

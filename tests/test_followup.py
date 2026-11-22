@@ -170,7 +170,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
 
     from fastapi.testclient import TestClient
 
-    from core import dispatch, questions
+    from core import depgraph, dispatch, questions
     from server import app as server
     from server.discord_bot import open_questions
 
@@ -182,10 +182,11 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
     policy["followup"]["value"].update(enabled=True)
     policy["release_supplier_logistics_contacts"] = {"value": {}}
 
-    def ask_buyer(finding):
-        draft = {"channel": "discord", "to_name": "Paul Winter", "to_address": None, "language": "en",
+    def ask_buyer(finding, recipient="Paul Winter", *, kind="ask", delivery_id=None):
+        draft = {"channel": "discord", "to_name": recipient, "to_address": None, "language": "en",
                  "subject": "Name the purchase order", "body": "Please give the order reference."}
-        action = actions.propose(finding, "Name the purchase order", "", "ask", 0, 0, 0, None, None, messages=[draft])
+        action = actions.propose(finding, "Name the purchase order", "", kind, 0, 0, 0, None, None,
+                                 messages=[draft], payload={"delivery_id": delivery_id})
         mid = action["messages"][0]["id"]
         with actions.tx() as log:
             log.execute("UPDATE messages SET status='delivered', sent_at=? WHERE id=?", (rules.now().isoformat(), mid))
@@ -205,12 +206,18 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
 
     with rules.replay(policy, replay.at("00:14")):
         replay.seed_sent_order()
+        with closing(sqlite3.connect(rules.DB_PATH)) as db, db:
+            db.execute("INSERT INTO launch_status VALUES ('FG-GH6-CE', ?, 8000, 0, 8000, 900, 'test')",
+                       (rules.now().isoformat(),))
+            db.execute("INSERT INTO bom(parent_id, child_id, qty_per) VALUES ('FG-GH6-CE', ?, 1)", (replay.PART,))
         original = actions.get(replay.ORDER)
         supplier = release.sent_order_message(original)
         carrier = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please confirm transport.", "book_truck", replay.ORDER)
     with rules.replay(policy, replay.at("00:18")):
         replay.store_reply(supplier, "ack", "We acknowledge receipt of the order.")
         older, _ = ask_buyer("reply-ack")
+        pre_dispute, _ = ask_buyer(f"followup-{replay.FINDING}-202611220018", "Head of Procurement", kind="escalate")
+        unrelated, _ = ask_buyer(replay.FINDING, "Jonas Lindqvist", delivery_id="another-order")
         assert questions.find(older)["kind"] == "message"
     with rules.replay(policy, replay.at("02:07")):
         replay.store_reply(supplier, "accept", replay.ACCEPTANCE)
@@ -224,6 +231,13 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         replay.store_reply(supplier, "denial", denial,
                            "Karton Nowak reports no dispatch instruction; using the 04:17 reply the earliest modeled "
                            "unload is 17:17, so ACT-B7B90B recorded the delivery as unconfirmed.")
+        client = TestClient(server.app, raise_server_exceptions=True)
+        before_get = actions.DB.read_bytes()
+        response = client.get("/api/dispatch")
+        assert response.status_code == 200
+        assert response.json()["components"][0]["option"]["deliveryState"]["conflict"]
+        assert actions.DB.read_bytes() == before_get
+        questions.reconcile()
         route, option = recovery()
         formal = next(row for row in route["steps"] if row["name"] == "Formal order")
         assert formal["state"] == "waiting"
@@ -250,6 +264,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         task_id = option["task"]["id"]
         assert task_id == f"task:{replay.ORDER}:denial"
         assert route["next_step"]["task"] == option["task"]
+        assert client.get("/api/dispatch").json()["components"][0]["option"]["task"]["id"] == task_id
         assert questions.find(older)["reminder_of"] == task_id
         assert "17:17 misses the 16:00" in route["next_step"]["text"]
         assert route["next_step"]["reply_id"] == "denial"
@@ -265,8 +280,11 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
 
     with rules.replay(policy, replay.at("04:19")):
         newer, draft = ask_buyer(f"followup-{replay.FINDING}-202611220419")
+        escalation, _ = ask_buyer(f"followup-{replay.FINDING}-202611220419", "Jonas Lindqvist",
+                                  kind="escalate", delivery_id=replay.ORDER)
         reminder_action = agent.Tools().propose_action(
-            "reply-denial", "Ask again", "", "", "escalate", 0, 0, 0, None, "Dockside", 15, [draft],
+            "reply-denial", "Ask again", "", "", "escalate", 0, 0, 0, None, "Dockside", 15,
+            [draft | {"to_name": "Dr. Maren Vogt"}],
         )["done_automatically"]
         reminder = actions.get(reminder_action)["messages"][0]
         assert task_id in reminder["body"]
@@ -276,6 +294,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
                            "Karton Nowak reports no dispatch instruction. Dockside escalated the conflict.")
     with rules.replay(policy, replay.at("04:47")):
         replay.store_reply(supplier, "checking", "We are still checking.")
+        questions.reconcile()
         route, option = recovery()
         assert option["task"]["id"] == task_id
         assert option["modeledUnloadReplyId"] == "denial2"
@@ -283,9 +302,12 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert option["modeledUnloadAt"] == replay.at("17:25").isoformat()
         assert option["modeledLateMinutes"] == 85 and "04:25" in option["modeledUnloadBasis"]
         assert list(open_questions("Paul Winter")) == [task_id]
-        assert [q["id"] for q in agent.Tools().get_open_questions()] == [task_id]
+        assert list(open_questions("Dr. Maren Vogt")) == [task_id]
+        assert set(open_questions("Jonas Lindqvist")) == {task_id, unrelated}
+        assert not open_questions("Katrin Jansen")
+        assert {q["id"] for q in agent.Tools().get_open_questions()} == {task_id, unrelated}
         assert questions.find(task_id)["source_reply_id"] == "denial2"
-        replaced = {older, newer, reminder["id"]}
+        replaced = {older, pre_dispute, newer, escalation, reminder["id"]}
         assert {r["superseded_message_id"] for r in route["steps"] if r.get("reminder_of") == task_id} == replaced
         assert all(questions.find(mid)["reminder_of"] == task_id for mid in replaced)
         part = {"id": replay.PART, "name": "Art books", "status": "short", "usable": 0, "required": 8000,
@@ -294,9 +316,15 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert item["task"]["id"] == task_id
         assert [q["id"] for q in item["open_staff_questions"]] == [task_id]
         assert item["verified_eta"] is None
+        assert all("See task" not in s for s in item["open_steps"])
+        graph = depgraph.annotate({"nodes": [], "edges": [], "short": True}, part)
+        rush = next(node for node in graph["nodes"] if node["id"] == route["id"])
+        assert "task for paul winter" in rush["detail"]
+        assert "escalation to" not in rush["detail"] and "reminder to" not in rush["detail"]
 
-        monkeypatch.setattr(server, "verified_person", lambda request: ("Paul Winter", "dashboard"))
-        client = TestClient(server.app, raise_server_exceptions=True)
+        monkeypatch.setattr(server, "verified_person", lambda request: ("Katrin Jansen", "dashboard"))
+        assert client.post(f"/api/questions/{task_id}/answer", json={"text": "Use the old PO"}).status_code == 403
+        monkeypatch.setattr(server, "verified_person", lambda request: ("Dr. Maren Vogt", "dashboard"))
         # Context variables propagate from TestClient to the sync endpoint.
         for mid in replaced:
             refused = client.post(f"/api/questions/{mid}/answer", json={"text": "Use the old PO"})
@@ -306,6 +334,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert client.post(f"/api/questions/{task_id}/answer", json={"text": "duplicate"}).status_code == 409
         reply = next(r for r in agent.Tools().get_replies() if r["reply_id"] == recorded.json()["reply_id"])
         assert reply["staff_task"]["id"] == task_id
+        assert reply["staff_task"]["answered_by"] == "Dr. Maren Vogt"
         assert not open_questions("Paul Winter")
         route, option = recovery()
         assert option["deliveryState"]["conflict"] and not option["deliveryState"]["transport_confirmed"]
@@ -313,7 +342,7 @@ def test_disputed_rush_order_updates_trace_forecast_and_followup(tmp_path, monke
         assert option["task"]["answer"] == questions.ORDER_STANDS
         assert option["task"]["answered_at"] == replay.at("04:47").isoformat()
         assert route["next_step"]["state"] == "Waiting for reply"
-        assert "Answered by Paul Winter" in route["next_step"]["text"]
+        assert "Answered by Dr. Maren Vogt" in route["next_step"]["text"]
         assert not any(row.get("message_id") == task_id for row in route["steps"])
 
         monkeypatch.delenv("SMTP_HOST", raising=False)

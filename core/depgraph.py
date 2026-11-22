@@ -377,7 +377,8 @@ def annotate(graph: dict, component: dict | None) -> dict:
     # A rush offer of ready stock is a delivery too: show it with what still blocks it.
     if plan and plan["id"].startswith("offer-") and graph.get("short"):
         supplier_id = next((sid for sid, name in suppliers.items() if plan["name"].endswith(name)), None)
-        open_steps = [s for s in plan.get("steps", []) if s["state"] != "confirmed"]
+        open_steps = [s for s in plan.get("steps", [])
+                      if s["state"] not in {"confirmed", "superseded"} and not s.get("reminder_of")]
         meta = (f"Waiting: {', '.join(s['name'].lower() for s in open_steps if s['state'] == 'waiting')}"
                 if any(s["state"] == "waiting" for s in open_steps) else "Not ordered yet")
         node = {"id": plan["id"], "label": f"{plan['name'].split(' from ')[0]}, {plan.get('quantity', 0):,}",

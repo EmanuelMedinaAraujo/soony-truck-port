@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 import sqlite3
+from collections import defaultdict
 from contextvars import ContextVar
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, asdict
@@ -122,30 +124,68 @@ def facts(con, ftype: str) -> list[dict]:
 
 # ---------------------------------------------------------------- launch picture
 def launch_picture(con) -> dict:
+    return launch_state(con)[0]
+
+
+def launch_state(con) -> tuple[dict, dict]:
+    """Reconcile observed and modeled packing against the same usable component stock."""
     t_now = now()
     deadline = ts(cfg("deadline"))
-    latest = {}
+    picture = {}
     for pid, as_of, demand, packed, todo, rate, src in con.execute("SELECT * FROM launch_status ORDER BY as_of"):
-        latest[pid] = dict(product_id=pid, as_of=as_of, demand=demand, packed=packed, still_to_pack=todo, rate=rate, source=src)
-    snap = {m: q for m, q in con.execute("SELECT material_id, quantity FROM stock") if m in latest}
-    for pid, p in latest.items():
-        start = max(t_now, ts(p["as_of"]))
-        # packing continues between as_of and now at the stated rate
-        since = shift_hours_between(ts(p["as_of"]), start)
-        p["packed_est_now"] = min(p["demand"], p["packed"] + round(since * p["rate"]))
-        p["hours_left"] = round(shift_hours_between(start, deadline), 1)
-        p["capacity_left"] = round(p["hours_left"] * p["rate"])
-        p["todo_now"] = p["demand"] - p["packed_est_now"]
-        p["slack_copies"] = p["capacity_left"] - p["todo_now"]
-        p["packed_at_stock_snapshot"] = snap.get(pid)
-    return latest
+        picture[pid] = dict(product_id=pid, as_of=as_of, demand=demand, packed=packed, still_to_pack=todo, rate=rate, source=src)
+    packed_at_stock = dict(con.execute("SELECT material_id, SUM(quantity) FROM stock GROUP BY material_id"))
+    for pid, row in picture.items():
+        row["packed_at_stock_snapshot"] = packed_at_stock.get(pid)
+        row["packed_est_now"] = row["packed"]
+
+    stock = _component_stock(con, picture)
+    # Reserve shared parts for outstanding demand just as the dispatch forecast does.
+    # Debit each part only for boxes that can actually be made.
+    limits = component_allocations(
+        {pid: row["demand"] - row["packed"] for pid, row in picture.items()},
+        {cid: max(0, _usable_after_packing(row, picture)) for cid, row in stock.items()},
+        {cid: row["per_copy"] for cid, row in stock.items()},
+        cfg("priority_product"),
+    )
+    parts_by_edition = defaultdict(list)
+    for cid, allocations in limits.items():
+        if not stock[cid].get("included_in"):
+            for pid, allocated in allocations.items():
+                parts_by_edition[pid].append(math.floor(allocated / stock[cid]["per_copy"][pid]))
+
+    for pid, row in picture.items():
+        as_of = ts(row["as_of"])
+        start = max(t_now, as_of)
+        elapsed_capacity = max(0, round(shift_hours_between(as_of, start) * row["rate"]))
+        packed_since = min(max(0, row["demand"] - row["packed"]), elapsed_capacity, *parts_by_edition[pid])
+        row["packed_est_now"] += packed_since
+        row["hours_left"] = round(shift_hours_between(start, deadline), 1)
+        row["capacity_left"] = round(row["hours_left"] * row["rate"])
+        row["todo_now"] = max(0, row["demand"] - row["packed_est_now"])
+        row["slack_copies"] = row["capacity_left"] - row["todo_now"]
+    return picture, _component_coverage(picture, stock)
 
 
-def component_coverage(con, picture: dict) -> dict:
-    """Usable stock vs. remaining need per component, CE first."""
-    prio = cfg("priority_product")
+def component_allocations(demand: dict, stock: dict, bom: dict, priority: str) -> dict:
+    """Reserve each component for the priority edition before the other editions."""
+    order = sorted(demand, key=lambda edition: edition != priority)
+    allocations = {}
+    for component, available in stock.items():
+        allocations[component] = by_edition = {}
+        for edition in order:
+            if edition in bom[component]:
+                required = math.ceil(max(0, demand[edition]) * bom[component][edition])
+                by_edition[edition] = allocated = min(required, available)
+                available -= allocated
+    return allocations
+
+
+def _component_stock(con, picture: dict) -> dict:
     bom = {}
-    for parent, child, qty, rev, use_up, eff, chg in con.execute("SELECT * FROM bom WHERE parent_id IN (%s)" % ",".join("?" * len(picture)), list(picture)):
+    for parent, child, qty, rev, use_up, eff, chg in con.execute(
+        "SELECT * FROM bom WHERE qty_per > 0 AND parent_id IN (%s)" % ",".join("?" * len(picture)), list(picture)
+    ):
         bom.setdefault(child, {})[parent] = dict(qty=qty, rev=rev, use_up=use_up, eff=eff, change=chg)
     paths = cfg("sources")["paths"]
     gr = {r[0]: dict(zip(("gr_number", "gr_date", "po_number", "po_line", "supplier_id", "material_id", "qty_ordered", "qty_received", "delivery_note", "inspector", "remark"), r))
@@ -161,8 +201,6 @@ def component_coverage(con, picture: dict) -> dict:
     out = {}
     for comp, uses in bom.items():
         desc = con.execute("SELECT description FROM components WHERE component_id=?", (comp,)).fetchone()
-        need = {p: int(picture[p]["todo_now"] * u["qty"]) for p, u in uses.items()}
-        consumed_since = int(sum((picture[p]["packed_est_now"] - (picture[p]["packed_at_stock_snapshot"] or picture[p]["packed_est_now"])) * u["qty"] for p, u in uses.items()))
         batches, adjustments = [], []
         for (batch, qty) in con.execute("SELECT batch, quantity FROM stock WHERE material_id=?", (comp,)):
             usable, reasons = qty, []
@@ -194,17 +232,63 @@ def component_coverage(con, picture: dict) -> dict:
             batches.append(dict(batch=batch, qty=qty, usable=usable, supplier=(g or {}).get("supplier_id")))
             adjustments += reasons
         erp_stock = sum(b["qty"] for b in batches)
-        usable_now = int(sum(b["usable"] for b in batches) - consumed_since)
-        suspect_master = erp_stock == 0 and comp not in po_hist and any((picture[p]["packed_at_stock_snapshot"] or 0) > 0 for p in uses)
-        # CE first: priority product draws on usable stock before anyone else.
-        alloc, left = {}, usable_now
-        for p in sorted(uses, key=lambda x: x != prio):
-            alloc[p] = max(0, min(left, need[p]))
-            left -= alloc[p]
-        out[comp] = dict(component=comp, description=desc[0] if desc else comp, need=need, need_total=sum(need.values()),
-                         erp_stock=erp_stock, consumed_since_snapshot=consumed_since, usable_now=usable_now, gap=usable_now - sum(need.values()),
-                         alloc=alloc, adjustments=adjustments, batches=batches, suspect_master_data=suspect_master)
+        suspect_master = erp_stock == 0 and comp not in po_hist and any(
+            (picture[p]["packed_at_stock_snapshot"] or 0) > 0 for p in uses
+        )
+        out[comp] = dict(component=comp, description=desc[0] if desc else comp,
+                         per_copy={p: u["qty"] for p, u in uses.items()},
+                         erp_stock=erp_stock, adjustments=adjustments, batches=batches, suspect_master_data=suspect_master)
+    for cid, parent in embedded_components(con, out).items():
+        out[cid]["included_in"] = parent
     return out
+
+
+def _consumed_since_snapshot(stock: dict, picture: dict) -> float:
+    consumed = 0.0
+    for pid, qty in stock["per_copy"].items():
+        edition = picture[pid]
+        baseline = edition["packed_at_stock_snapshot"]
+        if baseline is None:
+            baseline = edition["packed"]
+        consumed += max(0, edition["packed_est_now"] - baseline) * qty
+    return consumed
+
+
+def _usable_after_packing(stock: dict, picture: dict) -> float:
+    return sum(batch["usable"] for batch in stock["batches"]) - _consumed_since_snapshot(stock, picture)
+
+
+def _component_coverage(picture: dict, stock: dict) -> dict:
+    priority = cfg("priority_product")
+    for row in stock.values():
+        need = {p: int(picture[p]["todo_now"] * qty) for p, qty in row["per_copy"].items()}
+        consumed = _consumed_since_snapshot(row, picture)
+        usable_now = int(sum(batch["usable"] for batch in row["batches"]) - consumed)
+        alloc, left = {}, max(0, usable_now)
+        for p in sorted(need, key=lambda edition: edition != priority):
+            alloc[p] = min(left, need[p])
+            left -= alloc[p]
+        row.update(need=need, need_total=sum(need.values()), consumed_since_snapshot=int(consumed),
+                   usable_now=usable_now, gap=usable_now - sum(need.values()), alloc=alloc)
+    return stock
+
+
+def component_coverage(con, picture: dict) -> dict:
+    """Usable stock vs. remaining need per component, priority edition first."""
+    return _component_coverage(picture, _component_stock(con, picture))
+
+
+def embedded_components(con: sqlite3.Connection, coverage: dict) -> dict:
+    """Keep supplier-fitted items under their documented parent in the bill of materials."""
+    findings = defaultdict(dict)
+    for component, note, supplier, folder in con.execute("""SELECT sc.component_id,sc.note,s.name,s.folder
+        FROM supplier_components sc JOIN suppliers s USING(supplier_id) WHERE sc.note LIKE '%fitted%into%'"""):
+        match = re.search(r"fitted by supplier into\s+([\w-]+)", note, re.IGNORECASE)
+        if match and match[1] in coverage and component in coverage and coverage[component]["suspect_master_data"]:
+            path = customer.supplier_path(cfg("sources"), folder, "supplier_components")
+            findings[component][match[1]] = {"componentId": match[1], "supplier": supplier,
+                                            "evidence": {"label": path, "detail": note.split("|", 1)[0].strip()}}
+    return {component: next(iter(parents.values())) for component, parents in findings.items() if len(parents) == 1}
 
 
 # ---------------------------------------------------------------- inbound
@@ -333,8 +417,7 @@ def evaluate(db_path: Path = DB_PATH) -> dict:
 
 
 def _evaluate(con: sqlite3.Connection) -> dict:
-    pic = launch_picture(con)
-    cov = component_coverage(con, pic)
+    pic, cov = launch_state(con)
     inb = inbound(con, cov)
     prio = cfg("priority_product")
     price = cfg("missed_copy_cost_eur")[prio]

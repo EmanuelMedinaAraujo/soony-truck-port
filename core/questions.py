@@ -7,7 +7,7 @@ import re
 from core import actions, inbox, release, rules
 
 MESSAGE_QUESTIONS = """SELECT m.id, m.to_name, m.subject, m.body, m.sent_at, a.title, a.finding_id,
-                              a.payload, t.task_id AS reminder_of
+                              a.payload, a.status AS action_status, t.task_id AS reminder_of
                        FROM messages m JOIN actions a ON a.id=m.action_id
                        LEFT JOIN staff_task_reminders t ON t.message_id=m.id
                        WHERE m.channel='discord' AND a.kind IN ('ask','escalate','chase_escalation')
@@ -42,20 +42,44 @@ def _root(c, finding: str) -> str:
 def _same_group(c, order, delivery, finding, delivery_id):
     if delivery_id:
         return delivery_id in {order["id"], delivery}
-    return _root(c, finding or "") == _root(c, order["finding_id"] or "")
+    root = _root(c, order["finding_id"] or "")
+    return bool(root and _root(c, finding or "") == root)
 
 
-def public(task) -> dict:
-    return {key: task[key] for key in ("id", "status", "person", "text", "answered_at")} | {"answer": task["answer_text"]}
+def answerers(assignee: str, *, task: bool) -> list[str]:
+    """Include named delegates and the assignee's procurement chain for order tasks."""
+    allowed = [assignee, *release.setting("delegates", {}).get(assignee, [])]
+    if task:
+        people = rules.cfg("people")
+        roles = [role for role, name in people.items() if name == assignee]
+        for role in roles:
+            if role.startswith("Buyer:"):
+                allowed.append(people.get(role.replace("Buyer:", "Category Lead:", 1)))
+        if any(role.startswith(("Buyer:", "Category Lead:")) for role in roles):
+            allowed.append(people.get("Head of Procurement"))
+        if any(role.startswith(("Buyer:", "Category Lead:")) or role == "Head of Procurement" for role in roles):
+            allowed.append(people.get("CPO"))
+    return list(dict.fromkeys(name for name in allowed if name))
 
 
-def _attach(c, order, delivery_id, task):
+def can_answer(question: dict, who: str) -> bool:
+    return who in answerers(question["person"], task=question["kind"] == "task")
+
+
+def public(c, task) -> dict:
+    reply = (c.execute("SELECT from_name FROM replies WHERE id=?", (task["answered_reply_id"],)).fetchone()
+             if task["answered_reply_id"] else None)
+    return {key: task[key] for key in ("id", "status", "person", "text", "answered_at")} | {
+        "answer": task["answer_text"], "answered_by": reply["from_name"] if reply else None,
+        "answerable_by": answerers(task["person"], task=True),
+    }
+
+
+def _attach(c, order, delivery_id, task_id):
     for message in c.execute(MESSAGE_QUESTIONS + " AND t.task_id IS NULL"):
-        if person(message["to_name"]).casefold() != task["person"].casefold():
-            continue
         payload = json.loads(message["payload"] or "{}")
         if _same_group(c, order, delivery_id, message["finding_id"], payload.get("delivery_id")):
-            c.execute("INSERT OR IGNORE INTO staff_task_reminders VALUES (?,?)", (message["id"], task["id"]))
+            c.execute("INSERT OR IGNORE INTO staff_task_reminders VALUES (?,?)", (message["id"], task_id))
 
 
 def _task_origin(c, order_id, claims):
@@ -67,8 +91,8 @@ def _task_origin(c, order_id, claims):
     return disputes[min(previous + 1, len(disputes) - 1)]
 
 
-def _order_state(c, order, now, depart_for_requested=None):
-    delivery = release.delivery_state(order, now=now, depart_for_requested=depart_for_requested, log=c)
+def _reconcile_order(c, order, now):
+    delivery = release.delivery_state(order, now=now, log=c)
     conflict = delivery["conflict"]
     task = c.execute("SELECT * FROM staff_tasks WHERE action_id=? AND status<>'closed'", (order["id"],)).fetchone()
     if conflict:
@@ -100,20 +124,33 @@ def _order_state(c, order, now, depart_for_requested=None):
                              ORDER BY julianday(received_at), id LIMIT 1)
                          WHERE id=? AND answered_reply_id IS NULL AND EXISTS (
                              SELECT 1 FROM replies WHERE action_id=staff_tasks.action_id AND message_id=staff_tasks.id||':'||id)""", (task_id,))
-        task = c.execute("SELECT * FROM staff_tasks WHERE id=?", (task_id,)).fetchone()
-        _attach(c, order, delivery["delivery_id"], task)
-        delivery.update(task=public(task), task_created_at=task["created_at"])
+        _attach(c, order, delivery["delivery_id"], task_id)
     elif task and delivery["hold_reason"] != "evidence stale or unreadable":
         c.execute("UPDATE staff_tasks SET status='closed' WHERE id=?", (task["id"],))
-    return delivery
+
+
+def _has_table(c, name: str) -> bool:
+    return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
 
 def order_state(order, *, now, depart_for_requested=None):
-    """Compute the release state and reconcile its task under the same write lock."""
+    """Read release evidence and the task already recorded by the background cycle."""
+    with release._action_log() as c:
+        c.execute("BEGIN")
+        delivery = release.delivery_state(order, now=now, depart_for_requested=depart_for_requested, log=c)
+        if delivery["conflict"] and _has_table(c, "staff_tasks"):
+            task = c.execute("SELECT * FROM staff_tasks WHERE action_id=? AND status<>'closed'", (order["id"],)).fetchone()
+            if task:
+                delivery.update(task=public(c, task), task_created_at=task["created_at"])
+        return delivery
+
+
+def reconcile():
+    """Reconcile task records after the background cycle collects supplier evidence."""
     with actions.tx() as c:
         inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
-        return _order_state(c, actions._get(c, order["id"]), now, depart_for_requested)
+        refresh(c)
 
 
 def refresh(c):
@@ -125,37 +162,36 @@ def refresh(c):
         AND EXISTS (SELECT 1 FROM messages m WHERE m.action_id=a.id AND m.channel='email'
                     AND m.status IN ('sent','delivered') AND m.sent_at IS NOT NULL)""")
     for row in orders.fetchall():
-        _order_state(c, actions._get(c, row["id"]), now)
+        _reconcile_order(c, actions._get(c, row["id"]), now)
     c.execute("""UPDATE staff_tasks SET status='closed' WHERE status<>'closed'
                  AND action_id IN (SELECT id FROM actions WHERE status IN ('rejected','superseded','expired'))""")
 
 
 def reminders() -> dict[str, str]:
-    with actions.tx() as c:
-        inbox.init_schema(c)
+    with release._action_log() as c:
+        if not _has_table(c, "staff_task_reminders"):
+            return {}
         return dict(c.execute("SELECT message_id, task_id FROM staff_task_reminders"))
 
 
-def for_action(c, finding, delivery_id, recipient) -> dict | None:
+def for_action(c, finding, delivery_id, _recipient) -> dict | None:
     for task in c.execute("SELECT * FROM staff_tasks WHERE status<>'closed' ORDER BY created_at DESC, id"):
-        if task["person"].casefold() != person(recipient).casefold():
-            continue
         order = actions._get(c, task["action_id"])
         terms = release.delivery_terms(order)
         if terms and _same_group(c, order, terms["delivery_id"], finding, delivery_id):
-            return public(task)
+            return public(c, task)
     return None
 
 
 def answered_replies() -> dict:
     with actions.tx() as c:
         inbox.init_schema(c)
-        return {row["answered_reply_id"]: public(row) for row in c.execute(
+        return {row["answered_reply_id"]: public(c, row) for row in c.execute(
             "SELECT * FROM staff_tasks WHERE answered_reply_id IS NOT NULL")}
 
 
-def _task_question(row) -> dict:
-    return public(row) | {"kind": "task", "part": (actions.PART.search(row["finding_id"] or "") or [None])[0],
+def _task_question(c, row) -> dict:
+    return public(c, row) | {"kind": "task", "part": (actions.PART.search(row["finding_id"] or "") or [None])[0],
                           "asked_at": row["created_at"], "source_reply_id": row["source_reply_id"],
                           "action_id": row["action_id"]}
 
@@ -175,9 +211,10 @@ def current() -> list[dict]:
         inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
         refresh(c)
-        tasks = [_task_question(row) for row in c.execute(TASKS + " WHERE t.status='open' ORDER BY t.created_at DESC")]
+        tasks = [_task_question(c, row) for row in c.execute(TASKS + " WHERE t.status='open' ORDER BY t.created_at DESC")]
         messages = [_message_question(row) for row in c.execute(
-            MESSAGE_QUESTIONS + " AND t.task_id IS NULL AND m.status='delivered' ORDER BY julianday(m.sent_at) DESC, m.id")]
+            MESSAGE_QUESTIONS + """ AND t.task_id IS NULL AND m.status='delivered'
+                AND a.status NOT IN ('superseded','rejected','expired') ORDER BY julianday(m.sent_at) DESC, m.id""")]
     return tasks + messages
 
 
@@ -191,16 +228,18 @@ def find(question_id: str) -> dict | None:
 
 def _find(c, question_id):
     if task := c.execute(TASKS + " WHERE t.id=?", (question_id,)).fetchone():
-        return _task_question(task)
+        return _task_question(c, task)
     if message := c.execute(MESSAGE_QUESTIONS + " AND m.id=?", (question_id,)).fetchone():
         result = _message_question(message)
         if task_id := message["reminder_of"]:
             result.update(superseded=True, reminder_of=task_id)
+        elif message["action_status"] in {"superseded", "rejected", "expired"}:
+            result.update(status="closed")
         return result
     return None
 
 
-def answer(question: dict, who: str, text: str, *, channel: str = "dashboard") -> dict:
+def answer(question: dict, who: str, text: str, *, channel: str = "dashboard", demo_operator: bool = False) -> dict:
     with actions.tx() as c:
         inbox.init_schema(c)
         c.execute("BEGIN IMMEDIATE")
@@ -211,6 +250,10 @@ def answer(question: dict, who: str, text: str, *, channel: str = "dashboard") -
         if (target["person"] != question["person"] or target.get("superseded") or
                 target.get("status", "open") != "open"):
             raise ValueError("This question is no longer open. Reload for the current task.")
+        if demo_operator:
+            who = f"{target['person']} (entered by the local demo operator)"
+        elif not can_answer(target, who):
+            raise PermissionError(f"This question is for {target['person']}.")
         if target["kind"] == "task":
             return inbox.add_task_answer(c, target, who, text, channel)
         return inbox.add_staff_answer(c, target, who, text, channel)

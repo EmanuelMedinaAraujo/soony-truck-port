@@ -202,6 +202,8 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                     notify("reply", {"reply": r})
             except Exception as e:
                 actions.log_event("voice_error", None, f"{check.__name__}: {type(e).__name__}")
+        from core import questions
+        questions.reconcile()
         if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
             try:
                 from core import inbox
@@ -419,20 +421,18 @@ def answer_question(message_id: str, answer: Answer, request: Request):
     if not question:
         raise HTTPException(404, "That question no longer exists; reload the page.")
     if question.get("superseded"):
-        raise HTTPException(409, f"This question is a reminder of task {question['reminder_of']}. Answer that task.")
-    asked = question["person"]
-    delegates = release.setting("delegates", {}).get(asked, [])
-    if source == "local demo":
-        who = f"{asked} (entered by the local demo operator)"
-    elif who != asked and who not in delegates:
-        raise HTTPException(403, f"This question is for {asked}. Only {asked} or a named delegate can answer it.")
+        raise HTTPException(409, f"See task {question['reminder_of']} to record an answer.")
+    if source != "local demo" and not questions.can_answer(question, who):
+        raise HTTPException(403, f"This question is for {question['person']} and their authorized delegates.")
     text = answer.text.strip()
     if not text:
         raise HTTPException(422, "Write an answer first.")
     try:
-        reply = questions.answer(question, who, text[:4000])
+        reply = questions.answer(question, who, text[:4000], demo_operator=source == "local demo")
     except KeyError:
         raise HTTPException(404, "That question no longer exists; reload the page.")
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(409, str(exc))
     notify("staff_answer", {"reply": reply})
