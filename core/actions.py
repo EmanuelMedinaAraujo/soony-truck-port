@@ -128,44 +128,58 @@ def open_commitment(kind: str, finding_id: str, recipients: Sequence[str], hours
     return None
 
 
-def release_blocker(a: dict) -> str | None:
-    """Last check before a scheduled commitment leaves: new evidence first, never a second copy of the same commitment."""
+def commitment_for(finding_id: str) -> dict | None:
+    """Find the paid action that a named finding's reminder should follow."""
     with tx() as c:
-        addresses = [r[0] for r in c.execute("SELECT to_address FROM messages WHERE action_id=? AND to_address IS NOT NULL", (a["id"],))]
-        if addresses:
-            marks = ",".join("?" * len(addresses))
-            try:
-                unread = c.execute(f"""SELECT COUNT(*) FROM replies r JOIN messages m ON m.id=r.msg_id
-                                       WHERE r.handled=0 AND m.to_address IN ({marks})""", addresses).fetchone()[0]
-            except sqlite3.OperationalError:  # no reply has ever arrived
-                unread = 0
-            if unread:
-                return "a new reply from the same recipient is still being read"
-    twin = open_commitment(a["kind"], a["finding_id"] or "", addresses)
-    if twin and twin["id"] != a["id"] and twin["status"] in ("approved", "sent"):
-        return f"duplicate of {twin['id']}, which already went out"
-    return None
+        rows = c.execute("""SELECT id FROM actions WHERE finding_id=? AND cost_eur>0
+                            AND status IN ('proposed','scheduled','approved','sent','done','escalated')""",
+                         (finding_id,)).fetchall()
+        return _get(c, rows[0]["id"]) if len(rows) == 1 else None
 
 
-def hold(aid: str, reason: str, minutes: int = 5) -> dict | None:
-    later = (now() + dt.timedelta(minutes=minutes)).isoformat(timespec="seconds")
-    return set_status(aid, "scheduled", f"held before release: {reason}", expected="scheduled", next_check_at=later)
+class UnverifiedApprover(PermissionError):
+    pass
+
+
+def signers(action) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(name.strip() for name in (action["approver_name"] or "").split(" + ") if name.strip()))
+
+
+def hold(aid: str, reason: str | None, *, supersede: bool = False) -> dict:
+    """Keep the current queue and record changes to the release reason."""
+    with tx() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
+        payload = json.loads(row["payload"] or "{}")
+        if reason == payload.get("held_reason"):
+            return _get(c, aid)
+        stamp = now().isoformat(timespec="seconds")
+        history = row["history"]
+        if reason:
+            payload["held_reason"] = reason
+            history = _hist(row, f"Held before release: {reason}")
+            c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, "release_held", aid, reason))
+        else:
+            payload.pop("held_reason", None)
+        status = "superseded" if supersede else row["status"]
+        c.execute("UPDATE actions SET status=?,payload=?,history=?,updated_at=? WHERE id=?",
+                  (status, json.dumps(payload, ensure_ascii=False), history, stamp, aid))
+        return _get(c, aid)
 
 
 def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: float, eur_protected: float, ce_copies: int,
             category: str | None, owner: str | None, due_in_minutes: int = 60, payload: dict | None = None,
-            messages: Sequence[dict] = (), *, connection: sqlite3.Connection | None = None) -> dict:
+            messages: Sequence[dict] = (), *, connection: sqlite3.Connection | None = None,
+            parent: dict | None = None) -> dict:
     ap = approver_for(cost_eur, category)
     special = cfg("approval_by_kind").get(kind)
-    if special and cost_eur > 0:  # Paid actions can require additional role-specific sign-off.
+    if cost_eur > 0 and (special or " + " in ap.get("role", "")):  # Paid actions can require additional role-specific sign-off.
         people, names = cfg("people"), []
-        for role in special:
-            name = people.get(f"{role}:{category}") if role == "Category Lead" else people.get(role)
+        for role in dict.fromkeys([*(special or []), *ap["role"].split(" + ")]):
+            name = people.get(f"{role}:{category}") or people.get(role)
             if role == "Category Lead" and not name:
                 role, name = "Head of Procurement", people.get("Head of Procurement")  # vacant seat -> next tier
             names.append((role, name))
-        if cost_eur and approver_for(cost_eur, category).get("role") not in [r for r, _ in names]:
-            names.append((ap.get("role"), ap.get("name")))
         ap = {"role": " + ".join(r for r, _ in names), "name": " + ".join(n or r for r, n in names)}
     t = now()
     status = "proposed"
@@ -176,12 +190,21 @@ def propose(finding_id: str, title: str, rationale: str, kind: str, cost_eur: fl
         status = "auto"
         ap = {"role": "Dockside", "name": "Dockside"}
         entry = "released by Dockside (free and reversible, no signature needed)"
-    elif policy_schedules({"kind": kind, "cost_eur": cost_eur, "eur_protected": eur_protected}):
+    elif policy_schedules({"kind": kind, "cost_eur": cost_eur, "eur_protected": eur_protected, "approver_name": ap.get("name")}):
         status = "scheduled"
         due = check = t + dt.timedelta(minutes=cfg("autonomy")["act_unless_stopped"]["window_minutes"])
         entry = f"Dockside executes at {check:%H:%M} unless {ap['name']} stops it"
     aid = "ACT-" + uuid.uuid4().hex[:6].upper()
     stamp = t.isoformat(timespec="seconds")
+    payload = dict(payload or {})
+    if cost_eur > 0:
+        from core import release
+        payload["commitment"] = release.describe(
+            {"id": aid, "finding_id": finding_id, "kind": kind, "cost_eur": cost_eur, "payload": payload,
+             "messages": messages}, parent=parent)
+    elif parent and parent["commitment_id"]:
+        payload["commitment_key"] = parent["commitment_id"]
+        payload["commitment_origin_action_id"] = parent["payload"].get("commitment_origin_action_id", parent["id"])
     with (tx() if connection is None else nullcontext(connection)) as c:
         c.execute("INSERT INTO actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             aid, finding_id, title, rationale, kind, cost_eur, eur_protected, ce_copies, category, ap.get("role"), ap.get("name"), owner,
@@ -219,6 +242,9 @@ def _get(c: sqlite3.Connection, aid: str) -> dict | None:
     d = dict(r)
     d["payload"] = json.loads(d["payload"] or "{}")
     d["history"] = json.loads(d["history"] or "[]")
+    d["held_reason"] = d["payload"].get("held_reason")
+    d["signatures"] = d["payload"].get("signatures", {})
+    d["commitment_id"] = d["payload"].get("commitment", {}).get("key") or d["payload"].get("commitment_key")
     d["messages"] = [dict(m) for m in c.execute("SELECT * FROM messages WHERE action_id=? ORDER BY created_at", (aid,))]
     return d
 
@@ -230,9 +256,9 @@ def list_actions(statuses: tuple = ("proposed", "scheduled", "approved", "sent",
     return [get(i) for i in ids]
 
 
-def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: bool = False,
+def decide(aid: str, decision: str, by: str, note: str = "", *, source: str | None = None,
            expires_at: str | None = None) -> dict:
-    """Human decision from the web UI or Discord. approve -> messages become sendable."""
+    """Record a verified decision and wait for all required approvals."""
     if decision not in ("approve", "reject"):
         raise ValueError(f"Unknown decision: {decision}")
     status = "approved" if decision == "approve" else "rejected"
@@ -243,13 +269,31 @@ def decide(aid: str, decision: str, by: str, note: str = "", *, scheduled_only: 
             raise KeyError(aid)
         if expires_at and now() >= ts(expires_at):
             raise ValueError("This email link expired")
-        allowed = ("scheduled",) if scheduled_only else ("proposed", "escalated", "scheduled")
-        if r["status"] not in allowed:
+        if r["status"] not in ("proposed", "escalated", "scheduled"):
             raise ValueError(f"{aid} is already {r['status']}")
-        c.execute("UPDATE actions SET status=?, updated_at=?, history=? WHERE id=?",
-                  (status, now().isoformat(timespec="seconds"), _hist(r, f"{status} by {by}" + (f": {note}" if note else "")), aid))
-    log_event(f"action_{status}", aid, f"{by}: {note}")
-    return get(aid)
+        payload = json.loads(r["payload"] or "{}")
+        stamp = now().isoformat(timespec="seconds")
+        actor = f"{by} ({source})" if source else by
+        event = f"action_{status}"
+        entry = f"{status} by {actor}"
+        if r["cost_eur"] > 0:
+            required = set(signers(r))
+            if source not in {"dashboard", "Discord", "email", "local demo"} or by not in required:
+                raise UnverifiedApprover(f"{aid} requires a verified decision from {r['approver_name'] or r['approver_role']}.")
+            if decision == "approve":
+                signatures = payload.setdefault("signatures", {})
+                if by in signatures:
+                    raise ValueError(f"{by} already signed")
+                signatures[by] = {"source": source, "signed_at": stamp}
+                if required - signatures.keys():
+                    status, event = r["status"], "approval_signed"
+                    entry = f"Signed by {actor}; awaiting {', '.join(sorted(required - signatures.keys()))}"
+        if note:
+            entry += f": {note}"
+        c.execute("UPDATE actions SET status=?, updated_at=?, history=?, payload=? WHERE id=?",
+                  (status, stamp, _hist(r, entry), json.dumps(payload, ensure_ascii=False), aid))
+        c.execute("INSERT INTO events VALUES (?,?,?,?)", (stamp, event, aid, entry))
+        return _get(c, aid)
 
 
 def set_status(aid: str, status: str, entry: str, *, expected: str | None = None, **fields) -> dict | None:
@@ -272,6 +316,8 @@ def policy_automatic(kind: str, cost: float) -> bool:
 def policy_schedules(a: dict) -> bool:
     """Act-unless-stopped within the Buyer limit and above the value threshold."""
     pol = cfg("autonomy")["act_unless_stopped"]
+    if "approver_name" in a and len(signers(a)) != 1:
+        return False
     if a["kind"] in cfg("autonomy")["always_sign"] or a["kind"] not in pol["kinds"]:
         return False
     cost = a["cost_eur"] or 0

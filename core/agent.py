@@ -75,6 +75,14 @@ TOOLS = [
           "why": {"type": "string", "description": "One plain sentence, <= 160 chars, no codes: what it protects or fixes. E.g. 'The replacement parts let 400 more kits ship on time.'"},
           "details": {"type": "string", "description": "Evidence for the curious: numbers, file names, assumptions, source conflicts. Codes allowed here."},
           "kind": {"type": "string", "enum": ["book_truck", "dock_slot", "order", "expedite", "quality_release", "ask", "confirm_terms", "reserve", "data_fix", "escalate"]},
+          "commitment": {"type": ["object", "null"], "additionalProperties": False,
+                         "description": "For paid actions, record evidenced commercial terms. Use null for unknown values.",
+                         "required": ["supplier_id", "part", "quantity", "price_eur", "po", "valid_until", "latest_useful_at", "conditions"],
+                         "properties": {"supplier_id": NULLSTR, "part": NULLSTR, "quantity": NULLNUM,
+                                        "price_eur": {"type": ["number", "null"], "description": "Quoted unit price in EUR"},
+                                        "po": NULLSTR, "valid_until": NULLSTR, "latest_useful_at": NULLSTR,
+                                        "conditions": {"type": "array", "items": {"type": "string", "enum":
+                                                       ["transport_confirmed", "dock_slot_confirmed"]}}}},
           "cost_eur": {"type": "number"}, "eur_protected": {"type": "number"}, "ce_copies": {"type": "integer"},
           "category": {"type": ["string", "null"], "description": "Use the part category from the component record, if known."},
           "owner": {"type": "string", "description": "person who executes"}, "due_in_minutes": {"type": "integer"},
@@ -209,7 +217,7 @@ class Tools:
         r = inbox.mark_handled(reply_id, summary_en)
         return {"ok": bool(r)}
 
-    def propose_action(self, finding_id, what, why, details, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes, messages):
+    def propose_action(self, finding_id, what, why, details, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes, messages, commitment=None):
         from core import inbox
         reply = inbox.get_reply(finding_id.removeprefix("reply-")) if finding_id.startswith("reply-") else None
         if self.handling_replies and not reply:
@@ -250,8 +258,13 @@ class Tools:
                 references = ", ".join(sorted(duplicates))
                 details += f"\nSupplier email skipped because these Supplier Chaser cases are active: {references}."
             messages = remaining
+        if not origin and (followup := re.fullmatch(r"followup-(.+)-\d{12}", finding_id)):
+            origin = actions.commitment_for(followup[1])
+        if origin and cost_eur > 0 and origin["payload"].get("commitment_origin_action_id"):
+            origin = actions.get(origin["payload"]["commitment_origin_action_id"]) or origin
         a = actions.propose(finding_id, what, why, kind, cost_eur, eur_protected, ce_copies, category, owner, due_in_minutes,
-                            payload={"proposed_by": MODEL, "details": details, "from_simulated_call": simulated}, messages=messages)
+                            payload={"proposed_by": MODEL, "details": details, "from_simulated_call": simulated,
+                                     **({"commitment": commitment} if commitment else {})}, messages=messages, parent=origin)
         if a["status"] == "auto":
             from core import outbound
             outbound.dispatch(a["id"])

@@ -11,7 +11,7 @@ import imaplib
 import os
 import re
 from email.header import decode_header, make_header
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import parseaddr
 
 from core import actions, rules
 
@@ -79,10 +79,16 @@ def fetch() -> list[dict]:
     M.login(os.environ["IMAP_USER"], os.environ["IMAP_PASSWORD"])
     new = []
     try:
-        M.select("INBOX", readonly=True)
-        ids = M.search(None, "ALL")[1][0].split()
+        selected = M.select("INBOX", readonly=True)
+        status, matches = M.search(None, "ALL")
+        if (selected and selected[0] != "OK") or status != "OK":
+            raise imaplib.IMAP4.error("Supplier mailbox could not be read")
+        ids = matches[0].split()
         for i in ids[-200:]:
-            hdr = email.message_from_bytes(M.fetch(i, "(BODY.PEEK[HEADER])")[1][0][1])
+            status, header = M.fetch(i, "(BODY.PEEK[HEADER])")
+            if status != "OK":
+                raise imaplib.IMAP4.error("Supplier mailbox header could not be read")
+            hdr = email.message_from_bytes(header[0][1])
             mid = (hdr["Message-ID"] or "").strip() or hashlib.sha1(bytes(hdr)).hexdigest()
             if mid in known:
                 continue
@@ -99,11 +105,12 @@ def fetch() -> list[dict]:
                     ours_msg = candidates[0]
             if not ours_msg or (ours_msg["to_address"] or "").casefold() != addr.casefold():
                 continue
-            full = email.message_from_bytes(M.fetch(i, "(BODY.PEEK[])")[1][0][1])
-            try:
-                when = parsedate_to_datetime(full["Date"]).astimezone().isoformat(timespec="seconds")
-            except Exception:
-                when = actions.now().isoformat(timespec="seconds")
+            status, content = M.fetch(i, "(BODY.PEEK[])")
+            if status != "OK":
+                raise imaplib.IMAP4.error("Supplier reply could not be read")
+            full = email.message_from_bytes(content[0][1])
+            # The sender's Date header can precede delivery. Use when Dockside observed the reply.
+            when = actions.now().isoformat(timespec="seconds")
             rid = "RPL-" + hashlib.sha1(mid.encode()).hexdigest()[:6].upper()
             row = dict(id=rid, message_id=mid, msg_id=ours_msg["id"], action_id=ours_msg["action_id"], from_addr=addr, from_name=name or addr,
                        subject=_h(full["Subject"]), received_at=when, body=_strip_quote(_body(full)))

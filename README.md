@@ -32,9 +32,17 @@ Set `ELEVENLABS_API_KEY` in `.env` to use the provider and enable **Try it live*
 
 ## Spending approvals
 
-Free actions run automatically. Paid actions email the responsible approver once. Eligible actions have a 15-minute stop window once the email is sent. Other paid actions wait for explicit approval. Each email link opens a confirmation page before recording the decision. A stop-window link expires at the end of its window. Links for actions that require approval expire after seven days.
+Free actions run automatically. Paid actions email each assigned approver individually. Eligible actions have a 15-minute stop window once the email is sent. Other paid actions wait for explicit approval. Each email link opens a confirmation page before recording the decision. A stop-window link expires at the end of its window. Links for actions that require approval expire after seven days.
 
-Set `PUBLIC_URL` and the SMTP settings in `.env`. Add known recipients under `staff_email.value` in `config/business.json`. The demo routes staff mail to Gmail plus-addresses derived from `MAIL_FROM`. Successful sends appear in action history and recent activity.
+Set `PUBLIC_URL` and the SMTP settings in `.env`. Add known recipients under `staff_email.value` in `config/business.json`. Set `demo_approval_aliases.value` to use Gmail plus-addresses for single-signer demos. Successful sends appear in action history and recent activity.
+
+## Release gate
+
+Scheduled sends, manual approvals, and outbox retries use the same release check. The proposal stores a commitment ID and the known quantity, unit price in EUR, PO, expiry, and delivery conditions. The action log and the outgoing email carry that ID. A supplier reply that arrives after the proposal requires review before a new proposal can proceed.
+
+The cycle syncs portal files and polls the supplier mailbox before dispatch. Both checks must have succeeded within `release_max_age_minutes`. The gate checks the current supplier, offer, PO, and any required transport and dock confirmations. `GET /api/dispatch` exposes `commitment_id`, `signatures`, and `held_reason` for decisions. A matching commitment with a prior send or uncertain delivery is superseded.
+
+Keep the dashboard bound to loopback behind Tailscale Serve. Map verified logins under `staff_accounts.value`, Discord user IDs under `staff_discord_accounts.value`, and separately controlled mailboxes under `staff_email.value`. A joint approval waits for every assigned signer. To enable local demo approval, set `demo_local_operator.value` to one assigned person's name. Paid commitments are delivered by email.
 
 ## Second customer in a day
 

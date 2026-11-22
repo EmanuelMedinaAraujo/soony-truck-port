@@ -106,7 +106,7 @@ def _call(message_id: str) -> dict:
 
 
 def _released(m: dict) -> bool:
-    return m["action_status"] in {"approved", "auto", "sent"} and m["status"] == "delivered"
+    return m["cost_eur"] == 0 and m["action_status"] in {"approved", "auto", "sent"} and m["status"] == "delivered"
 
 
 def _agent_id(m: dict) -> str | None:

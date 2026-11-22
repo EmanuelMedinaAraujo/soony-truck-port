@@ -16,7 +16,7 @@ import traceback
 import discord
 from discord import app_commands
 
-from core import actions, agent, rules
+from core import actions, release, agent, rules
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID") or 0)                       # decisions with buttons, /ask, /status
@@ -101,15 +101,22 @@ class Bot(discord.Client):
         if not cid.startswith("dock:"):
             return
         _, verb, aid = cid.split(":", 2)
-        who = inter.user.display_name
+        who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+        if not who:
+            await inter.response.send_message("This Discord account is not assigned to a Dockside staff member.", ephemeral=True)
+            return
         try:
-            a = await asyncio.to_thread(self.decide_fn, aid, verb, f"{who} (Discord)")
-            done = "Done" if verb == "approve" else "Stopped"
-            recipients = ", ".join(sorted({m["to_name"] for m in a["messages"]})) if verb == "approve" else ""
-            await inter.response.edit_message(embed=decision_embed(a), view=DecisionView(aid, enabled=False))
-            await inter.followup.send(f"{done}{' to ' + recipients if recipients else ''}. Logged for {who}.", ephemeral=True)
+            await inter.response.defer()
+            a = await asyncio.to_thread(self.decide_fn, aid, verb, who, source="Discord")
+            waiting = a["status"] in {"proposed", "escalated", "scheduled"} and not a["held_reason"]
+            detail = (f"Held: {a['held_reason']}" if a["held_reason"] else
+                      f"Signed by {who}. Waiting for the remaining approvals." if waiting else
+                      f"Decision recorded for {who}. Status: {a['status']}.")
+            await inter.edit_original_response(embed=decision_embed(a),
+                                               view=DecisionView(aid, scheduled=a["status"] == "scheduled", enabled=waiting))
+            await inter.followup.send(detail, ephemeral=True)
         except Exception as e:
-            await inter.response.send_message(f"Could not record that: {e}. Refresh the decision in the control room.", ephemeral=True)
+            await inter.followup.send(f"Could not record that: {e}. Refresh the decision in the control room.", ephemeral=True)
 
     async def post_decision(self, a: dict):
         ch = self.get_channel(CHANNEL_ID) or await self.fetch_channel(CHANNEL_ID)

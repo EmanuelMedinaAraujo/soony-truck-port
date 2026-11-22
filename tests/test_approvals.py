@@ -15,6 +15,7 @@ def mail(monkeypatch, tmp_path):
     monkeypatch.setenv("MAIL_FROM", "dockside@gmail.com")
     monkeypatch.setenv("SMTP_HOST", "smtp.test")
     monkeypatch.delenv("SMTP_USER", raising=False)
+    monkeypatch.setitem(rules.CONFIG, "demo_approval_aliases", {"value": True})
     sent = []
 
     class SMTP:
@@ -122,4 +123,30 @@ def test_free_actions_skip_approval_including_open_legacy_actions(mail):
     actions.set_status(slot["id"], "scheduled", "legacy")
     assert [a["id"] for a in actions.release_free()] == [slot["id"]]
     approvals.email_open()
+    assert mail == []
+
+
+def test_joint_email_links_are_independent_and_wait_for_every_signer(mail, monkeypatch):
+    monkeypatch.setitem(rules.CONFIG, "approval_by_kind",
+                        {"value": {"book_truck": ["Site Lead DC-HAM (dock slots)"]}})
+    monkeypatch.setitem(rules.CONFIG, "staff_email",
+                        {"value": {"Katrin Jansen": "katrin@example.test", "Paul Winter": "paul@example.test"}})
+    a = propose()
+    approvals.email(a["id"])
+    assert {m["To"] for m in mail} == {"katrin@example.test", "paul@example.test"}
+    first, second = [paths(m)[0] for m in mail]
+    assert first != second
+    assert "Waiting for Paul Winter" in request(first, "POST")[1]
+    assert "Decision already recorded" in request(first, "POST")[1]
+    assert actions.get(a["id"])["status"] == "proposed"
+    assert "was approved" in request(second, "POST")[1]
+    assert set(actions.get(a["id"])["signatures"]) == {"Katrin Jansen", "Paul Winter"}
+
+
+def test_joint_signers_cannot_share_demo_mailbox(mail, monkeypatch):
+    monkeypatch.setitem(rules.CONFIG, "approval_by_kind",
+                        {"value": {"book_truck": ["Site Lead DC-HAM (dock slots)"]}})
+    monkeypatch.setitem(rules.CONFIG, "staff_email",
+                        {"value": {"Katrin Jansen": "demo+katrin@gmail.com", "Paul Winter": "d.emo+paul@gmail.com"}})
+    approvals.email(propose()["id"])
     assert mail == []

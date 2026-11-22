@@ -12,10 +12,10 @@ import smtplib
 import threading
 from email.message import EmailMessage
 
-from core import actions
+from core import actions, release
 from core.rules import cfg, now, shipment_commitment_blocker
 
-DISPATCH_LOCK = threading.Lock()
+DISPATCH_LOCK = threading.RLock()
 UNCONFIRMED = {"sending", "delivery_unknown"}
 
 
@@ -35,8 +35,28 @@ def _mark(mid: str, status: str, provider_id: str | None = None, *, expected: tu
         return changed
 
 
+class ReleaseHeld(Exception):
+    pass
+
+
+def _verify_release(action_id: str) -> None:
+    action = actions.get(action_id)
+    ok, reason = release.check(action)
+    if not ok:
+        raise ReleaseHeld(reason)
+    if action["held_reason"]:
+        actions.hold(action_id, None)
+
+
 def send(m: dict, in_reply_to: str | None = None) -> str:
     approval = m["channel"] == "approval_email"
+    with actions.tx() as c:
+        row = c.execute("SELECT cost_eur, payload FROM actions WHERE id=?", (m["action_id"],)).fetchone()
+    paid = not approval and row and row["cost_eur"] > 0
+    payload = json.loads(row["payload"] or "{}") if row else {}
+    commitment_id = payload.get("commitment", {}).get("key") or payload.get("commitment_key")
+    if paid and m["channel"] != "email":
+        raise ReleaseHeld("paid release requires email delivery")
     if m["channel"] == "email" or approval:
         if not m.get("to_address"):
             raise ValueError("E-mail draft has no recipient")
@@ -45,6 +65,8 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
             msg = EmailMessage()
             msg["From"], msg["To"], msg["Subject"] = sender, m["to_address"], m["subject"]
             msg["Message-ID"] = f"<{m['id']}@{sender.rsplit('@', 1)[-1]}>"
+            if commitment_id:
+                msg["X-Dockside-Commitment"] = commitment_id
             if in_reply_to:
                 msg["In-Reply-To"] = in_reply_to
                 msg["References"] = in_reply_to
@@ -53,6 +75,8 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
                 s.starttls()
                 if user:
                     s.login(user, pw or "")
+                if paid:
+                    _verify_release(m["action_id"])
                 if not _mark(m["id"], "sending", msg["Message-ID"], expected=("draft", "outbox")):
                     return "sending"
                 try:
@@ -68,6 +92,8 @@ def send(m: dict, in_reply_to: str | None = None) -> str:
             if not approval:
                 actions.log_event("email_sent", m["action_id"], f"to {m['to_address']}: {m['subject']}")
             return "sent"
+        if paid:
+            _verify_release(m["action_id"])
         _mark(m["id"], "outbox", expected=("draft", "outbox"))
         if m["status"] != "outbox":
             actions.log_event("email_outbox", m["action_id"], f"queued for {m['to_address']} (no mailer configured): {m['subject']}")
@@ -81,13 +107,19 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
     """Release only pending messages for an action that is already authorized."""
     with DISPATCH_LOCK:
         action = actions.get(action_id)
-        if action["status"] not in ("approved", "auto", "sent"):
+        if action["status"] not in ("approved", "auto", "sent", "scheduled"):
             return action
         if action["kind"] in {"chase_supplier", "chase_escalation"} and not cfg("chase")["enabled"]:
             return action
         order_refs = (po for message in action["messages"] for po in json.loads(message.get("po_numbers") or "[]"))
-        if shipment_commitment_blocker(action["finding_id"], action["kind"], order_refs):
+        paid = action["cost_eur"] > 0
+        if not paid and shipment_commitment_blocker(action["finding_id"], action["kind"], order_refs):
             return action
+        if paid:
+            unsupported = {m["channel"] for m in action["messages"] if m["channel"] not in {"email", "approval_email"}
+                           and m["status"] in {"draft", "outbox"}}
+            if unsupported:
+                return actions.hold(action_id, "paid release requires email delivery; pending " + ", ".join(sorted(unsupported)))
         reply = None
         if action["finding_id"].startswith("reply-"):
             from core import inbox
@@ -98,7 +130,7 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
                 continue
             if action["kind"] == "chase_escalation" and m["channel"] == "discord":
                 continue
-            if m["channel"] == "email" and action["kind"] not in {"chase_supplier", "chase_escalation"} and cfg("chase")["enabled"]:
+            if m["channel"] == "email" and action["kind"] not in {"chase_supplier", "chase_escalation"} and not paid and cfg("chase")["enabled"]:
                 from core.chase_scope import duplicate_case
                 with actions.tx() as c:
                     case_id = duplicate_case(c, action, m)
@@ -119,12 +151,22 @@ def dispatch(action_id: str, entry: str = "messages released after approval") ->
                     continue
                 parent = original["provider_id"]
             try:
+                if paid:
+                    _verify_release(action_id)
                 email_message = dict(m, body_en=None) if action["kind"] == "chase_supplier" else m
-                pending |= send(email_message, parent) in {"outbox", *UNCONFIRMED}
+                status = send(email_message, parent)
+                pending |= status in {"outbox", *UNCONFIRMED}
+            except ReleaseHeld as exc:
+                reason = str(exc)
+                return actions.hold(action_id, reason, supersede=reason.startswith("duplicate of "))
             except (OSError, ValueError) as exc:
                 pending = True
                 if _mark(m["id"], "outbox", expected=("draft", "outbox")):
                     actions.log_event("dispatch_error", action_id, f"{m['subject']}: {type(exc).__name__}")
-        if action["status"] == "approved" and not pending:
+        if action["status"] == "scheduled":
+            with actions.tx() as c:
+                if not release.scheduled_authorized(c, action):
+                    return action
+        if action["status"] in ("approved", "scheduled") and not pending:
             return actions.set_status(action_id, "sent", entry)
         return actions.get(action_id)

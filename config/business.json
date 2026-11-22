@@ -112,9 +112,35 @@
     },
     "source": "assumption per mode"
   },
+  "staff_accounts": {
+    "value": {},
+    "source": "Deployment roster mapping Tailscale Serve login names to exact names in the approval policy."
+  },
+  "staff_discord_accounts": {
+    "value": {},
+    "source": "Deployment roster mapping verified Discord user IDs to exact names in the approval policy."
+  },
   "staff_email": {
     "value": {},
-    "source": "The challenge data has staff names but no addresses. Set known addresses here. The demo uses plus-addresses at the Gmail account configured in MAIL_FROM."
+    "source": "Deployment roster mapping assigned approvers to individually controlled mailboxes."
+  },
+  "demo_local_operator": {
+    "value": null,
+    "source": "Set to one assigned staff name for a local demo. Disabled in the default policy."
+  },
+  "demo_approval_aliases": {
+    "value": false,
+    "source": "Opt in to the shared Gmail mailbox for single-signer demos only."
+  },
+  "release_max_age_minutes": {
+    "value": 5,
+    "source": "Release policy for file sync and supplier mailbox evidence."
+  },
+  "release_conditions": {
+    "value": {
+      "order": ["transport_confirmed", "dock_slot_confirmed"]
+    },
+    "source": "Rush procurement workflow requires carrier and receiving confirmation before sending the formal order."
   },
   "approval_by_kind": {
     "value": {

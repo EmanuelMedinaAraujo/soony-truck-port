@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 from html import escape
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +26,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import soony_sync  # noqa: E402
-from core import actions, agent, approvals, chase, dispatch, ingest, outbound, rules, voice  # noqa: E402
+from core import actions, agent, approvals, chase, dispatch, ingest, outbound, release, rules, voice  # noqa: E402
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
@@ -87,41 +88,38 @@ def llm_paused(e) -> None:
             pass
 
 
-def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
-    """One pass of the whole pipeline. Safe to call from the loop or an API request."""
-    with LOCK:
-        out = {"changes": 0}
-        STATE["busy"] = "checking spending approvals"
-        for a in actions.release_free():
-            notify_action({"done_automatically": a["id"]})
-        approvals.email_open()
-        STATE["busy"] = "executing scheduled actions"
-        for a in actions.due_scheduled():
-            if reason := actions.release_blocker(a):
-                if reason.startswith("duplicate"):
-                    actions.set_status(a["id"], "superseded", f"not released: {reason}", expected="scheduled")
-                else:
-                    actions.hold(a["id"], reason)
-                continue
-            try:
-                actions.decide(a["id"], "approve", "Dockside", "stop window elapsed", scheduled_only=True)
-            except ValueError:
-                continue  # a simultaneous Stop or Do it now already took effect
-            a = outbound.dispatch(a["id"], "executed by Dockside after the stop window")
-            if a["status"] == "sent":
-                notify("action_executed", {"action": a})
-        for a in actions.pending_dispatch():
-            outbound.dispatch(a)
+def refresh_evidence(force_rebuild: bool = False) -> list[dict]:
+    """Publish evidence checkpoints only after the matching data is readable."""
+    from core import extract_docs, inbox, llm_health
+
+    with outbound.DISPATCH_LOCK:
+        events = []
         token = os.environ.get("SOONY_TOKEN")
         try:
-            STATE["busy"] = "sync"
-            events = soony_sync.sync_once(token) if token else []
-            STATE["last_sync"], STATE["sync_error"] = rules.now().isoformat(timespec="seconds"), None
-            out["changes"] = len(events)
-        except Exception as e:
-            STATE["sync_error"] = f"{type(e).__name__}: {e}"
-            events = []
+            if token:
+                events = soony_sync.sync_once(token)
+            STATE["files_pending"] = STATE.get("files_pending", True) or bool(events)
+            if STATE["files_pending"] or force_rebuild or not rules.DB_PATH.is_file():
+                STATE["files_pending"] = True
+                release.record_check("files", valid=False)
+                if os.environ.get("OPENAI_API_KEY"):
+                    stats = extract_docs.run()
+                    if any(value.startswith(("error", "empty", "paused")) for value in stats.values()):
+                        raise ValueError("Document evidence could not be read")
+                elif token and not all(extract_docs._cached(path) for path in extract_docs.documents()):
+                    raise ValueError("New documents need extraction before paid release")
+                ingest.build()
+                STATE["files_pending"] = False
+            if token:
+                release.record_check("files")
+                STATE["last_sync"], STATE["sync_error"] = rules.now().isoformat(timespec="seconds"), None
+        except llm_health.LLMUnavailable as exc:
+            llm_paused(exc)
+        except Exception as exc:
+            STATE["sync_error"] = type(exc).__name__
+            actions.log_event("sync_error", None, type(exc).__name__)
         if events:
+            STATE["llm_pending"] = True
             STATE["last_change"] = rules.now().isoformat(timespec="seconds")
             paths = [e["path"] for e in events]
             actions.log_event("data_drop", None, f"{len(events)} file(s) changed: " + ", ".join(paths[:6]) + (" …" if len(paths) > 6 else ""))
@@ -129,50 +127,57 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
                 for rc in (e.get("row_changes") or [])[:20]:
                     actions.log_event("row_change", rc.get("key"), f"{e['path'].split('/')[-1]}: {rc['kind']} {json.dumps(rc.get('fields') or {}, ensure_ascii=False)[:200]}")
             notify("data_drop", {"paths": paths})
-        from core import llm_health
-        retry_llm = STATE.get("llm_pending") and llm_health.available()
-        if events or force_plan or retry_llm or not rules.DB_PATH.exists():
-          try:
-            STATE["llm_pending"] = False
-            STATE["busy"] = "rebuild"
-            ingest.build()
-            if os.environ.get("OPENAI_API_KEY"):
-                STATE["busy"] = "reading documents"
-                from core import extract_docs
-                stats = extract_docs.run()
-                new = [k for k, v in stats.items() if v != "cached"]
-                if new:
-                    actions.log_event("docs_read", None, f"read {len(new)} new document(s)")
-                    ingest.build()
-            if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
-                STATE["busy"] = "agent planning"
-                steps = {"n": 0}
-                labels = {"get_situation": "reading the launch picture", "get_shipment": "checking a shipment", "query_db": "querying the data",
-                          "search_documents": "reading documents", "plan_truck": "planning a truck", "what_if": "running a what-if",
-                          "propose_action": "writing an action"}
-
-                def progress(name, args, out):
-                    steps["n"] += 1
-                    STATE["busy"] = f"agent planning: step {steps['n']}, {labels.get(name, name)}"
-                    if name == "propose_action":
-                        notify_action(out)
-
-                STATE["agent_summary"] = agent.plan(progress, model=plan_model)
-                actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
-          except llm_health.LLMUnavailable as e:
-            llm_paused(e)
         if os.environ.get("IMAP_HOST"):
             try:
-                STATE["busy"] = "reading supplier replies"
-                from core import inbox
-                for r in inbox.fetch():
-                    notify("reply", {"reply": r})
+                for reply in inbox.fetch():
+                    notify("reply", {"reply": reply})
+                release.record_check("mailbox")
                 STATE["last_inbox"], STATE["inbox_error"] = rules.now().isoformat(timespec="seconds"), None
+            except Exception as exc:
+                STATE["inbox_error"] = type(exc).__name__
+                actions.log_event("inbox_error", None, type(exc).__name__)
+        return events
+
+
+def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
+    """One pass of the whole pipeline. Safe to call from the loop or an API request."""
+    with LOCK:
+        STATE["busy"] = "refreshing file and supplier evidence"
+        events = refresh_evidence(force_rebuild=force_plan)
+        out = {"changes": len(events)}
+        STATE["busy"] = "checking spending approvals"
+        for a in actions.release_free():
+            notify_action({"done_automatically": a["id"]})
+        approvals.email_open()
+        STATE["busy"] = "executing scheduled actions"
+        for a in actions.due_scheduled():
+            a = outbound.dispatch(a["id"], "executed by Dockside after the stop window")
+            if a["status"] == "sent":
+                notify("action_executed", {"action": a})
+        for aid in actions.pending_dispatch():
+            outbound.dispatch(aid)
+        from core import llm_health
+        if not STATE.get("files_pending") and (events or force_plan or
+                (STATE.get("llm_pending") and llm_health.available())):
+            try:
+                STATE["llm_pending"] = False
+                if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
+                    STATE["busy"] = "agent planning"
+                    steps = {"n": 0}
+                    labels = {"get_situation": "reading the launch picture", "get_shipment": "checking a shipment", "query_db": "querying the data",
+                              "search_documents": "reading documents", "plan_truck": "planning a truck", "what_if": "running a what-if",
+                              "propose_action": "writing an action"}
+
+                    def progress(name, args, out):
+                        steps["n"] += 1
+                        STATE["busy"] = f"agent planning: step {steps['n']}, {labels.get(name, name)}"
+                        if name == "propose_action":
+                            notify_action(out)
+
+                    STATE["agent_summary"] = agent.plan(progress, model=plan_model)
+                    actions.log_event("agent_plan_done", None, f"planned in {steps['n']} steps with {plan_model or agent.PLAN_MODEL}")
             except llm_health.LLMUnavailable as e:
                 llm_paused(e)
-            except Exception as e:
-                STATE["inbox_error"] = type(e).__name__
-                actions.log_event("inbox_error", None, f"{type(e).__name__}: {e}")
         STATE["busy"] = "chasing supplier confirmations"
         try:
             chase_result = chase.run()
@@ -303,7 +308,20 @@ def state():
 
 @app.get("/api/dispatch")
 def dispatch_view():
-    return dispatch.snapshot(STATE["last_sync"])
+    snapshot = dispatch.snapshot(STATE["last_sync"])
+    decisions = {decision["id"]: decision for decision in snapshot["decisions"]}
+    with actions.tx() as c:
+        ids = [row[0] for row in c.execute("""SELECT id FROM actions
+            WHERE status IN ('approved','sent','superseded') AND json_extract(payload,'$.held_reason') IS NOT NULL""")]
+    for aid in list(dict.fromkeys([*decisions, *ids])):
+        a = actions.get(aid)
+        if aid not in decisions:
+            decisions[aid] = {key: a[key] for key in ("id", "title", "rationale", "status", "approver_name", "next_check_at", "due_at")}
+        decisions[aid].update(cost=a["cost_eur"], details=a["payload"].get("details"),
+                              messages=[{key: m[key] for key in ("to_name", "subject", "body", "body_en")} for m in a["messages"]],
+                              held_reason=a["held_reason"], commitment_id=a["commitment_id"], signatures=a["signatures"])
+    snapshot["decisions"] = list(decisions.values())
+    return snapshot
 
 
 @app.get("/api/calls")
@@ -349,22 +367,40 @@ class Decision(BaseModel):
     note: str = ""
 
 
-def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "", *, expires_at: str | None = None) -> dict:
-    """The one approval path for web and Discord: record the decision, release messages, tell everyone."""
-    a = actions.decide(aid, decision, by, note, expires_at=expires_at)
-    if a["status"] == "approved":
-        a = outbound.dispatch(aid)
+def decide_and_dispatch(aid: str, decision: str, by: str, note: str = "", *, source: str,
+                        expires_at: str | None = None) -> dict:
+    """Record the decision and send through the outbound release gate."""
+    with outbound.DISPATCH_LOCK:
+        a = actions.decide(aid, decision, by, note, source=source, expires_at=expires_at)
+        if a["status"] == "approved":
+            if a["cost_eur"] > 0 and any(m["channel"] != "approval_email" for m in a["messages"]):
+                if os.environ.get("SOONY_TOKEN") or os.environ.get("IMAP_HOST"):
+                    refresh_evidence()
+            a = outbound.dispatch(aid)
     notify("action_decided", {"action": a})
     return a
 
 
-def verified_person(request: Request) -> str | None:
-    """Who is deciding: the tailnet identity Tailscale Serve attaches, or the local operator. Never a name the page sends."""
-    name = request.headers.get("Tailscale-User-Name") or request.headers.get("Tailscale-User-Login")
-    if name:
-        return name
+def verified_person(request: Request) -> tuple[str, str] | None:
+    """Resolve the login from the local Tailscale Serve reverse proxy."""
     host = request.client.host if request.client else ""
-    return "local operator" if host in {"127.0.0.1", "::1"} and not request.headers.get("X-Forwarded-For") else None
+    local = host in {"127.0.0.1", "::1"}
+    if login := request.headers.get("Tailscale-User-Login"):
+        # Uvicorn can replace the local proxy peer with its forwarded tailnet IP.
+        try:
+            proxied = (request.headers.get("X-Forwarded-For") and
+                       any(ip_address(host) in ip_network(network) for network in ("100.64.0.0/10", "fd7a:115c:a1e0::/48")))
+        except ValueError:
+            proxied = False
+        if not (local or proxied):
+            return None
+        accounts = release.setting("staff_accounts", {})
+        person = next((name for account, name in accounts.items() if account.casefold() == login.casefold()), None)
+        return (person, "dashboard") if person else None
+    if local and not any(request.headers.get(header) for header in ("X-Forwarded-For", "Forwarded", "Tailscale-User-Name")):
+        if operator := release.setting("demo_local_operator", None):
+            return operator, "local demo"
+    return None
 
 
 @app.post("/api/actions/{aid}/decide")
@@ -373,7 +409,9 @@ def decide(aid: str, d: Decision, request: Request):
     if not who:
         raise HTTPException(403, "Sign in through the company network to decide, or use the link in the approval email.")
     try:
-        return decide_and_dispatch(aid, d.decision, f"{who} (dashboard)", d.note)
+        return decide_and_dispatch(aid, d.decision, who[0], d.note, source=who[1])
+    except actions.UnverifiedApprover as e:
+        raise HTTPException(403, str(e))
     except KeyError:
         raise HTTPException(404, f"No decision {aid}. It may have been replaced; reload the page.")
     except ValueError as e:
@@ -406,10 +444,15 @@ def email_decision(token: str, decision: str, request: Request):
     if request.method == "GET":
         return _approval_page(f"{label}?", f"{link['title']} (€{link['cost_eur']:,.2f})", label)
     try:
-        decide_and_dispatch(link["action_id"], decision, link["approver_name"], "Decision from approval email",
-                            expires_at=link["expires_at"])
-    except ValueError:
+        action = decide_and_dispatch(link["action_id"], decision, link["approver_name"], source="email",
+                                     expires_at=link["expires_at"])
+    except (ValueError, actions.UnverifiedApprover):
         return _approval_page("Decision unavailable", "This action was already decided or the link expired.", status=409)
+    if action["held_reason"]:
+        return _approval_page("Release held", action["held_reason"])
+    if action["status"] in approvals.WAITING:
+        pending = [name for name in actions.signers(action) if name not in action["signatures"]]
+        return _approval_page("Signature recorded", f"Waiting for {', '.join(pending)}.")
     return _approval_page("Decision recorded", f"{link['title']} was {'approved' if decision == 'approve' else 'stopped'}.")
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import hashlib
 import json
 import re
 import sqlite3
@@ -442,6 +443,9 @@ def build(db_path: Path = DB_PATH, current: Path = CURRENT, *, facts_dir: Path |
             con.execute("INSERT INTO documents VALUES (?,?,?,?,?)", (rel, sup, p.parent.name, match.group(0) if match else None, body))
         for jf in sorted(facts_dir.glob("*.json")):
             d = json.loads(jf.read_text())
+            source = current / d["path"]
+            if not source.is_file() or (d.get("sha256") and hashlib.sha256(source.read_bytes()).hexdigest() != d["sha256"]):
+                continue  # Ignore cached facts from withdrawn or superseded files.
             for fact in d.get("facts", []):
                 con.execute("INSERT INTO doc_facts VALUES (?,?,?,?)", (d["path"], fact.get("type"), json.dumps(fact, ensure_ascii=False), d.get("extracted_by")))
 
