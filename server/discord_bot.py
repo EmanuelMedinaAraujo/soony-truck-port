@@ -91,6 +91,25 @@ class Bot(discord.Client):
             lines += [f"• {a['title']} — needs {a['approver_name']}" for a in pending[:8]] or ["No decisions waiting."]
             await inter.response.send_message("\n".join(lines)[:1990])
 
+        @self.tree.command(name="answer", description="Answer the latest question Dockside asked you")
+        async def answer(inter: discord.Interaction, text: str):
+            who = release.setting("staff_discord_accounts", {}).get(str(inter.user.id))
+            if not who:
+                await inter.response.send_message("This Discord account is not linked to a Dockside staff member yet.", ephemeral=True)
+                return
+            from core import inbox
+            with actions.tx() as c:
+                rows = c.execute("""SELECT m.id, m.to_name FROM messages m WHERE m.channel='discord' AND m.status='delivered'
+                                    AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.msg_id=m.id)
+                                    ORDER BY m.sent_at DESC""").fetchall()
+            people = rules.cfg("people")
+            mine = next((r["id"] for r in rows if (people.get(n := (r["to_name"] or "").split(" (")[0].split(" and ")[0].strip()) or n) == who), None)
+            if not mine:
+                await inter.response.send_message("Dockside has no open question for you.", ephemeral=True)
+                return
+            await asyncio.to_thread(inbox.add_staff_answer, mine, who, text[:4000])
+            await inter.response.send_message(f"Thanks {who}, Dockside will act on your answer in its next pass.", ephemeral=True)
+
         @self.tree.command(name="decisions", description="Show every decision waiting for approval, with buttons")
         async def decisions(inter: discord.Interaction):
             pending = actions.list_actions(("proposed", "escalated", "scheduled"))

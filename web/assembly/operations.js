@@ -160,7 +160,7 @@ function renderNextSteps(snapshot) {
           <label class="visually-hidden" for="answer-${html(step.message_id)}">Answer for ${html(step.person)}</label>
           <textarea id="answer-${html(step.message_id)}" rows="2" placeholder="Or write your answer"></textarea>
           <button type="submit" class="action-button">Send answer</button><span class="side-note" role="status"></span></form>`
-        : `<p class="side-note">Only ${html(step.person)} can answer: by replying to Dockside's message in Discord, or here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
+        : `<p class="side-note">Only ${html(step.person)} can answer: here when signed in through the company network${viewer.person ? ` (you are signed in as ${html(viewer.person)})` : ""}, or with /answer in Discord once their account is linked. Dockside keeps reminding and escalating until someone with authority answers.</p>`;
       const answer = step.message_id ? `<div class="question" data-question="${html(step.message_id)}">
           ${choices ? `<p><b>Options:</b> ${(step.options ?? []).map(option => `PO ${html(option.po)} line ${html(option.line)} (${number(option.quantity)}, due ${html(day(option.requested))})`).join(" · ")} · or a new emergency order.</p>
           <p class="advice">${html(advice)}</p>` : ""}
