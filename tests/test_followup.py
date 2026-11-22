@@ -88,6 +88,7 @@ def test_departure_deadline_blocks_late_proposal_and_signature(tmp_path, monkeyp
     monkeypatch.setattr(rules, "DB_PATH", tmp_path / "master.db")
     policy = customer.load(replay.ROOT / "config" / "business.json")
     policy["release_carrier_contacts"] = {"value": {replay.ORDER: replay.CARRIER_EMAIL}}
+    policy["release_carrier_feeds"] = {"value": {replay.ORDER: "WARTA"}}
     policy["staff_email"]["value"]["Katrin Jansen"] = replay.DOCK_EMAIL
     with rules.replay(policy, replay.at("00:14")):
         replay.seed_sent_order()
@@ -134,15 +135,23 @@ def test_departure_deadline_blocks_late_proposal_and_signature(tmp_path, monkeyp
         feed = replay.thread("Warta Trans", replay.CARRIER_EMAIL, "Please send the latest ETA.", "book_truck", replay.ORDER)
         replay.store_reply(feed, "feed-eta", "Carrier confirmed booking WT-123, ETA Sun 14:30. Gross vehicle weight is 7.5 t.")
         with sqlite3.connect(rules.DB_PATH) as db:
-            db.execute("INSERT INTO carriers(carrier_id) VALUES ('WARTA')")
+            db.execute("INSERT INTO carriers(carrier_id, name) VALUES ('WARTA', 'Warta Trans')")
+            db.execute("INSERT INTO sites(site_id, name, lat, lon) VALUES ('PICKUP', 'Karton Nowak', 52.4, 16.8)")
             db.execute("""INSERT INTO shipments(shipment_id,carrier_id,mode,reference,supplier_id,material_ids,
-                                                dest_site,status,last_lat,last_lon,updated_at)
-                          VALUES ('TRUCK-1','WARTA','road','WT-123',?,?,'DC-HAM','in_transit',52.4,16.8,?)""",
+                                                origin,dest_site,status,last_lat,last_lon,updated_at)
+                          VALUES ('TRUCK-1','WARTA','road','WT-123',?,?,'PICKUP','DC-HAM','in_transit',52.40001,16.8,?)""",
                        (replay.SUPPLIER, replay.PART, replay.at("07:01").isoformat()))
         with pytest.raises(ValueError, match="departure deadline passed"):
             replay.sign(late)
         with sqlite3.connect(rules.DB_PATH) as db:
             db.execute("UPDATE shipments SET updated_at=?", (replay.at("06:40").isoformat(),))
+        with pytest.raises(ValueError, match="position too close to origin"):
+            replay.sign(late)
+        decision = release.decision_state(actions.get(late["id"]))
+        assert decision["held_reason"] == "position too close to origin"
+        assert not decision["can_approve"]
+        with sqlite3.connect(rules.DB_PATH) as db:
+            db.execute("UPDATE shipments SET last_lat=52.5")
         assert replay.sign(late)["status"] == "approved"
 
 
