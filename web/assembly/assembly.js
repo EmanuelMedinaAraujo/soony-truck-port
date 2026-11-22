@@ -332,7 +332,6 @@ function renderInspector(force = false, focusShipment = null) {
     const component = state.components.find(item => item.id === id);
     return component && nameOf(component);
   }, selectPart, {
-    partImage: id => artwork[id]?.[0],
     trackedShipments: new Set(routes.filter(item => item.tracking).map(item => item.id)),
     selectedShipment: map?.id,
     focusShipment,

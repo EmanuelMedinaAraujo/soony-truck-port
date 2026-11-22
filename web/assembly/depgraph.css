@@ -2,39 +2,29 @@
   --depgraph-risk: #8b5414;
   --depgraph-wire: #747fa4;
   --depgraph-surface: var(--paper);
-  margin-block: 13px;
-  padding: 10px 11px 7px;
+  margin-block: 20px;
+  padding: 15px 12px 10px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--depgraph-surface);
 }
 
-.depgraph-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 2px 15px;
-  padding-inline: 4px;
-}
-
 .depgraph h3 {
-  margin: 0;
+  margin: 0 4px 3px;
   color: var(--ink);
   font: 700 1.35rem/1.15 var(--head);
 }
 
 .depgraph-viewport {
   min-width: 0;
-  margin-top: 4px;
-  overflow-x: auto;
-  scrollbar-color: var(--line) transparent;
+  margin-top: 6px;
 }
 
 .depgraph-viewport svg {
   display: block;
-  max-width: none;
+  width: 100%;
   height: auto;
+  overflow: visible;
 }
 
 .depgraph-wires > path {
@@ -48,8 +38,6 @@
   fill: var(--depgraph-wire);
 }
 
-.depgraph-wires > .depgraph-long-wire { opacity: .65; }
-
 .depgraph-columns text {
   fill: var(--muted);
   font-size: 11.5px;
@@ -59,13 +47,33 @@
 }
 
 .depgraph-verdict {
-  margin: 0;
+  margin: 2px 4px 10px;
   color: var(--muted);
   font-size: .925rem;
 }
 
 .depgraph-verdict[data-status="ok"] { color: var(--covered); }
 .depgraph-verdict[data-status="blocked"] { color: var(--short); }
+
+.depgraph-detail {
+  fill: var(--ink);
+  font-size: 12.5px;
+}
+
+.depgraph-source {
+  fill: var(--muted);
+  font-size: 11.5px;
+}
+
+.depgraph-rule {
+  stroke: var(--line);
+}
+
+.depgraph-flag {
+  fill: var(--active);
+  font-size: 11px;
+  font-weight: 700;
+}
 
 .depgraph-more {
   fill: var(--muted);
@@ -127,49 +135,18 @@
 
 .depgraph-name {
   fill: var(--ink);
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 700;
+}
+
+.depgraph-meta, .depgraph-node circle {
+  fill: var(--depgraph-status);
 }
 
 .depgraph-meta {
-  fill: var(--depgraph-status);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
 }
-
-.depgraph-scroll-hint {
-  margin: 3px 4px 0;
-  color: var(--muted);
-  font-size: .75rem;
-}
-
-.depgraph-evidence {
-  margin: 6px 4px 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-inline-start: 3px solid var(--active);
-  border-radius: 7px;
-  background: var(--sheet);
-  display: grid;
-  grid-template-columns: clamp(170px, 27%, 300px) minmax(0, 1fr);
-  gap: 12px;
-  font-size: .86rem;
-  overflow-wrap: anywhere;
-}
-
-.depgraph-evidence-title {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-content: start;
-  gap: 4px 8px;
-}
-
-.depgraph-evidence-title img { width: 30px; height: 30px; object-fit: contain; }
-.depgraph-evidence-title h4 { margin: 0; font-size: .95rem; }
-.depgraph-evidence-title .text-button { grid-column: 2; justify-self: start; padding: 0; }
-.depgraph-evidence-meta { color: var(--muted); }
-.depgraph-evidence dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; }
-.depgraph-evidence dt { color: var(--muted); font-weight: 700; }
 
 .depgraph-feedback {
   margin: 0 4px;
@@ -186,7 +163,6 @@
   .depgraph {
     padding-inline: 7px;
   }
-  .depgraph-evidence { grid-template-columns: 1fr; gap: 8px; }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -203,4 +179,4 @@
 }
 
 /* the shipment shown on the map */
-.depgraph-node[data-selected="true"] .depgraph-card{stroke-width:2.5;stroke:var(--active)}
+.depgraph-node[data-selected="true"] .depgraph-card{stroke-width:2.5;stroke:currentColor}
