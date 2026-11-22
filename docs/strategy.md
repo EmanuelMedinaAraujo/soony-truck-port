@@ -21,6 +21,33 @@ An illustrative €3,000 standby van would break even if it improved the chance 
 
 Test a €5,000 pilot for one launch at one site with buyers who have a hard retail commitment. This is a pricing hypothesis. Discovery should test willingness to pay against avoided losses and buyer time saved. A seasonal toy launch is a next prospect with the same multipart packing, shared parts and receiving constraints. The forecast already takes product, component, priority, price and timing inputs. A second live customer would still need site-specific connectors, approval policy and operating data.
 
+## The platform: compile an operation once, then let the agent run it
+
+We pitch a horizontal platform: an onboarding agent for any deadline-driven supply chain. Soony is its first compiled customer. The launch cockpit is one instance of the platform, not the product.
+
+| Layer | Today in Dockside | Generic? |
+|---|---|---|
+| Change detection (file hashes, versions, row events) | `sync/` | Yes, any file source |
+| Raw ingest of every CSV, XLSX and JSON | `raw_*` tables | Yes |
+| Reading documents in any language into facts | `core/extract_docs.py` | Yes |
+| Operating rules (who signs what, deadline, cost per missing unit, autonomy) | `config/business.json`, every value with its source | The structure is generic; the content is per customer |
+| Detectors (stuck at port, ETA against route time, revision mismatch, over-receipt, qualification expiry, Sunday truck ban) | `core/rules.py` | Mostly, once parameterized |
+| Typed loaders (BOM, POs, shipments, editions) | `core/ingest.py` | No: becomes a generated mapping |
+| Cockpit | `web/assembly` | No: becomes a generated view spec |
+
+**Compile once.** From a data dump, policy documents and a few interviews, the onboarding agent writes three reviewable files:
+- `mapping.yaml`: raw tables mapped to a canonical model (part, bill of materials, supplier, purchase order, shipment, stock, site, deadline, role). The agent asks only about matches it is unsure of.
+- `policy.json`: what `business.json` is today, including the value function. For Soony that is €120 refunded per missing Collector's copy. For a carmaker it would be the cost of a minute of line stop; for pharma, the value of a spoiled batch.
+- `views.json`: the cockpit, composed from a fixed set of about 12 components, never free-form HTML.
+
+**Fixed runtime.** Deterministic code runs the mapping, the detectors and the renderer. The model never computes the numbers. It writes specs and proposes actions, and each action is logged, scheduled within a stop window, or sent to the person who must sign.
+
+**Then evolve.** The same action log that makes Dockside's emails, calls and bookings auditable also records view changes. The agent can pin an answer as a widget or make a view for a role, and anyone can undo the change.
+
+**Why it compounds.** Every new customer adds to a cross-customer record of supplier reliability, for example how fast a supplier answers and how far its ETAs slip. Every customer's file history also supports a backtest: replay their last launch and show which problems Dockside would have flagged earlier, and what that would have saved. That backtest is the sales argument and the basis for pricing as a share of avoided losses.
+
+For Sunday we show the platform through what already runs generically: hash-based change detection, multilingual document reading, a policy with cited sources, autonomous follow-ups, Supplier Chaser and voice calls. The cockpit stays hand-polished.
+
 ## The three-minute demo
 
 1. Open the dependency overview and select Art Book. The buyer sees the active path from supplier stock through transport and receiving into Collector’s dispatch. The shared game card appears once across both editions.
