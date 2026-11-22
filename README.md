@@ -19,3 +19,15 @@ Dockside's background loop checks launch-relevant purchase orders for missing, p
 Preview the cases and exact outgoing messages with `.venv/bin/python -m core.chase --dry-run`. The preview uses the local snapshots and stored replies. The live loop runs in the Dockside service. Manage it with `chase.value.enabled` in `config/business.json`.
 
 The native port is based on `integrations/supplier-chaser` at `cc0ecad`. The reference update to `0954ca4` adds Linux ARM64 packaging support.
+
+## Voice calls
+
+Set `ELEVENLABS_API_KEY` in `.env` to enable preparation of ElevenLabs agents for released call messages. Open the call's `talk_url` and start the voice session as the recipient. Dockside polls for a finished conversation, then adds its transcript and extracted fields to the same reply queue used for email.
+
+- `GET /api/calls` lists calls. Pass `?action_id=ACT-…` to filter them.
+- `GET /api/calls/{message_id}` returns `message_id`, `to_name`, `subject`, `script`, `status`, `talk_url`, and `result`. The result is null until the call is collected, then contains `summary` and `fields`.
+- `POST /api/calls/{message_id}/prepare` prepares or reuses the agent for a released call and returns the same object.
+
+Call status is `preparing`, `ready`, `in_progress`, `done`, or `unavailable`. The recipient can use the link when the call is ready.
+
+`voice.value` in `config/business.json` controls the integration. The demo uses public ElevenLabs web sessions. Telephone dial-out requires an imported number, explicit `dial_out` enablement and a configured `demo_number` as the sole destination.

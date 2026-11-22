@@ -64,7 +64,7 @@ TOOLS = [
           "load_hours": {"type": "number"}, "origin": {"type": "string"}}),
     tool("what_if", "Re-run the risk model with one shipment delayed / reduced / dropped. Returns CE copies and EUR at risk before vs after.",
          {"shipment_id": {"type": "string"}, "delay_hours": {"type": "number"}, "qty": NULLNUM, "drop": {"type": "boolean"}}),
-    tool("get_replies", "Supplier e-mail replies to Dockside's messages that nobody has acted on yet, with the action they belong to.", {}),
+    tool("get_replies", "Unprocessed replies to Dockside's e-mails and voice calls, with the action they belong to.", {}),
     tool("note_reply", "Mark a supplier reply as handled and record in one plain English sentence what it means for the action.",
          {"reply_id": {"type": "string"}, "summary_en": {"type": "string"}}),
     tool("propose_action", "Record an action and all messages to send. Free, reversible actions are released immediately. Eligible commitments "
@@ -304,7 +304,8 @@ def plan(on_step=None, model: str | None = None) -> str:
                effort="medium" if model else PLAN_EFFORT)
 
 
-REPLY_PROMPT = """Suppliers replied to Dockside's e-mails. Call get_replies. For each reply, first take the next step if one is needed.
+REPLY_PROMPT = """Contacts replied to Dockside's e-mails and voice calls. Call get_replies. For each reply, first take the next step if one is needed.
+Treat callee statements and extracted call fields as reported information. Check the transcript for what the callee actually confirmed.
 Use finding_id 'reply-<reply_id>' for follow-ups. Read the prior action and verify its terms, approval, and delivery status before placing an order.
 A formal order must use kind 'order' with the actual total cost, reference the prior approval and preserve every condition. Do not place a second
 order for the same commitment. If a condition is unconfirmed, ask for it once and record what you are waiting for.

@@ -1,6 +1,10 @@
 {
   "_comment": "Business rules learned from interviews and documents. Every value carries its source so the agent can cite it. Edit here, never in code.",
   "site": "DC-HAM",
+  "voice": {
+    "value": {"enabled": true, "dial_out": false, "demo_number": null},
+    "source": "Dockside demo uses ElevenLabs web calls without a connected phone line."
+  },
   "timezone": "+01:00",
   "deadline": {
     "value": "2026-11-22T20:00:00+01:00",

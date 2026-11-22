@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import soony_sync  # noqa: E402
-from core import actions, agent, chase, dispatch, ingest, outbound, rules  # noqa: E402
+from core import actions, agent, chase, dispatch, ingest, outbound, rules, voice  # noqa: E402
 
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "90"))
 AUTO_AGENT = os.environ.get("AUTO_AGENT", "1") == "1"
@@ -161,7 +161,14 @@ def cycle(force_plan: bool = False, plan_model: str | None = None) -> dict:
         except Exception as e:
             STATE["chase_error"] = type(e).__name__
             actions.log_event("chase_error", None, type(e).__name__)
-        if os.environ.get("IMAP_HOST") and AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
+        STATE["busy"] = "checking voice calls"
+        for check in (voice.prepare_open, voice.collect):
+            try:
+                for r in check() or ():
+                    notify("reply", {"reply": r})
+            except Exception as e:
+                actions.log_event("voice_error", None, f"{check.__name__}: {type(e).__name__}")
+        if AUTO_AGENT and os.environ.get("OPENAI_API_KEY"):
             try:
                 from core import inbox
                 if inbox.unhandled():
@@ -275,6 +282,27 @@ def state():
 @app.get("/api/dispatch")
 def dispatch_view():
     return dispatch.snapshot(STATE["last_sync"])
+
+
+@app.get("/api/calls")
+def list_calls(action_id: str | None = None):
+    return voice.list_calls(action_id)
+
+
+@app.get("/api/calls/{message_id}")
+def get_call(message_id: str):
+    try:
+        return voice.get(message_id)
+    except KeyError:
+        raise HTTPException(404, "Call message not found")
+
+
+@app.post("/api/calls/{message_id}/prepare")
+def prepare_call(message_id: str):
+    try:
+        return voice.prepare(message_id)
+    except KeyError:
+        raise HTTPException(404, "Call message not found")
 
 
 @app.get("/api/parts/{component_id}/graph")
