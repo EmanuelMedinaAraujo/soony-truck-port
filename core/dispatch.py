@@ -432,6 +432,90 @@ ACCEPTED = re.compile(r"\b(acknowledg\w*|accept\w*|treat\w*\b.{0,60}\bas the\b.{
 REFUSED = re.compile(r"\b(not|no longer|cannot|can't|won't|declin\w*|reject\w*)\b.{0,20}\b(acknowledg|accept|treat|confirm\w* the order)", re.I)
 
 
+def _clock(moment: dt.datetime | None) -> str:
+    return f"{moment.astimezone(rules.timezone()):%a %H:%M}" if moment else ""
+
+
+def _requested_arrival(action: dict, cutoff: dt.datetime) -> dt.datetime | None:
+    """The arrival the order or unload-slot request asked for: typed terms first, else the window written in the request."""
+    payload = json.loads(action.get("payload") or "{}")
+    typed = rules.ts(((payload.get("commitment") or {}).get("terms") or payload.get("commitment") or {}).get("deliver_by"))
+    if typed:
+        return typed
+    for message in action.get("messages", []):
+        window = re.search(r"\b(\d{1,2}):(\d{2})\s*(?:to|until|bis|–|-)\s*(\d{1,2}):(\d{2})", message.get("body") or "")
+        if window:
+            day = cutoff.astimezone(rules.timezone())
+            return day.replace(hour=int(window[3]), minute=int(window[4]), second=0, microsecond=0)
+    return None
+
+
+def offer_steps(related: list[dict], supplier: str, quantity: int, offer: dict, expired: bool, cutoff: dt.datetime):
+    """One row per thing that must be true before the goods count: each with its own state and the latest evidence."""
+    site = rules.cfg("site_name")
+    replies = sorted((r for action in related for r in action["replies"] if not r.get("simulated")),
+                     key=lambda r: r["received_at"] or "")
+    done = [a for a in sorted(related, key=lambda a: a.get("updated_at") or "")
+            if a["status"] in {"sent", "done", "auto", "delivered"}]
+
+    def latest_from(action: dict) -> dict | None:
+        when = rules.ts(action.get("updated_at"))
+        names = {m.get("to_name") for m in action.get("messages", []) if m.get("to_name")}
+        found = [r for r in replies if r.get("summary_en") and (r.get("action_id") == action["id"] or r.get("from_name") in names)
+                 and (not when or (rules.ts(r.get("received_at")) or when) >= when)]
+        return found[-1] if found else None
+
+    def said(reply: dict | None) -> str:
+        if not reply:
+            return ""
+        return f" Latest from {reply['from_name']} ({_clock(rules.ts(reply['received_at']))}): {_first_sentence(reply['summary_en'])}"
+
+    order = next((a for a in reversed(done) if a["kind"] == "order"), None)
+    slot = next((a for a in reversed(done) if a["kind"] == "dock_slot"), None)
+    truck = next((a for a in reversed(done) if a["kind"] == "book_truck"), None)
+    requested_by = next(filter(None, (_requested_arrival(a, cutoff) for a in (order, slot) if a)), None)
+    steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units.")]
+    if order:
+        reply, sent = latest_from(order), _clock(rules.ts(order.get("updated_at")))
+        accepted = bool(reply and ACCEPTED.search(reply["summary_en"]) and not REFUSED.search(reply["summary_en"]))
+        steps.append(step("Formal order", "confirmed" if accepted else "waiting",
+                          (f"Sent {sent}; {reply['from_name']} accepted it {_clock(rules.ts(reply['received_at']))}." if accepted
+                           else f"Sent {sent}; waiting for {supplier} to confirm it.") + ("" if accepted else said(reply))))
+    else:
+        steps.append(step("Formal order", "pending", "Release the order once transport and receiving conditions are met."))
+    need = f" Needed by {_clock(requested_by)}, at the latest {_clock(cutoff)}." if requested_by else f" Needed by {_clock(cutoff)}."
+    carrier = (offer.get("transport") or "").split(",")[0].strip() or "the carrier"
+    if truck:
+        steps.append(step("Carrier booking", "waiting", f"Truck requested {_clock(rules.ts(truck.get('updated_at')))}; no booking reference yet." + said(latest_from(truck))))
+    else:
+        steps.append(step("Carrier booking", "waiting" if order else "pending",
+                          f"{supplier} is booking {carrier}; no booking reference yet." if order else f"{carrier} still has to be booked."))
+    steps.append(step("Arrival time", "waiting" if order else "pending", "No confirmed arrival time yet." + need))
+    if slot:
+        window = re.search(r"\b\d{1,2}:\d{2}\s*(?:to|until|bis|–|-)\s*\d{1,2}:\d{2}", " ".join(m.get("body") or "" for m in slot.get("messages", [])))
+        who = next((m.get("to_name") for m in slot.get("messages", []) if m.get("to_name")), "the site")
+        who = re.split(r"\s+(?:and|\()\s*", who, maxsplit=1)[0]
+        steps.append(step("Unload slot", "waiting", f"Requested{' ' + window[0].replace(' to ', '–') if window else ''} from {who} "
+                          f"{_clock(rules.ts(slot.get('updated_at')))}; not confirmed yet."))
+    else:
+        steps.append(step("Unload slot", "pending", f"Dockside requests the unload slot with {site}; the site lead can move or stop it."))
+    people = rules.cfg("people")
+    asked = {}
+    for action in sorted(related, key=lambda a: a.get("updated_at") or "", reverse=True):  # newest question per person wins
+        if action["kind"] in ("ask", "escalate") and action["status"] in {"sent", "auto", "delivered"}:
+            for message in action.get("messages", []):
+                if message.get("channel") == "discord" and message.get("status") == "delivered" and not message_answered(message, action["replies"]):
+                    step_ = internal_followup(action, message)
+                    person = people.get(step_.get("person")) or step_.get("person")  # a role name means its holder
+                    if person and person not in asked:
+                        question = step_["text"].split(": ", 1)[-1]
+                        asked[person] = step(f"Answer from {person}", "waiting", question[:1].upper() + question[1:] +
+                                             f" Asked {_clock(rules.ts(message.get('sent_at')))}.")
+    unique = steps + list(asked.values())
+    unique.append(step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection."))
+    return unique, requested_by
+
+
 def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
     component = offer["material_id"]
     quantity = int(offer["qty"])
@@ -463,44 +547,7 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
         sources.append(evidence(price_source.rsplit("/", 1)[-1], "The offer points to Annex A; estimate uses the latest EUR purchase-order unit price."))
     if active:
         sources.insert(0, evidence(f"Supplier reply from {active['from_name']}", active["summary_en"]))
-    steps = [step("Supplier stock", "confirmed", f"{supplier} offered {quantity:,} units."),
-             step("Transport", "pending", (offer.get("transport") or "Carrier and travel time still need confirmation.").rstrip(". ")
-                  + ". Vehicle size and any road restrictions still need confirming."),
-             step("Dock slot", "pending", f"Dockside books the unload slot with {rules.cfg('site_name')}; the site lead can move or stop it."),
-             step("Formal order", "pending", "Release the commitment once transport and receiving conditions are met."),
-             step("Receiving", "blocked" if expired else "pending", "Add to usable stock after receipt and inspection.")]
-    replies = sorted((r for action in related for r in action["replies"] if not r.get("simulated")),
-                     key=lambda r: r["received_at"] or "")
-    for action in sorted(related, key=lambda a: a.get("updated_at") or ""):  # what Dockside already did moves the matching step forward
-        if action["status"] not in {"sent", "done", "auto", "delivered"}:
-            continue
-        index = {"book_truck": 1, "dock_slot": 2, "order": 3}.get(action["kind"])
-        if index is None:
-            continue
-        when = rules.ts(action.get("updated_at"))
-        stamp = f" {when.astimezone(rules.timezone()):%a %H:%M}" if when else ""
-        # The latest word from the same person after this request, wherever in the thread it arrived.
-        recipients = {m.get("to_name") for m in action.get("messages", []) if m.get("to_name")}
-        answers = [r for r in replies if r.get("summary_en") and (r.get("action_id") == action["id"] or r.get("from_name") in recipients)
-                   and (not when or (rules.ts(r.get("received_at")) or when) >= when)]
-        reply = answers[-1] if answers else None
-        heard = rules.ts(reply["received_at"]) if reply else None
-        answer = (f" Latest from {reply['from_name']}" + (f" ({heard.astimezone(rules.timezone()):%a %H:%M})" if heard else "") +
-                  f": {_first_sentence(reply['summary_en'])}") if reply else ""
-        if index == 3 and reply and ACCEPTED.search(reply["summary_en"]) and not REFUSED.search(reply["summary_en"]):
-            # The supplier accepted the order itself; transport, paperwork and the slot stay separate open steps.
-            steps[3] = step("Formal order", "confirmed", f"Order sent{stamp}; {reply['from_name']} accepted it" +
-                            (f" {heard.astimezone(rules.timezone()):%a %H:%M}" if heard else "") + f". {_first_sentence(reply['summary_en'])}")
-            if steps[1]["state"] == "pending":
-                steps[1] = step("Transport", "waiting", f"{supplier} is arranging it; vehicle and arrival time not confirmed yet.")
-            continue
-        # A request is not a confirmation: only the other side's answer can close a step, so it stays open here.
-        text = {1: f"Truck requested{stamp}; waiting for the carrier to confirm.",
-                2: f"Unload slot requested from the site{stamp}; waiting for the site to confirm.",
-                3: f"Order sent to {supplier}{stamp}; waiting for {supplier} to confirm it."}[index]
-        steps[index] = step(steps[index]["name"], "waiting", (text.split(";")[0] + "." + answer) if answer else text)
-        if index == 3 and steps[1]["state"] == "pending":  # the order asks the supplier to arrange the agreed transport
-            steps[1] = step("Transport", "waiting", f"{supplier} is arranging it; vehicle and arrival time not confirmed yet.")
+    steps, requested_by = offer_steps(related, supplier, quantity, offer, expired, cutoff)
     constraints = alt[target]["constraintIds"]
     next_constraint = constraints[0] if constraints else "Packing capacity" if alt[target]["capacityLimited"] else None
     logged = action_next_step(related, supplier)
@@ -524,10 +571,12 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
              "latestUsefulAt": latest_release.isoformat(timespec="minutes") if latest_release else None,
              "releasedAt": released.isoformat(timespec="minutes") if released_in_time else None,
              "departBy": (cutoff - dt.timedelta(hours=drive)).isoformat(timespec="minutes") if drive is not None else None,
+             "requestedBy": requested_by.isoformat(timespec="minutes") if requested_by else None,
+             "departForRequested": (requested_by - dt.timedelta(hours=drive)).isoformat(timespec="minutes") if requested_by and drive is not None else None,
              "origin": (re.search(r"\b([A-ZÀ-Ž][\wÀ-ž]+)\s*[–-]\s*[A-ZÀ-Ž]", offer.get("transport") or "") or [None, None])[1],
              "timingState": timing, "evidence": sources,
              "assurance": {"examplePremium": rules.cfg("assurance_example_eur"), "coveredStep": "Transport",
-                           "sharedSteps": ["Dock slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
+                           "sharedSteps": ["Unload slot", "Formal order", "Receiving"]} if drive and avoided > 0 else None})
 
 
 def snapshot(checked_at: str | None, *, db_path=None, include_activity: bool = True) -> dict:

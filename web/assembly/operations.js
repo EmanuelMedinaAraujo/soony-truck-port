@@ -75,6 +75,17 @@ function nextStepLine(next) {
     <span>${html(next.text)}</span>${callControls(next)}`;
 }
 
+/* The two clocks a buyer needs for a rush delivery: the arrival that was asked for, and the last departure that still makes the cutoff. */
+function deliveryClock(option) {
+  if (!option) return "";
+  if (!option.releasedAt) return option.latestUsefulAt ? `Order must be released by ${at(option.latestUsefulAt)}.` : "";
+  const from = option.origin ? ` ${option.origin}` : "";
+  const missedAsk = option.departForRequested && Date.now() > Date.parse(option.departForRequested);
+  const asked = option.requestedBy ? (missedAsk ? `Arrival asked for ${at(option.requestedBy)} is now unlikely (needed departure ${at(option.departForRequested)}). `
+    : `Arrival asked for ${at(option.requestedBy)}: leave${from} by ${at(option.departForRequested)}. `) : "";
+  return option.departBy ? `${asked}Last chance: leave${from} by ${at(option.departBy)} for the receiving cutoff.` : asked.trim();
+}
+
 function renderNextSteps(snapshot) {
   const all = snapshot.now_next ?? [];
   const yours = all.filter(item => item.next_step?.state === "Needs you");
@@ -99,8 +110,7 @@ function renderNextSteps(snapshot) {
     ...team.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
       const option = part.option;
-      const clock = option?.departBy && option?.releasedAt ? `Goods must leave${option.origin ? ` ${option.origin}` : ""} by ${at(option.departBy)}.`
-        : option?.latestUsefulAt ? `Order must be released by ${at(option.latestUsefulAt)}.` : "";
+      const clock = deliveryClock(option);
       return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
         <span>${html(item.next_step.text)}</span>${clock ? ` <span class="clock-note">${html(clock)}</span>` : ""}</li>`;
     }),

@@ -372,4 +372,10 @@ img { display: block; max-width: 100%; }
 .economics { margin-top: 8px; max-width: 70ch; font-size: .93rem; color: var(--ink) !important; line-height: 1.45; }
 .next-strip[data-attention="waiting"] { border-color: var(--verified); border-left-width: 4px; }
 .next-strip[data-attention="waiting"] h2 { color: var(--verified); }
-.clock-note { font-weight: 700; color: var(--short); white-space: nowrap; }
+.clock-note { font-weight: 600; font-size: .92em; color: var(--short); }
+@media (max-width: 740px) {
+  .dispatch-heading { flex-direction: column; align-items: stretch; }
+  .deadline { border-left-width: 3px; }
+  .stakes { max-width: none; }
+  .clock-note { white-space: normal; display: block; margin-top: 2px; }
+}

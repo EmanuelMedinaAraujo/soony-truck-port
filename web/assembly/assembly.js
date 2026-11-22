@@ -94,9 +94,8 @@ function renderEconomics(part, route) {
   if (!edition) return "";
   const after = edition.projected + option.copiesAdded;
   const limit = option.nextConstraint ? `${html(option.nextConstraint)} then ${edition.demand - after > 0 ? `limits it: ${number(edition.demand - after)} still short` : "is not a limit"}.` : "";
-  const leave = option.departBy ? ` The goods must leave${option.origin ? ` ${html(option.origin)}` : ""} by ${html(at(option.departBy))} to reach ${html(siteName())} before the cutoff.` : "";
-  const by = option.releasedAt ? ` Order released ${html(at(option.releasedAt))}${option.latestUsefulAt ? `, before the ${html(at(option.latestUsefulAt))} limit` : ""}.${leave}`
-    : option.latestUsefulAt ? ` Must be released by ${html(at(option.latestUsefulAt))}.${leave}` : leave;
+  const by = option.releasedAt ? ` Order released ${html(at(option.releasedAt))}${option.latestUsefulAt ? `, before the ${html(at(option.latestUsefulAt))} limit` : ""}. ${html(deliveryClock(option))}`
+    : ` ${html(deliveryClock(option))}`;
   return `<p class="economics"><b>If ${number(option.quantity)} arrive usable in time:</b> ${html(edition.name)} ${number(edition.projected)} → ${number(after)}
     (+${number(option.copiesAdded)}). ${money(option.refundsAvoided)} in refunds avoided for ${money(option.cost)}. ${limit}${by}</p>`;
 }
