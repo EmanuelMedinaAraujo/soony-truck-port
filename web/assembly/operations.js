@@ -77,16 +77,18 @@ function nextStepLine(next) {
 
 function renderNextSteps(snapshot) {
   const all = snapshot.now_next ?? [];
-  const upcoming = all.filter(item => item.next_step?.state !== "Needs you");
   const yours = all.filter(item => item.next_step?.state === "Needs you");
+  const team = all.filter(item => item.next_step?.person && item.next_step?.state !== "Needs you");
+  const upcoming = all.filter(item => !yours.includes(item) && !team.includes(item));
   const waiting = (snapshot.decisions ?? []).filter(decision => decision.status !== "scheduled");
   const scheduled = (snapshot.decisions ?? []).filter(decision => decision.status === "scheduled");
   const key = JSON.stringify([all, [...calls.values()].map(call => [call.message_id, call.status, call.talk_url, call.result?.summary]), waiting.map(d => [d.id, d.title]), scheduled.map(d => [d.id, d.title, d.next_check_at])]);
   if (key === nextStepsKey) return;
   nextStepsKey = key;
   const count = waiting.length + yours.length;
-  $("next-title").textContent = count ? `Action needed: ${count === 1 ? "1 thing" : `${number(count)} things`}` : "No action needed";
-  $("next-strip").dataset.attention = count ? "true" : "false";
+  $("next-title").textContent = count ? `Action needed: ${count === 1 ? "1 thing" : `${number(count)} things`}` :
+    team.length ? `Waiting on your team: ${team.length === 1 ? "1 answer" : `${number(team.length)} answers`}` : "No spending approvals pending";
+  $("next-strip").dataset.attention = count ? "true" : team.length ? "waiting" : "false";
   const needs = $("needs-you");
   needs.innerHTML = [...yours.map(item => {
       const part = snapshot.components.find(component => component.id === item.component_id);
@@ -94,9 +96,14 @@ function renderNextSteps(snapshot) {
         <span>${html(item.next_step.text)}</span>${callControls(item.next_step)}</li>`;
     }), ...waiting.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Waiting for ${html(decision.approver_name || "an approver")}</span></li>`),
+    ...team.map(item => {
+      const part = snapshot.components.find(component => component.id === item.component_id);
+      return `<li><button class="next-part" type="button" data-next-part="${html(part.id)}">${html(nameOf(part))}</button>
+        <span>${html(item.next_step.text)}</span></li>`;
+    }),
     ...scheduled.map(decision => `<li><a href="#operations" data-jump="${html(decision.id)}">${html(decision.title)}</a>
       <span class="side-note">Goes ahead ${html(at(decision.next_check_at))} unless you stop it</span></li>`)].join("");
-  needs.hidden = !count && !scheduled.length;
+  needs.hidden = !count && !scheduled.length && !team.length;
   const focusedPart = document.activeElement?.dataset.nextPart;
   $("next-list").innerHTML = upcoming.map(item => {
     const part = snapshot.components.find(component => component.id === item.component_id);

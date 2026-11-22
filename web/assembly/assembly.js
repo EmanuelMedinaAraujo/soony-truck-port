@@ -100,8 +100,10 @@ function renderEconomics(part, route) {
   if (!edition) return "";
   const after = edition.projected + option.copiesAdded;
   const limit = option.nextConstraint ? `${html(option.nextConstraint)} then ${edition.demand - after > 0 ? `limits it: ${number(edition.demand - after)} still short` : "is not a limit"}.` : "";
-  const ordered = route.steps?.some(step => step.name === "Formal order" && step.state !== "pending");
-  const by = option.latestUsefulAt && !ordered ? ` Order by ${html(at(option.latestUsefulAt))} at the latest.` : "";
+  const order = route.steps?.find(step => step.name === "Formal order" && step.state !== "pending");
+  const sent = order?.detail?.match(/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d:\d\d\b/)?.[0];
+  const by = option.latestUsefulAt ? (sent ? ` Released ${html(sent)}, before the ${html(at(option.latestUsefulAt))} limit for the trucks to make it.`
+    : ` Must be released by ${html(at(option.latestUsefulAt))} for the trucks to make it.`) : "";
   return `<p class="economics"><b>If ${number(option.quantity)} arrive usable in time:</b> ${html(edition.name)} ${number(edition.projected)} → ${number(after)}
     (+${number(option.copiesAdded)}). ${money(option.refundsAvoided)} in refunds avoided for ${money(option.cost)}. ${limit}${by}</p>`;
 }
@@ -123,7 +125,7 @@ function updateOverview() {
   $("assembly").hidden = false;
   $("legend").hidden = false;
   $("deadline").textContent = at(state.deadline);
-  $("cutoff").textContent = `Last delivery into ${siteName()} ${time.format(new Date(state.cutoff))}`;
+  $("cutoff").textContent = `Receiving cutoff in ${siteName()} ${at(state.cutoff)}`;
   renderStakes();
   drawLinks();
 }

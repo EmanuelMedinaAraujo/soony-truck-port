@@ -98,7 +98,7 @@ def internal_followup(action: dict, message: dict) -> dict:
     if action["kind"] in ("escalate", "ask"):
         title = (action["title"] or "").strip().rstrip(".")
         task = f"answer: {title[:1].lower() + title[1:]}" if title else "answer"
-    return next_step("Waiting for reply", f"Waiting for {who} to {task}.", message["sent_at"], action["id"])
+    return next_step("Waiting for reply", f"Waiting for {who} to {task}.", message["sent_at"], action["id"]) | {"person": who}
 
 
 def message_answered(message: dict, replies: list[dict]) -> bool:
@@ -160,9 +160,11 @@ def readable_activity(log, limit: int = 10) -> dict:
     def count(sql: str) -> int:
         return sum(1 for (stamp,) in log.execute(sql) if (moment := rules.ts(stamp)) and moment >= since)
     sent = count("SELECT sent_at FROM messages WHERE channel IN ('email','approval_email') AND status='sent'")
-    received = count("SELECT received_at FROM replies")
-    steps = count("SELECT updated_at FROM actions WHERE status IN ('auto','sent','done','approved','delivered')")
-    parts = [(sent, "email sent", "emails sent"), (received, "reply received", "replies received"), (steps, "step taken", "steps taken")]
+    received = count("SELECT received_at FROM replies WHERE COALESCE(simulated, 0)=0")
+    staff = count("SELECT sent_at FROM messages WHERE channel='discord' AND sent_at IS NOT NULL")
+    calls = count("SELECT received_at FROM replies WHERE COALESCE(simulated, 0)=1")
+    parts = [(sent, "email sent", "emails sent"), (received, "reply received", "replies received"),
+             (staff, "message to staff", "messages to staff"), (calls, "simulated call", "simulated calls")]
     summary = ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in parts if n)
     return {"summary": f"Last 24 hours: {summary}" if summary else "Nothing in the last 24 hours", "items": items}
 
@@ -385,14 +387,14 @@ def linked_actions(conn: sqlite3.Connection) -> dict:
     for action in action_rows.values():
         finding = action["finding_id"] or ""
         visited = set()
-        if finding.startswith("followup-"):  # followup-<root finding>-<stamp>
-            finding = finding.removeprefix("followup-").rsplit("-", 1)[0]
-        while finding.startswith("reply-") and finding not in visited:
+        while finding not in visited:  # follow reply-<id> and followup-<root>-<stamp> links back to the root finding
             visited.add(finding)
-            parent = parent_actions.get(finding.removeprefix("reply-"))
-            if parent is None:
+            if finding.startswith("followup-"):
+                finding = finding.removeprefix("followup-").rsplit("-", 1)[0]
+            elif finding.startswith("reply-") and (parent := parent_actions.get(finding.removeprefix("reply-"))):
+                finding = parent["finding_id"] or ""
+            else:
                 break
-            finding = parent["finding_id"] or ""
         grouped[finding].append(action)
     return grouped
 
@@ -463,8 +465,14 @@ def recovery(conn, offer, suppliers, related, alt, baseline, cutoff, now):
             continue
         when = rules.ts(action.get("updated_at"))
         stamp = f" {when.astimezone(rules.timezone()):%a %H:%M}" if when else ""
-        answers = [r for r in replies if r.get("action_id") == action["id"] and r.get("summary_en")]
-        answer = f" {answers[-1]['from_name']} answered: {_first_sentence(answers[-1]['summary_en'])}" if answers else ""
+        # The latest word from the same person after this request, wherever in the thread it arrived.
+        recipients = {m.get("to_name") for m in action.get("messages", []) if m.get("to_name")}
+        answers = [r for r in replies if r.get("summary_en") and (r.get("action_id") == action["id"] or r.get("from_name") in recipients)
+                   and (not when or (rules.ts(r.get("received_at")) or when) >= when)]
+        latest = answers[-1] if answers else None
+        heard = rules.ts(latest["received_at"]) if latest else None
+        answer = (f" Latest from {latest['from_name']}" + (f" ({heard.astimezone(rules.timezone()):%a %H:%M})" if heard else "") +
+                  f": {_first_sentence(latest['summary_en'])}") if latest else ""
         # A request is not a confirmation: only the other side's answer can close a step, so it stays open here.
         text = {1: f"Truck requested{stamp}; waiting for the carrier to confirm.",
                 2: f"Unload slot requested from the site{stamp}; waiting for the site to confirm.",
