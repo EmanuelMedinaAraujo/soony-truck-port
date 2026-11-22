@@ -205,7 +205,10 @@ function mapFigure(tracking, land, id, title = "") {
   const label = title || (details.cargo ? `${details.cargo} ${mode}` : mode[0].toUpperCase() + mode.slice(1));
   const due = arrivalPhrase(tracking.arrival ?? details.eta);
   // An arrival nobody has confirmed is Dockside's estimate, not a due date.
-  const arrival = due ? `, Dockside estimate for ${(typeof state !== "undefined" && state?.siteName) || "the site"}: ${due}` : "";
+  const site = (typeof state !== "undefined" && state?.siteName) || "the site";
+  // A container at the terminal has arrived at the port, not at the warehouse: no warehouse ETA until a truck is confirmed.
+  const atTerminal = tracking.status === "arrived_port";
+  const arrival = atTerminal ? `, at the ${site} terminal · warehouse arrival unconfirmed` : due ? `, Dockside estimate for ${site}: ${due}` : "";
   const positionLabel = primary?.simulated ? "simulated" : estimated ? "estimate" : "";
   const heading = `${label}${arrival}${location ? `, ${location}` : ""}${positionLabel ? ` (${positionLabel})` : ""}`;
   const progress = estimated ? [...route.slice(0, expected.segment + 1), xy(expected)] : [];

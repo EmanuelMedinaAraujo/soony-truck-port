@@ -124,7 +124,7 @@ def shipment_reasons(shipment: dict, carrier: str | None) -> list[tuple[str, str
         else:
             found.append((8, flag[:30], flag))
     if shipment["makes_cutoff"] is False:
-        found.append((2, "Misses the cut-off", "Dockside estimates arrival after the packing cut-off, too late for launch boxes."))
+        found.append((2, "Estimated after cut-off", "Dockside estimates arrival after the packing cut-off, too late for launch boxes."))
     if shipment["status"] == "delayed":
         found.append((5, "Delayed", "The carrier reports a delay."))
     if not found:
@@ -334,7 +334,7 @@ def part_graph(component_id: str, db_path: Path = rules.DB_PATH) -> dict | None:
             if stuck:
                 label = f"{mode}, at the port" if status == "arrived_port" else f"{mode}, held"
             else:
-                label = f"{mode}, {when(arrival.isoformat())}"
+                label = f"{mode}, est. {when(arrival.isoformat())}"  # no carrier confirmation: an estimate, not a date
             add_node(shipment_id, label, "shipment", calm("blocked" if held or stuck else "at_risk" if uncertain else "ok"),
                      " ".join(text for _, text in reasons) or None, code=shipment_id, reference=shipment["reference"],
                      meta=(problems[0] if problems else "Arrives before the cut-off") if short or not problems
